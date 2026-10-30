@@ -246,6 +246,14 @@ export function parseCloudOnly(text: string): boolean {
   return raw
 }
 
+// "autoMerge": merge a finished task's changes without asking (default true); false leaves every merge to the user.
+export function parseAutoMerge(text: string): boolean {
+  const raw = (JSON.parse(stripComments(text)) as { autoMerge?: unknown }).autoMerge
+  if (raw === undefined) return true
+  if (typeof raw !== "boolean") throw new Error("autoMerge must be true or false")
+  return raw
+}
+
 // "githubBacklog": the GitHub repositories ("owner/name") whose issues labelled micromanager are part of the backlog
 // (src/backlog.ts, design.md §25 P7). Off for every other project: an issue is published content, so each repository is
 // opted in by name. Reading them is free; an issue is only ever created after the user says so in a form.
@@ -375,6 +383,7 @@ export function cloudRegistry(registry: readonly ModelEntry[]): ModelEntry[] {
 
 export interface Settings {
   readonly cloudOnly: boolean
+  readonly autoMerge: boolean
   readonly parallel: number
   readonly perModel: number
   readonly trials: number
@@ -401,6 +410,7 @@ export interface Settings {
 // apart and a setting added here is never left out of the error path.
 const DEFAULTS: Omit<Settings, "registry"> = {
   cloudOnly: true,
+  autoMerge: true,
   parallel: 3,
   perModel: 2,
   trials: DEFAULT_TRIALS,
@@ -430,7 +440,7 @@ export function loadSettings(path = configPath()): Settings & { error?: string }
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY } // no file: the defaults
   }
   try {
-    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), notify: parseNotify(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
+    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), autoMerge: parseAutoMerge(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), notify: parseNotify(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
   } catch (err) {
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY, error: `${path}: ${String(err)}` }
   }
