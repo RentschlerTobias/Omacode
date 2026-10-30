@@ -6,6 +6,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { buildAgenda, nextProposal } from "./agenda.ts"
+import { maybeAutoMerge } from "./automerge.ts"
 import { Decider, RulesBackend } from "./backends.ts"
 import { createHash } from "node:crypto"
 
@@ -1389,8 +1390,10 @@ export class Runner {
       moveJob(job, "execute")
       return this.#stop(job, `the final checks fail: ${failed.map((f) => f.command).join(", ")}`)
     }
-    moveJob(job, "integrate") // the user merges, keeps or discards the branch
+    moveJob(job, "integrate") // the plugin merges the branch into the user's checkout now; the user can undo or discard it
     this.#say(`all checks pass on ${job.integrationBranch}`)
+    const merged = await maybeAutoMerge(this.#d.project, job, { checks })
+    if (merged.note) this.#say(merged.note)
   }
 
   async sessionUsage(sessionID: string): Promise<{ tokens: number; cost: number }> {

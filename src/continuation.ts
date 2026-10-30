@@ -73,7 +73,7 @@ export function nextStep(job: Job, parallel: number): Step | undefined {
     const merged = job.tasks.filter((t) => isDone(t)).length
     return {
       kind: "done",
-      text: `${HEADER} job ${job.id}: the plan is through, ${merged} of ${job.tasks.length} tasks merged on ${job.integrationBranch ?? `jev/${job.id}`}${merged < job.tasks.length ? " (the rest were cancelled)" : ""}. Tell the user briefly what changed; merge_job brings it into their checkout once they say so.`,
+      text: `${HEADER} job ${job.id}: the plan is through, ${merged} of ${job.tasks.length} tasks merged on ${job.integrationBranch ?? `jev/${job.id}`}${merged < job.tasks.length ? " (the rest were cancelled)" : ""}. Tell the user briefly what changed; the plugin merges the branch into their checkout when this turn ends, and undo_merge takes it back.`,
     }
   }
   const stopped = left.filter((t) => !OPEN.has(t.status))
@@ -108,7 +108,7 @@ export function autoStep(job: Job, running: number, parallel: boolean, last: { s
   const stopped = job.tasks.filter((t) => ended(t) || ["escalated", "blocked"].includes(t.status)).filter((t) => !t.replacedBy)
   const ready = startable(job)
   if (!open.length && !stopped.length) {
-    return { kind: "done", text: `${HEADER} auto-continue: every todo of job ${job.id} is done. Give the user the final summary: what changed, and that merge_job brings it into their checkout once they say so.` }
+    return { kind: "done", text: `${HEADER} auto-continue: every todo of job ${job.id} is done. Give the user the final summary: what changed, and that the plugin merges the branch into their checkout when this turn ends, and undo_merge takes it back.` }
   }
   const askUser = "Ask the user with the question tool how to go on (a form; their answer comes back to you)."
   const list = (tasks: readonly Task[]) => tasks.map((t) => `${t.id} ${t.title} (${t.status}${ended(t) ? ", its worker ended unfinished" : ""})`).join("; ")

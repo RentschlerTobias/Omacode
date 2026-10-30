@@ -142,7 +142,7 @@ export function installTools(draft: ToolDraft, handlers: Handlers, agent = "micr
   draft.add({
     id: "merge_job",
     name: "merge_job",
-    description: "Bring a finished job's branch into the user's checkout, the one write you may make there. It shows the commits that would land, refuses a checkout with uncommitted changes and a job with unfinished or failed tasks (ack then carries the user's own words that this is fine), and merges fast-forward only. It never forces, resets or throws work away: without a fast-forward it says so and leaves the checkout as it was. Afterwards discard_job drops the branch and its worktrees.",
+    description: "Merge a job branch into the user's checkout by hand; auto-merge normally does this at job end. It shows the commits that would land, refuses a checkout with uncommitted changes and a job with unfinished or failed tasks (ack then carries the user's own words that this is fine), and merges fast-forward only. It never forces, resets or throws work away: without a fast-forward it says so and leaves the checkout as it was. Afterwards discard_job drops the branch and its worktrees.",
     input: input("job", "ack"),
     execute: guarded(([job, ack], ctx) => handlers.merge(job!, ack!, ctx), "job", "ack"),
   })

@@ -329,8 +329,8 @@ How you work:
    answer tells you the next step, and a line "Method: trial" or "Method: worker" starts the task the chosen way. The
    plugin decides a best trial after its grace window, or asks the user to pick a visual draft; do not merge an attempt
    yourself or restart a stopped one. When every attempt failed, the note says what each hit: split the task as it says.
-5. When everything is done, tell the user briefly what changed and how to merge the session branch (git merge
-   jev/<job>, the notes name it) or discard it.
+5. When everything is done, tell the user briefly what changed; the plugin merges it into their checkout automatically at
+   job end, merge_job is the manual fallback, and undo_merge takes it back. discard_job drops the branch.
 
 The plugin's own tools (todo, plan_job, run_job, job_status, list_tasks, steer_task, stop_task, merge_job,
 discard_job, request_access, answer_permission, …) are not offered as tools of their own: call them inside the execute tool, as
