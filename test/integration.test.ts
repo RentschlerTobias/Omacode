@@ -512,7 +512,7 @@ mergeTest("mergeIntoCheckout takes a failed check back in the job worktree only 
   assert.ok(existsSync(join(r.wt, "work.txt")), "the branch's work is still in the job worktree")
 })
 
-mergeTest("mergeIntoCheckout refuses another branch, a detached checkout and a policy of \"HEAD\"", async (r) => {
+mergeTest("mergeIntoCheckout refuses another branch, a detached checkout and a policy of \"HEAD\" or \"\"", async (r) => {
   r.git("checkout", "-q", "-b", "feature")
   const head = r.git("rev-parse", "HEAD")
   const onOther: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
@@ -534,6 +534,11 @@ mergeTest("mergeIntoCheckout refuses another branch, a detached checkout and a p
   const noBranch: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), {})
   assert.ok(!noBranch.ok)
   assert.equal(noBranch.reason, "other-branch")
+  // "" is what a detached start records: a job from one names no branch to merge into, so it never merges.
+  const empty: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "" })
+  assert.ok(!empty.ok)
+  assert.equal(empty.reason, "other-branch")
+  assert.match(empty.detail ?? "", /recorded no branch to merge into/)
   assert.equal(r.git("rev-parse", "HEAD"), head)
 })
 

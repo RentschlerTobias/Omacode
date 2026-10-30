@@ -329,6 +329,12 @@ autoTest("a halted job is skipped, and a job with no integration checkout is ski
   detached.integrationCheckout = "HEAD"
   skipped(await maybeAutoMerge(r.repo, detached), "\"HEAD\" is not a branch")
   assert.equal(r.git("rev-parse", "HEAD"), head)
+
+  // "" is what a detached start records now: no branch at all, so nothing ever merges by itself.
+  const detachedStart = autoJob(r)
+  detachedStart.integrationCheckout = ""
+  skipped(await maybeAutoMerge(r.repo, detachedStart), "a detached start records no branch at all")
+  assert.equal(r.git("rev-parse", "HEAD"), head)
 })
 
 autoTest("a second call is a no-op: already merged, nothing recorded twice", async (r) => {
