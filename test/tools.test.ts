@@ -291,6 +291,19 @@ test("merge_job shows what would land, refuses unfinished work without the user'
   assert.match((await mergeJobInto(project, j, "")).text, /nothing the checkout does not have already/)
 })
 
+test("merge_job on a job from before integrationCheckout uses the checkout's current branch", async () => {
+  const { mergeJobInto } = await import("../src/plugin.ts")
+  const { project, branch } = repo()
+  // The shape of a job file written before integrationCheckout was recorded: no branch the checkout was on, no base,
+  // no worktree. The fallback is what the checkout holds right now, so the merge must not be refused as other-branch.
+  const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
+  assert.equal(j.integrationCheckout, undefined)
+  const out = await mergeJobInto(project, j, "")
+  assert.equal(out.wrote, true)
+  assert.match(out.text, /Merged jev\/job-1 into the checkout \(fast-forward\)/)
+  assert.equal(existsSync(join(project, "b.txt")), true, "the job's file is in the checkout")
+})
+
 test("discard_job lists what it would delete, and deletes nothing without the user's words", async () => {
   const { discardJob } = await import("../src/plugin.ts")
   const { project, branch } = repo()

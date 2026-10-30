@@ -1152,7 +1152,10 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       // project below the repository root (or a task that needs an uncommitted file) must not depend on this call.
       job.integrationRel = integration.rel
       job.integrationBase = integration.base
+      // The branch the user's checkout sat on: auto-merge (src/automerge.ts) refuses to write anywhere else.
+      job.integrationCheckout = integration.checkout
       job.integrationDirty = integration.dirty ? integration.dirtySummary : ""
+      saveJob(project, job)
     }
     // A job file written before the offset was tracked has none: git is asked once, so a job that predates this does
     // not keep sending its workers to the worktree root.

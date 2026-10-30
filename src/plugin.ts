@@ -49,7 +49,8 @@ import { registerSkills, SKILLS, type SkillEditor } from "./skills.ts"
 import { backlogIgnored, listJobs, loadJob, notesDir, reconcileJob, saveJob } from "./store.ts"
 import { backlogDir, backlogTool, githubIssue, githubIssues, githubRepo, goalOf, localBackend, publishForm, publishIssue, readPublish, type BacklogItem } from "./backlog.ts"
 import { moveJob, moveTask, stage, type Job, type Task, type TaskStatus } from "./state.ts"
-import { exec, repoRel, type Exec } from "./integration.ts"
+import { exec, mergeIntoCheckout, repoRel, type Exec } from "./integration.ts"
+import { maybeAutoMerge, type AutoMergeOutcome } from "./automerge.ts"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, extname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -434,14 +435,28 @@ export async function mergeJobInto(project: string, job: Job, ack: string, run: 
     return said(`${head}\n\nNot merged: job ${job.id} has work that is not finished (${open.map((t) => `${t.id} ${t.title}: ${t.status}`).join("; ")}). Nothing was written. Show the user this list; only merge it anyway when they say so, and repeat their words as ack.`)
   }
   const from = (await git("rev-parse", "HEAD")).stdout.trim()
-  const merged = await git("merge", "--ff-only", branch)
-  if (merged.code !== 0) {
-    const why = merged.stderr.trim().split("\n").slice(-3).join(" ").trim()
-    return said(`Not merged: ${branch} cannot be fast-forwarded into the checkout (${why}). Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
+  // A job from before the checkout was recorded has no integrationCheckout: the branch the checkout sits on now is
+  // what mergeIntoCheckout's policy has to name, or every legacy merge would be refused as "other-branch".
+  const current = (await git("symbolic-ref", "--short", "HEAD")).stdout.trim() || "HEAD"
+  // merge_job stays a fast-forward: a rebase of the job branch is what the user asked for only through autoMerge.
+  const ancestor = await git("merge-base", "--is-ancestor", from, branch)
+  if (ancestor.code !== 0) {
+    return said(`Not merged: ${branch} cannot be fast-forwarded into the checkout (the checkout's HEAD ${from.slice(0, 7)} is not an ancestor of ${branch}). Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
   }
-  const to = (await git("rev-parse", "HEAD")).stdout.trim()
+  const outcome = await mergeIntoCheckout(
+    project,
+    { integrationBranch: branch, integrationWorktree: job.integrationWorktree ?? project, integrationBase: job.integrationBase ?? from, integrationRel: job.integrationRel },
+    { checkout: job.integrationCheckout ?? current, allowDirty: false },
+    run,
+  )
+  if (!outcome.ok) {
+    if (outcome.reason === "nothing") return said(`${branch} has nothing the checkout does not have already; nothing was merged.`)
+    const why = outcome.detail ? `${outcome.reason}: ${outcome.detail}` : outcome.reason
+    return said(`Not merged: ${why}. Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
+  }
+  const to = outcome.to
   // What the merge did, for undo_merge: the caller keeps it on the job.
-  return { ...done(`${head}\n\nMerged ${branch} into the checkout (fast-forward), now at ${to.slice(0, 7)}. The branch and its worktrees are still registered: discard_job gives them back to git; undo_merge takes this merge back.`), merge: { from, to, at: new Date().toISOString() } }
+  return { ...done(`${head}\n\nMerged ${branch} into the checkout (fast-forward), now at ${to.slice(0, 7)}. The branch and its worktrees are still registered: discard_job gives them back to git; undo_merge takes this merge back.`), merge: { from: outcome.from, to, at: new Date().toISOString() } }
 }
 
 // discard_job: the cleanup a real run left undone (six stale worktrees and branches). It never touches the user's
@@ -1841,6 +1856,19 @@ export default {
     // The turn of a micromanager session ended: wake it if its job runs on auto and nothing else will.
     const onIdle = async (sessionID: string, idleAt: number): Promise<void> => {
       if (!project || (lastPrompt.get(sessionID) ?? 0) > idleAt) return
+      // A job whose tasks are all merged goes into the checkout as soon as the micromanager's turn ends. This runs
+      // before the auto-continue check, so a finished job merges with auto-continue off too; jobs from earlier
+      // sessions have no integrationCheckout and stay manual.
+      for (const found of listSwept().filter((j) => j.facilitator === sessionID)) {
+        const job = native.current(project, found.id) ?? found
+        const merged = await maybeAutoMerge(project, job, { run: exec, record: (entry) => record(entry as Record<string, unknown>) }).catch((err: unknown): AutoMergeOutcome => {
+          log("warn", `auto-merge failed: ${String(err)}`)
+          return {}
+        })
+        // A refusal repeats on every idle while the reason stands, so it does not resume the session: the note is
+        // there at its next turn. A merge is told at once, and the next idle finds nothing left to merge.
+        if (merged.note) await ctx.session.synthetic({ sessionID, text: merged.note, resume: Boolean(merged.merged) }).catch((err: unknown) => log("warn", `auto-merge note failed: ${String(err)}`))
+      }
       const job = autoJob(sessionID)
       if (!job) return
       const control = loadControl(project, job.id)
