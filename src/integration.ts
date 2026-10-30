@@ -20,6 +20,7 @@ declare module "./state.ts" {
     integrationRel?: string // the project directory's path inside the repository root; "" when the project IS the root
     integrationBase?: string // the commit the job's branch started from
     integrationDirty?: string // uncommitted paths in the user's tree when the worktree was made, "" when it was clean
+    integrationCheckout?: string // the branch the user's checkout was on when the job started
   }
   interface Task {
     worktreeRel?: string // the same offset for the task's own worktree
@@ -54,6 +55,7 @@ export const exec: Exec = (command, args, options) =>
 
 export interface Integration {
   readonly branch: string
+  readonly checkout: string // the branch the user's checkout was on when the job started; "HEAD" when detached
   readonly worktree: string // the git worktree root: the repository root, not the project
   readonly base: string // the commit the branch started from
   readonly rel: string // the project directory's path inside the repository root; "" when the project IS the root
@@ -135,6 +137,10 @@ export async function prepareIntegration(project: string, jobId: string, run: Ex
   const rel = await repoRel(project, run)
   const head = await run("git", ["rev-parse", "HEAD"], { cwd: project })
   if (head.code !== 0) throw new IntegrationError("the repository has no commit to start from")
+  // Where the user's checkout points. Record it at the start: mergeIntoCheckout refuses to merge while the checkout
+  // sits anywhere else (a detached checkout answers symbolic-ref with failure, and "HEAD" names no branch).
+  const sym = await run("git", ["symbolic-ref", "--short", "HEAD"], { cwd: project })
+  const checkout = sym.code === 0 && sym.stdout.trim() ? sym.stdout.trim() : "HEAD"
   // Before the worktree exists: its own checkout must not be counted as the user's uncommitted work.
   const { dirty, summary } = await dirtyPaths(project, run)
   const branch = `jev/${jobId}`
@@ -142,7 +148,7 @@ export async function prepareIntegration(project: string, jobId: string, run: Ex
   const added = await run("git", ["worktree", "add", "-q", "-b", branch, worktree, "HEAD"], { cwd: project })
   if (added.code !== 0) throw new IntegrationError(`git worktree add failed: ${added.stderr.trim()}`)
   materializeTaskDir(worktree, rel)
-  return { branch, worktree, base: head.stdout.trim(), rel, dirty, dirtySummary: summary }
+  return { branch, checkout, worktree, base: head.stdout.trim(), rel, dirty, dirtySummary: summary }
 }
 
 // Files the worker changed in the worktree since the last commit, untracked ones included.
@@ -319,4 +325,81 @@ export async function rebaseTask(w: Pick<TaskWorktree, "worktree">, integrationB
 export async function fastForward(integrationWorktree: string, taskBranch: string, run: Exec = exec): Promise<TrainStep> {
   const ff = await run("git", ["merge", "-q", "--ff-only", taskBranch], { cwd: integrationWorktree })
   return ff.code === 0 ? { ok: true, moved: false } : { ok: false, conflict: ff.stderr.trim().slice(-500) }
+}
+
+// --- merge_job's engine: the job's branch into the user's checkout (design.md §12) ----------------------------
+
+export interface MergePolicy {
+  readonly checkout: string // the branch the user's checkout must still be on, as recorded when the job started
+  readonly checks?: readonly string[] // what the gate runs on the job's worktree after a rebase, before the merge
+  readonly allowDirty?: boolean // let uncommitted work stand while a merge that does not touch it goes ahead
+}
+
+// The checkout must never come out of a refusal different from how it went in: a fast-forward-only merge either
+// happens whole or not at all, and the job branch repair (the rebase) happens in the job's worktree, never here.
+export type MergeRefusal = "no-branch" | "other-branch" | "busy" | "nothing" | "diverged" | "dirty" | "conflict" | "checks" | "ff"
+
+export interface MergeFail {
+  readonly ok: false
+  readonly reason: MergeRefusal
+  readonly detail?: string // why, one line: the branch the checkout sits on, the git stderr, the conflicting files
+  readonly paths?: readonly string[] // dirty: the user's uncommitted paths in the way
+  readonly checks?: readonly GateResult[] // checks: the gate's results, passed ones included
+}
+
+export type MergeResult =
+  | { readonly ok: true; readonly from: string; readonly to: string; readonly rebased: boolean } // what undo_merge records (state.ts: merges)
+  | MergeFail
+
+export async function mergeIntoCheckout(project: string, job: Pick<Job, "integrationBranch" | "integrationWorktree" | "integrationBase" | "integrationRel">, policy: MergePolicy, run: Exec = exec): Promise<MergeResult> {
+  const branch = job.integrationBranch
+  const worktree = job.integrationWorktree
+  const base = job.integrationBase
+  if (!branch || !worktree || !base) return { ok: false, reason: "no-branch", detail: "the job has no integration branch, worktree and base recorded; there is nothing to merge" }
+  const sym = await run("git", ["symbolic-ref", "--short", "HEAD"], { cwd: project })
+  const current = sym.code === 0 ? sym.stdout.trim() : "HEAD"
+  if (current !== policy.checkout) {
+    return { ok: false, reason: "other-branch", detail: current === "HEAD" ? "the checkout is detached, not on a branch" : `the checkout is on ${current}, not on ${policy.checkout}` }
+  }
+  // A merge or a rebase the user has running in their own checkout must not be interrupted or worked around.
+  const mergeHead = await run("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: project })
+  if (mergeHead.code === 0) return { ok: false, reason: "busy", detail: "MERGE_HEAD: a merge is already in progress in the user's checkout" }
+  const rebaseHead = await run("git", ["rev-parse", "-q", "--verify", "REBASE_HEAD"], { cwd: project })
+  if (rebaseHead.code === 0) return { ok: false, reason: "busy", detail: "REBASE_HEAD: a rebase is already in progress in the user's checkout" }
+  const head = await run("git", ["rev-parse", "HEAD"], { cwd: project })
+  if (head.code !== 0) return { ok: false, reason: "ff", detail: `cannot read the checkout's HEAD: ${head.stderr.trim().slice(-500)}` }
+  const from = head.stdout.trim()
+  const isAncestor = async (a: string, b: string): Promise<boolean> => (await run("git", ["merge-base", "--is-ancestor", a, b], { cwd: project })).code === 0
+  let rebased = false
+  if (await isAncestor(branch, from)) return { ok: false, reason: "nothing", detail: `${branch} is an ancestor of the checkout's HEAD; nothing would change` }
+  if (!(await isAncestor(from, branch))) {
+    if (!(await isAncestor(base, from))) return { ok: false, reason: "diverged", detail: `the checkout's HEAD and ${branch} both moved on since the job started; a merge is a rebase the user would have to resolve, so it is their call` }
+    // The job branch goes onto the checkout's HEAD inside the job's own worktree: the user's checkout is not touched.
+    const oldTip = (await run("git", ["rev-parse", branch], { cwd: worktree })).stdout.trim()
+    const rebase = await run("git", ["rebase", "-q", from], { cwd: worktree })
+    if (rebase.code !== 0) {
+      // An abort puts the branch back at oldTip, exactly as rebaseTask does: the caller sees the same tip as before.
+      const files = (await run("git", ["diff", "--name-only", "--diff-filter=U"], { cwd: worktree })).stdout.trim().split("\n").filter(Boolean)
+      await run("git", ["rebase", "--abort"], { cwd: worktree })
+      return { ok: false, reason: "conflict", detail: files.length ? `conflict in ${files.join(", ")}` : rebase.stderr.trim().slice(-500) }
+    }
+    rebased = true
+    if (policy.checks?.length) {
+      const results = await runGate(worktree, policy.checks, run, undefined, taskDir(worktree, job.integrationRel ?? ""))
+      const failed = results.filter((r) => !r.passed)
+      if (failed.length) {
+        // The rebase is taken back in the job's worktree only; the user's checkout has not been written to.
+        await run("git", ["reset", "--hard", oldTip], { cwd: worktree })
+        return { ok: false, reason: "checks", detail: failed.map((r) => r.command).join(", "), checks: results }
+      }
+    }
+  }
+  if (policy.allowDirty !== true) {
+    const dirt = await dirtyPaths(project, run)
+    if (dirt.dirty) return { ok: false, reason: "dirty", detail: dirt.summary, paths: dirt.paths }
+  }
+  const merged = await run("git", ["merge", "-q", "--ff-only", branch], { cwd: project })
+  if (merged.code !== 0) return { ok: false, reason: "ff", detail: merged.stderr.trim().slice(-500) }
+  const to = (await run("git", ["rev-parse", "HEAD"], { cwd: project })).stdout.trim()
+  return { ok: true, from, to, rebased }
 }

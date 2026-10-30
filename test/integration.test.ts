@@ -4,14 +4,14 @@
 
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { after, test } from "node:test"
 
 import {
-  changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
-  projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type Run,
+  changedFiles, commitTask, dirtyDeclared, exec, dirtyPaths, hashFiles, IntegrationError, mergeIntoCheckout, prepareIntegration, prepareTaskWorktree,
+  projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type GateResult, type MergeResult, type Run,
 } from "../src/integration.ts"
 import { DIR } from "../src/store.ts"
 
@@ -47,6 +47,7 @@ function answers(topLevel: string, status = ""): Record<string, string> {
     "git rev-parse --is-inside-work-tree": "true\n",
     "git rev-parse --show-toplevel": `${topLevel}\n`,
     "git rev-parse HEAD": "abc1234def\n",
+    "git symbolic-ref --short HEAD": "main\n",
     "git status --porcelain -z --untracked-files=all": status.replace(/\n/g, "\0"),
     [`git worktree add -q -b jev/${JOB} ${PROJECT}/${DIR}/worktrees/${JOB} HEAD`]: "",
   }
@@ -57,15 +58,17 @@ test("a project that is the repository root keeps everything as it was", async (
   const i = await prepareIntegration(TOP, JOB, run)
   assert.equal(i.rel, "", "no offset: the worktree and the project are the same directory")
   assert.equal(i.branch, `jev/${JOB}`)
+  assert.equal(i.checkout, "main", "the branch the checkout was on when the job started")
   assert.equal(i.base, "abc1234def")
   assert.equal(i.worktree, `${TOP}/${DIR}/worktrees/${JOB}`)
   assert.equal(i.dirty, false)
   assert.equal(i.dirtySummary, "")
-  // The git calls themselves are unchanged for the common case.
+  // The git calls themselves are unchanged, except the one new question about the checkout's branch.
   assert.deepEqual(calls.map((c) => [c.command, [...c.args]]), [
     ["git", ["rev-parse", "--is-inside-work-tree"]],
     ["git", ["rev-parse", "--show-toplevel"]],
     ["git", ["rev-parse", "HEAD"]],
+    ["git", ["symbolic-ref", "--short", "HEAD"]],
     ["git", ["status", "--porcelain", "-z", "--untracked-files=all"]],
     ["git", ["worktree", "add", "-q", "-b", `jev/${JOB}`, `${TOP}/${DIR}/worktrees/${JOB}`, "HEAD"]],
   ])
@@ -78,6 +81,7 @@ test("a project below the repository root records the offset git reports, asked 
   const { run, calls } = fakeGit(answers(TOP))
   const i = await prepareIntegration(PROJECT, JOB, run)
   assert.equal(i.rel, "a/b/c", "the project directory's path inside the repository root")
+  assert.equal(i.checkout, "main")
   const top = calls.find((c) => c.args.join(" ") === "rev-parse --show-toplevel")
   assert.deepEqual([top!.command, top!.cwd], ["git", PROJECT], "git is asked from the project, not from the root")
   // The worktree is still registered at the worktree root, which is what git materialises and what git commands need.
@@ -319,3 +323,236 @@ test("revertFiles and hashFiles act in the directory the paths are relative to",
   const fallback = await hashFiles("/wt", ["references.bib"], record)
   assert.equal(seen.at(-1)!.cwd, "/wt", "without a directory it keeps the worktree root, as before")
 })
+
+// --- mergeIntoCheckout: real repositories, the plugin's own exec ---------------------------------------------
+
+// A repository, and the job's integration worktree beside it, outside the repository: a real run keeps the worktree
+// inside the repository but excluded in .git/info/exclude, and here it must simply not count as the checkout's dirt.
+function mergeRepo(): { repo: string; wt: string; base: string; git: (...args: string[]) => string } {
+  const root = mkdtempSync(join(tmpdir(), "micromanager-merge-"))
+  const repo = join(root, "repo")
+  const wt = join(root, "wt-job-1")
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim()
+  execFileSync("git", ["init", "-q", "-b", "main", repo], { encoding: "utf8" })
+  git("config", "user.name", "t")
+  git("config", "user.email", "t@t")
+  writeFileSync(join(repo, "base.txt"), "base\n")
+  git("add", "-A")
+  git("commit", "-qm", "base")
+  git("worktree", "add", "-q", "-b", "jev/job-1", wt, "HEAD")
+  return { repo, wt, base: git("rev-parse", "HEAD"), git }
+}
+
+// A record of what the engine asks git for, so a test can assert no write reached the checkout.
+function recording(): { run: Exec; calls: readonly string[] } {
+  const seen: string[] = []
+  const run: Exec = async (command, args, options) => {
+    seen.push(`${command} ${args.join(" ")}`)
+    return exec(command, args, options)
+  }
+  return { run, calls: seen }
+}
+
+const mergeJob = (wt: string, base: string, rel = "") => ({ integrationBranch: "jev/job-1", integrationWorktree: wt, integrationBase: base, integrationRel: rel })
+
+function mergeTest(name: string, fn: (r: ReturnType<typeof mergeRepo>) => Promise<void>): void {
+  test(name, async () => {
+    const repo = mergeRepo()
+    try {
+      await fn(repo)
+    } finally {
+      rmSync(dirname(repo.wt), { recursive: true, force: true })
+    }
+  })
+}
+
+
+mergeTest("mergeIntoCheckout fast-forwards a clean checkout", async (r) => {
+  const from = r.git("rev-parse", "HEAD")
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.deepEqual(result, { ok: true, from, to: r.git("rev-parse", "jev/job-1"), rebased: false })
+  assert.equal(r.git("rev-parse", "HEAD"), r.git("rev-parse", "jev/job-1"))
+  assert.equal(readFileSync(join(r.repo, "work.txt"), "utf8"), "done\n")
+})
+
+mergeTest("mergeIntoCheckout reports nothing when the branch is already merged", async (r) => {
+  const before = r.git("rev-parse", "HEAD")
+  const result = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.deepEqual(result, { ok: false, reason: "nothing", detail: "jev/job-1 is an ancestor of the checkout's HEAD; nothing would change" })
+  assert.equal(r.git("rev-parse", "HEAD"), before)
+})
+
+mergeTest("mergeIntoCheckout refuses a dirty checkout without allowDirty and writes nothing", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "base.txt"), "mine\n")
+  const before = r.git("rev-parse", "HEAD")
+  const asked = recording()
+  const result = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" }, asked.run)
+  assert.deepEqual(result, { ok: false, reason: "dirty", detail: "base.txt", paths: ["base.txt"] })
+  assert.equal(r.git("rev-parse", "HEAD"), before, "the checkout is exactly as it was")
+  assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "mine\n")
+  assert.ok(!asked.calls.some((c) => c.startsWith("git merge ")), "no merge ever reached the checkout")
+})
+
+mergeTest("mergeIntoCheckout with allowDirty merges around an unrelated untracked file", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "user.md"), "the user's notes\n")
+  const from = r.git("rev-parse", "HEAD")
+  const result = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main", allowDirty: true })
+  assert.deepEqual(result, { ok: true, from, to: r.git("rev-parse", "jev/job-1"), rebased: false })
+  assert.equal(readFileSync(join(r.repo, "user.md"), "utf8"), "the user's notes\n", "the untracked file is untouched")
+  assert.equal(readFileSync(join(r.repo, "work.txt"), "utf8"), "done\n")
+})
+
+mergeTest("mergeIntoCheckout with allowDirty refuses and leaves the file when the edit overlaps the merge", async (r) => {
+  writeFileSync(join(r.wt, "base.txt"), "job change\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: work"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "base.txt"), "uncommitted\n")
+  const before = r.git("rev-parse", "HEAD")
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main", allowDirty: true })
+  assert.ok(!result.ok)
+  assert.equal(result.reason, "ff")
+  assert.match(result.detail ?? "", /local changes/)
+  assert.equal(r.git("rev-parse", "HEAD"), before, "the fast-forward either happens whole or not at all")
+  assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "uncommitted\n", "the user's edit is left as it was")
+})
+
+mergeTest("mergeIntoCheckout rebases a diverged checkout in the job's worktree and rechecks there", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "main.txt"), "checkout change\n")
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  const from = r.git("rev-parse", "HEAD")
+  const oldTip = execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+  // The check names work.txt, which only the job branch has: it passes only when it runs in the job's worktree,
+  // after the rebase brought the branch's work on top of the checkout's HEAD.
+  const result = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main", checks: ["test -f work.txt"] })
+  assert.ok(result.ok)
+  assert.equal(result.from, from)
+  assert.equal(result.to, r.git("rev-parse", "HEAD"))
+  assert.equal(result.rebased, true)
+  const newTip = r.git("rev-parse", "jev/job-1")
+  assert.notEqual(newTip, oldTip, "the branch was rewritten onto the checkout's HEAD")
+  assert.equal(r.git("rev-parse", "jev/job-1^"), from, "the branch's parent is the checkout's HEAD")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), newTip, "the worktree sits on the rebased branch")
+  assert.equal(readFileSync(join(r.wt, "main.txt"), "utf8"), "checkout change\n", "the rebase brought the checkout's change along")
+  assert.equal(readFileSync(join(r.repo, "main.txt"), "utf8"), "checkout change\n")
+  assert.equal(readFileSync(join(r.repo, "work.txt"), "utf8"), "done\n", "the merge landed the branch's work")
+})
+
+mergeTest("mergeIntoCheckout reports a conflict and leaves the branch tip and the checkout unchanged", async (r) => {
+  writeFileSync(join(r.wt, "base.txt"), "job change\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: work"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "base.txt"), "checkout change\n")
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  const branchTip = r.git("rev-parse", "jev/job-1")
+  const head = r.git("rev-parse", "HEAD")
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.ok(!result.ok)
+  assert.equal(result.reason, "conflict")
+  assert.match(result.detail ?? "", /base\.txt/)
+  assert.equal(r.git("rev-parse", "jev/job-1"), branchTip, "the branch tip is unchanged")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), branchTip, "the abort put the worktree back")
+  assert.equal(execFileSync("git", ["-C", r.wt, "diff", "--quiet"], { encoding: "utf8" }), "", "the worktree is clean again")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout's HEAD is unchanged")
+})
+
+mergeTest("mergeIntoCheckout takes a failed check back in the job worktree only and restores the branch tip", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "main.txt"), "checkout change\n")
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  const oldTip = r.git("rev-parse", "jev/job-1")
+  const head = r.git("rev-parse", "HEAD")
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main", checks: ["exit 1"] })
+  assert.ok(!result.ok)
+  assert.equal(result.reason, "checks")
+  assert.ok(result.checks?.length === 1, "the gate's results come back")
+  assert.ok(!result.checks[0].passed)
+  assert.equal(r.git("rev-parse", "jev/job-1"), oldTip, "the branch tip is restored")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), oldTip, "the worktree is back at the old tip")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout's HEAD is unchanged")
+  assert.ok(!existsSync(join(r.repo, "work.txt")), "nothing was written into the checkout")
+  assert.ok(existsSync(join(r.wt, "work.txt")), "the branch's work is still in the job worktree")
+})
+
+mergeTest("mergeIntoCheckout refuses another branch and a detached checkout", async (r) => {
+  r.git("checkout", "-q", "-b", "feature")
+  const head = r.git("rev-parse", "HEAD")
+  const onOther: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.ok(!onOther.ok)
+  assert.equal(onOther.reason, "other-branch")
+  assert.match(onOther.detail ?? "", /on feature, not on main/)
+  assert.equal(r.git("rev-parse", "HEAD"), head)
+  r.git("checkout", "-q", "--detach")
+  const detached: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.ok(!detached.ok)
+  assert.equal(detached.reason, "other-branch")
+  assert.match(detached.detail ?? "", /detached/)
+  assert.equal(r.git("rev-parse", "HEAD"), head)
+  r.git("checkout", "-q", "main")
+})
+
+mergeTest("mergeIntoCheckout refuses a job with no branch and a checkout busy with the user's own merge", async (r) => {
+  const none: MergeResult = await mergeIntoCheckout(r.repo, {}, { checkout: "main" })
+  assert.ok(!none.ok)
+  assert.equal(none.reason, "no-branch")
+
+  writeFileSync(join(r.wt, "base.txt"), "job change\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: work"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "base.txt"), "checkout change\n")
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  const head = r.git("rev-parse", "HEAD")
+  try {
+    execFileSync("git", ["-C", r.repo, "merge", "jev/job-1"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }) // conflicts; exits failing, MERGE_HEAD stays and the merge remains in progress
+  } catch (error) {
+    // the CONFLICT lines go to stdout, the rerere note to stderr
+    assert.match(String((error as { stdout: string }).stdout), /CONFLICT/, "the busy setup itself conflicted")
+  }
+  const busy: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
+  assert.ok(!busy.ok)
+  assert.equal(busy.reason, "busy")
+  assert.match(busy.detail ?? "", /MERGE_HEAD/)
+  assert.equal(r.git("rev-parse", "HEAD"), head)
+  r.git("merge", "--abort")
+})
+
+test("mergeIntoCheckout refuses while a rebase is already in progress (REBASE_HEAD)", async () => {
+  // Given the other-branch check first, REBASE_HEAD only fires when the checkout answers symbolic-ref: this fake
+  // walks the engine exactly that far, since a conflicted real rebase detaches HEAD and would refuse as other-branch.
+  const run: Exec = async (command, args) => {
+    switch ([command, ...args].join(" ")) {
+      case "git symbolic-ref --short HEAD": return { code: 0, stdout: "main\n", stderr: "" }
+      case "git rev-parse -q --verify MERGE_HEAD": return { code: 1, stdout: "", stderr: "" }
+      case "git rev-parse -q --verify REBASE_HEAD": return { code: 0, stdout: "abc1234def\n", stderr: "" }
+      default: throw new Error(`not reached: ${[command, ...args].join(" ")}`)
+    }
+  }
+  const result = await mergeIntoCheckout("/repo", mergeJob("/wt", "base"), { checkout: "main" }, run)
+  assert.ok(!result.ok)
+  assert.equal(result.reason, "busy")
+  assert.match(result.detail ?? "", /REBASE_HEAD/)
+})
+
+mergeTest("prepareIntegration records the branch the checkout was on", (r) => Promise.resolve().then(async () => {
+  r.git("worktree", "remove", r.wt) // the branch is on a worktree; prepareIntegration must be free to make its own
+  r.git("branch", "-D", "jev/job-1")
+  const result = await prepareIntegration(r.repo, "job-2")
+  assert.equal(result.checkout, "main")
+}))
