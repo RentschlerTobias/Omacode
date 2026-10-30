@@ -469,6 +469,28 @@ mergeTest("mergeIntoCheckout reports a conflict and leaves the branch tip and th
   assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout's HEAD is unchanged")
 })
 
+// A diverged checkout with an uncommitted edit that overlaps the merge but not the rebase: the rebase succeeds, the
+// ff refuses, and the failure must not leave the branch rewritten — it is reset back to its pre-rebase tip.
+mergeTest("a rebase followed by a refused ff leaves the branch exactly as it was", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "main.txt"), "checkout change\n")
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  writeFileSync(join(r.repo, "work.txt"), "uncommitted\n") // dirties the ff, not the rebase: the branch touches work.txt
+  const oldTip = r.git("rev-parse", "jev/job-1")
+  const head = r.git("rev-parse", "HEAD")
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main", allowDirty: true })
+  assert.ok(!result.ok)
+  assert.equal(result.reason, "ff")
+  assert.equal(r.git("rev-parse", "jev/job-1"), oldTip, "the branch was not left rewritten by the refused merge")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), oldTip, "the worktree is back at the old tip")
+  assert.equal(execFileSync("git", ["-C", r.wt, "diff", "--quiet"], { encoding: "utf8" }), "", "the worktree is clean again")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout's HEAD never moved")
+  assert.equal(readFileSync(join(r.repo, "work.txt"), "utf8"), "uncommitted\n", "the user's uncommitted edit stands")
+})
+
 mergeTest("mergeIntoCheckout takes a failed check back in the job worktree only and restores the branch tip", async (r) => {
   writeFileSync(join(r.wt, "work.txt"), "done\n")
   execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
@@ -490,7 +512,7 @@ mergeTest("mergeIntoCheckout takes a failed check back in the job worktree only 
   assert.ok(existsSync(join(r.wt, "work.txt")), "the branch's work is still in the job worktree")
 })
 
-mergeTest("mergeIntoCheckout refuses another branch and a detached checkout", async (r) => {
+mergeTest("mergeIntoCheckout refuses another branch, a detached checkout and a policy of \"HEAD\"", async (r) => {
   r.git("checkout", "-q", "-b", "feature")
   const head = r.git("rev-parse", "HEAD")
   const onOther: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" })
@@ -505,6 +527,14 @@ mergeTest("mergeIntoCheckout refuses another branch and a detached checkout", as
   assert.match(detached.detail ?? "", /detached/)
   assert.equal(r.git("rev-parse", "HEAD"), head)
   r.git("checkout", "-q", "main")
+  // "HEAD" and no branch at all name nothing to merge onto, however the checkout itself stands: only a branch is one.
+  const onHead: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "HEAD" })
+  assert.ok(!onHead.ok)
+  assert.equal(onHead.reason, "other-branch")
+  const noBranch: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), {})
+  assert.ok(!noBranch.ok)
+  assert.equal(noBranch.reason, "other-branch")
+  assert.equal(r.git("rev-parse", "HEAD"), head)
 })
 
 mergeTest("mergeIntoCheckout refuses a job with no branch and a checkout busy with the user's own merge", async (r) => {
@@ -555,4 +585,12 @@ mergeTest("prepareIntegration records the branch the checkout was on", (r) => Pr
   r.git("branch", "-D", "jev/job-1")
   const result = await prepareIntegration(r.repo, "job-2")
   assert.equal(result.checkout, "main")
+}))
+
+mergeTest("prepareIntegration on a detached HEAD records no branch at all", (r) => Promise.resolve().then(async () => {
+  r.git("worktree", "remove", r.wt)
+  r.git("branch", "-D", "jev/job-1")
+  r.git("checkout", "-q", "--detach")
+  const result = await prepareIntegration(r.repo, "job-2")
+  assert.equal(result.checkout, "", "a detached checkout records \"\": no branch, never \"HEAD\"")
 }))

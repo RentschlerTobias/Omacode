@@ -9,9 +9,6 @@ import { mergeIntoCheckout, type Exec } from "./integration.ts"
 import { saveJob } from "./store.ts"
 import type { Job } from "./state.ts"
 
-// The states a task can be in when its work is on the job branch and needs no further merge.
-const MERGED_STATES: ReadonlySet<string> = new Set(["merged", "cancelled", "passed"])
-
 // A job in one of these is not running to its end, so nothing merges by itself.
 const HALTED: ReadonlySet<Job["phase"]> = new Set(["paused", "ask_user", "stopped", "failed", "done"])
 
@@ -36,14 +33,17 @@ function acceptanceChecks(job: Job): string[] {
 }
 
 // A job is complete exactly when nextStep/autoStep call it done: no open or live task is left. A ready or running task
-// means there is still work, so an early merge would put half a job into the checkout.
+// means there is still work, so an early merge would put half a job into the checkout. merged and cancelled always
+// count; a passed task counts only when it has no worktree of its own: its commits are still on the task's branch in
+// that case, waiting for the merge train, and merging before it lands would skip its work.
 function complete(job: Job): boolean {
-  return job.tasks.length > 0 && job.tasks.every((t) => MERGED_STATES.has(t.status)) && job.tasks.some((t) => t.status === "merged")
+  const done = (t: Job["tasks"][number]): boolean => t.status === "merged" || t.status === "cancelled" || (t.status === "passed" && !t.worktree)
+  return job.tasks.length > 0 && job.tasks.every(done) && job.tasks.some((t) => t.status === "merged")
 }
 
 export async function maybeAutoMerge(project: string, job: Job, opts: AutoMergeOptions = {}): Promise<AutoMergeOutcome> {
   if (!loadSettings().autoMerge) return {}
-  if (!job.integrationCheckout || !job.integrationBranch || !job.integrationWorktree || !job.integrationBase) return {}
+  if (!job.integrationCheckout || job.integrationCheckout === "HEAD" || !job.integrationBranch || !job.integrationWorktree || !job.integrationBase) return {}
   if (HALTED.has(job.phase)) return {}
   if (!complete(job)) return {}
   if (merging.has(job.id)) return {}

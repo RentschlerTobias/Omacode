@@ -55,7 +55,7 @@ export const exec: Exec = (command, args, options) =>
 
 export interface Integration {
   readonly branch: string
-  readonly checkout: string // the branch the user's checkout was on when the job started; "HEAD" when detached
+  readonly checkout: string // the branch the user's checkout was on when the job started; "" when detached
   readonly worktree: string // the git worktree root: the repository root, not the project
   readonly base: string // the commit the branch started from
   readonly rel: string // the project directory's path inside the repository root; "" when the project IS the root
@@ -138,9 +138,10 @@ export async function prepareIntegration(project: string, jobId: string, run: Ex
   const head = await run("git", ["rev-parse", "HEAD"], { cwd: project })
   if (head.code !== 0) throw new IntegrationError("the repository has no commit to start from")
   // Where the user's checkout points. Record it at the start: mergeIntoCheckout refuses to merge while the checkout
-  // sits anywhere else (a detached checkout answers symbolic-ref with failure, and "HEAD" names no branch).
+  // sits anywhere else (a detached checkout answers symbolic-ref with failure, so it records "": heads to no branch,
+  // and only a merge the user asks for on a branch they chose is ever right where "HEAD" happens to stand).
   const sym = await run("git", ["symbolic-ref", "--short", "HEAD"], { cwd: project })
-  const checkout = sym.code === 0 && sym.stdout.trim() ? sym.stdout.trim() : "HEAD"
+  const checkout = sym.code === 0 && sym.stdout.trim() ? sym.stdout.trim() : ""
   // Before the worktree exists: its own checkout must not be counted as the user's uncommitted work.
   const { dirty, summary } = await dirtyPaths(project, run)
   const branch = `jev/${jobId}`
@@ -330,7 +331,7 @@ export async function fastForward(integrationWorktree: string, taskBranch: strin
 // --- merge_job's engine: the job's branch into the user's checkout (design.md §12) ----------------------------
 
 export interface MergePolicy {
-  readonly checkout: string // the branch the user's checkout must still be on, as recorded when the job started
+  readonly checkout?: string // the branch the user's checkout must still be on, as recorded when the job started; absent or "" record no branch at all
   readonly checks?: readonly string[] // what the gate runs on the job's worktree after a rebase, before the merge
   readonly allowDirty?: boolean // let uncommitted work stand while a merge that does not touch it goes ahead
 }
@@ -358,8 +359,16 @@ export async function mergeIntoCheckout(project: string, job: Pick<Job, "integra
   if (!branch || !worktree || !base) return { ok: false, reason: "no-branch", detail: "the job has no integration branch, worktree and base recorded; there is nothing to merge" }
   const sym = await run("git", ["symbolic-ref", "--short", "HEAD"], { cwd: project })
   const current = sym.code === 0 ? sym.stdout.trim() : "HEAD"
-  if (current !== policy.checkout) {
-    return { ok: false, reason: "other-branch", detail: current === "HEAD" ? "the checkout is detached, not on a branch" : `the checkout is on ${current}, not on ${policy.checkout}` }
+  // A job with no branch recorded (a checkout that was detached when it started) and one that names "HEAD" are
+  // indistinguishable from "the user chooses", so they never merge; a checkout that has since come off its branch or
+  // detached is refused the same way. "HEAD" is not a branch a merge can be asked onto: the user does that.
+  if (!policy.checkout || policy.checkout === "HEAD" || current === "HEAD" || current !== policy.checkout) {
+    const why = !policy.checkout || policy.checkout === "HEAD"
+      ? "the job recorded no branch to merge into (the checkout was detached when it started)"
+      : current === "HEAD"
+        ? "the checkout is detached, not on a branch"
+        : `the checkout is on ${current}, not on ${policy.checkout}`
+    return { ok: false, reason: "other-branch", detail: why }
   }
   // A merge or a rebase the user has running in their own checkout must not be interrupted or worked around.
   const mergeHead = await run("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: project })
@@ -371,11 +380,12 @@ export async function mergeIntoCheckout(project: string, job: Pick<Job, "integra
   const from = head.stdout.trim()
   const isAncestor = async (a: string, b: string): Promise<boolean> => (await run("git", ["merge-base", "--is-ancestor", a, b], { cwd: project })).code === 0
   let rebased = false
+  let oldTip = "" // the branch's tip before a rebase rewrote it; the reset below puts it back when the merge is refused
   if (await isAncestor(branch, from)) return { ok: false, reason: "nothing", detail: `${branch} is an ancestor of the checkout's HEAD; nothing would change` }
   if (!(await isAncestor(from, branch))) {
     if (!(await isAncestor(base, from))) return { ok: false, reason: "diverged", detail: `the checkout's HEAD and ${branch} both moved on since the job started; a merge is a rebase the user would have to resolve, so it is their call` }
     // The job branch goes onto the checkout's HEAD inside the job's own worktree: the user's checkout is not touched.
-    const oldTip = (await run("git", ["rev-parse", branch], { cwd: worktree })).stdout.trim()
+    oldTip = (await run("git", ["rev-parse", branch], { cwd: worktree })).stdout.trim()
     const rebase = await run("git", ["rebase", "-q", from], { cwd: worktree })
     if (rebase.code !== 0) {
       // An abort puts the branch back at oldTip, exactly as rebaseTask does: the caller sees the same tip as before.
@@ -399,7 +409,12 @@ export async function mergeIntoCheckout(project: string, job: Pick<Job, "integra
     if (dirt.dirty) return { ok: false, reason: "dirty", detail: dirt.summary, paths: dirt.paths }
   }
   const merged = await run("git", ["merge", "-q", "--ff-only", branch], { cwd: project })
-  if (merged.code !== 0) return { ok: false, reason: "ff", detail: merged.stderr.trim().slice(-500) }
+  if (merged.code !== 0) {
+    // After a rebase the branch was rewritten; the refusal must leave it exactly as the caller saw it, so the reset
+    // goes back to the pre-rebase tip in the job's worktree only (the checkout was never written to).
+    if (rebased) await run("git", ["reset", "--hard", oldTip], { cwd: worktree })
+    return { ok: false, reason: "ff", detail: merged.stderr.trim().slice(-500) }
+  }
   const to = (await run("git", ["rev-parse", "HEAD"], { cwd: project })).stdout.trim()
   return { ok: true, from, to, rebased }
 }

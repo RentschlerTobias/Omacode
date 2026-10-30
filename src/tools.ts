@@ -226,7 +226,7 @@ export function installTools(draft: ToolDraft, handlers: Handlers, agent = "micr
   draft.add({
     id: "undo_merge",
     name: "undo_merge",
-    description: "Take back the last merge_job of a job: the user's checkout goes back to where it was before that merge. Only while the checkout is exactly where the merge left it and has no uncommitted changes. job: the job id, or empty for this session's job. Without ack it shows which commits would leave the checkout and changes nothing; with ack (the user's own words, repeated) it moves it back. The commits stay on the job branch; merge_job brings them back.",
+    description: "Take back the last merge of a job, automatic or manual: the user's checkout goes back to where it was before that merge. Only while the checkout is exactly where the merge left it and has no uncommitted changes. job: the job id, or empty for this session's job. Without ack it shows which commits would leave the checkout and changes nothing; with ack (the user's own words, repeated) it moves it back. The commits stay on the job branch; merge_job brings them back.",
     input: input("job", "ack"),
     execute: guarded(([job, ack], ctx) => handlers.undoMerge(job!, ack!, ctx), "job", "ack"),
   })

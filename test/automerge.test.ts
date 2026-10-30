@@ -296,6 +296,22 @@ autoTest("a job with no merged task is skipped", async (r) => {
   assert.equal(r.git("rev-parse", "HEAD"), head)
 })
 
+autoTest("a passed task with a worktree of its own waits for the merge train; a passed reader does not", async (r) => {
+  commitBranch(r, "work.txt", "done\n")
+  const head = r.git("rev-parse", "HEAD")
+  const writer = autoJob(r)
+  const later = task("T2", "passed")
+  later.worktree = "/tmp/wt-T2" // its own worktree: its commits are still there, not on the job's branch
+  writer.tasks = [task("T1", "merged"), later]
+  skipped(await maybeAutoMerge(r.repo, writer), "T2 is not integrated yet")
+
+  const reader = autoJob(r)
+  reader.tasks = [task("T1", "merged"), task("T2", "passed")] // no worktree, nothing left to merge
+  const outcome = await maybeAutoMerge(r.repo, reader)
+  assert.ok(outcome.merged, "a passed task without a worktree counts as done")
+  assert.notEqual(r.git("rev-parse", "HEAD"), head)
+})
+
 autoTest("a halted job is skipped, and a job with no integration checkout is skipped", async (r) => {
   commitBranch(r, "work.txt", "done\n")
   const head = r.git("rev-parse", "HEAD")
@@ -306,6 +322,12 @@ autoTest("a halted job is skipped, and a job with no integration checkout is ski
   const noIntegration = autoJob(r)
   noIntegration.integrationCheckout = undefined
   skipped(await maybeAutoMerge(r.repo, noIntegration))
+  assert.equal(r.git("rev-parse", "HEAD"), head)
+
+  // "HEAD" is what a detached checkout once recorded as a branch; it names no branch to merge onto.
+  const detached = autoJob(r)
+  detached.integrationCheckout = "HEAD"
+  skipped(await maybeAutoMerge(r.repo, detached), "\"HEAD\" is not a branch")
   assert.equal(r.git("rev-parse", "HEAD"), head)
 })
 

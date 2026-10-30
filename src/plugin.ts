@@ -436,8 +436,12 @@ export async function mergeJobInto(project: string, job: Job, ack: string, run: 
   }
   const from = (await git("rev-parse", "HEAD")).stdout.trim()
   // A job from before the checkout was recorded has no integrationCheckout: the branch the checkout sits on now is
-  // what mergeIntoCheckout's policy has to name, or every legacy merge would be refused as "other-branch".
-  const current = (await git("symbolic-ref", "--short", "HEAD")).stdout.trim() || "HEAD"
+  // what mergeIntoCheckout's policy has to name, or every legacy merge would be refused as "other-branch". A detached
+  // checkout names no branch to fall back to: refusing is the answer here, never a merge onto "HEAD".
+  const current = (await git("symbolic-ref", "--short", "HEAD")).stdout.trim()
+  if (!job.integrationCheckout && !current) {
+    return said(`Not merged: the checkout is detached, and job ${job.id} has no branch recorded for it. Nothing was written and the checkout is exactly as it was; the user merges it themselves once they are on a branch.`)
+  }
   // merge_job stays a fast-forward: a rebase of the job branch is what the user asked for only through autoMerge.
   const ancestor = await git("merge-base", "--is-ancestor", from, branch)
   if (ancestor.code !== 0) {
