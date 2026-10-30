@@ -489,10 +489,33 @@ endless read loops.
   - The baseline gate runs once per job.
 - **Merge train:** one branch at a time; rebase → gate → merge; roll back on failure; a conflict goes back to its
   owner once, then to the user.
-- **Integrate:** the micromanager does it through `merge_job` (a fast-forward into the user's checkout, after showing
-  what would land and refusing on a dirty checkout or unfinished tasks) or `discard_job`. Both require an explicit
-  acknowledgement, list what they remove, and journal it. This is the one write the orchestrator may make in the
-  user's working tree; workers never can. Nothing is ever pushed.
+- **Integrate (auto-merge, default on):** when the micromanager's turn ends and no task of the job is open or live (at
+  least one merged), the branch `jev/<job>` goes into the user's checkout by itself, without an acknowledgement —
+  `maybeAutoMerge` in `src/automerge.ts` over the `mergeIntoCheckout` engine (`src/integration.ts`) that `merge_job`
+  also uses. The policy:
+  - the checkout must still be on the branch it was on at job start (`integrationCheckout`), with no merge or rebase in
+    progress there;
+  - a fast-forward when the checkout's HEAD is an ancestor of `jev/<job>`;
+  - when the checkout moved on instead, the job branch is rebased onto its HEAD inside the job's own worktree, never
+    in the checkout, and the job's acceptance checks run again on the rebased tree; when the checkout's history was
+    rewritten since `integrationBase` (neither is an ancestor) it is refused as diverged and left to the user;
+  - a conflict or a failing check puts the branch back where it was and leaves the checkout untouched, and the
+    micromanager gets a note; the branch then waits for `merge_job` or the user;
+  - a dirty checkout is left to git: the fast-forward runs and git itself refuses when the uncommitted paths are in
+    its way, and the note carries git's own error; nothing is stashed or forced;
+  - only a completed job merges; a paused, `ask_user`, stopped or failed job does not, and neither does a job from an
+    earlier session (it has no `integrationCheckout`), so nothing sweeps at startup. One merge at a time per job.
+
+  `merge_job` stays the manual fallback (the same engine, with the acknowledgement and the dirty check), `undo_merge`
+  takes an automatic merge back exactly as a manual one, and `discard_job` gives the branch and its worktrees back to
+  git afterwards, after a merge too. This is the one write the job may make in the user's working tree (through the
+  user's ack for `merge_job`, by itself under `autoMerge`); workers never can. Nothing is ever pushed.
+
+- **Why no generic git skill.** The git guardrails live in `src/decide.ts` (the hard rules, plus the sandbox's ban on
+  the git commands that move shared refs) and the merge is deterministic code (`src/integration.ts`,
+  `src/automerge.ts`). A Claude Code hook or a git-flow skill would be inert at best; at worst it would teach a worker a
+  branch layout that contradicts `jev/<job>` and `jev/<job>--<task>`, which the worktrees, the merge train and
+  `rewind_job` depend on.
 
 **Implemented (Phase F):**
 - **Dispatch.** `parallel` (default 3) tasks of a job at the same time, disjoint files only. Turns on one model

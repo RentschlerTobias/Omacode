@@ -7,7 +7,8 @@ An [OpenCode](https://opencode.ai) v2 plugin that turns one agent into an orches
 - **Isolation:** every worker that writes gets its own git worktree and branch; your checkout is never touched. Its
   shell commands run in a sandbox (bubblewrap on Linux, Seatbelt on macOS).
 - **Checks before merge:** a writer's change is merged only when its checks pass (`Checks: npm test`), through a merge
-  train onto the session's branch `jev/<job>`; you merge that into your checkout when you say so.
+  train onto the session's branch `jev/<job>`; at job end that branch is merged into your checkout automatically
+  (`"autoMerge": false` turns it off, and `merge_job` does it by hand).
 - **Decisions by Jev:** which role, model and skills a task gets, how hard it is, and which permission requests are
   answered on your behalf; the rest is paused and put to you.
 - **Hard tasks run as trials:** several attempts at once on different model families; the best one is merged, by its
@@ -194,8 +195,9 @@ Jev and the plugin securing every task:
      command that ran and did not fail is progress, so a worker verifying its work is not mistaken for a stuck one.
 5. **Reports come back.** The plugin's note "T… merged into …" lands in the micromanager's session, then OpenCode
    adds the worker's report and wakes the micromanager. It decides what comes next, continues a worker by its
-   session when something is left (it keeps its worktree), asks you what only you can decide and, at the end, merges
-   or discards the branch itself. Say "ulw" or "ultrawork" and it goes on until every todo is done.
+   session when something is left (it keeps its worktree), asks you what only you can decide; at the end the job
+   branch goes into your checkout by itself (`"autoMerge": false` leaves that to `merge_job`), or is discarded. Say
+   "ulw" or "ultrawork" and it goes on until every todo is done.
 
    **The same work is not delegated twice.** A writer on files another writer of the job is changing, whose title
    or brief is about the same thing, is refused: a running one is to be steered (`steer_task`), and one that stopped
@@ -213,13 +215,13 @@ Jev and the plugin securing every task:
    | `list_tasks` | the tasks with their worker sessions, branches and stages |
    | `steer_task` | a note to a worker that is still running, without interrupting it |
    | `stop_task` | stop one task and leave the rest of the job running; the worktree is kept |
-   | `merge_job` | fast-forward the job branch into your checkout — the one write it may make there. Shows what would land, refuses on a dirty checkout or unfinished tasks |
-   | `discard_job` | give the branch and worktrees back to git; lists what it removes first |
+   | `merge_job` | merge the job branch into your checkout by hand, the manual fallback when auto-merge is off or was refused. Shows what would land, refuses on a dirty checkout or unfinished tasks; fast-forward only |
+   | `discard_job` | give the branch and worktrees back to git, after a merge too; lists what it removes first |
    | `request_access` | vouch that a worker needs a path outside the project, for the permission path to see |
    | `answer_permission` | answer a worker's paused permission request: once, for the job, or refuse |
    | `take_over_job` | make an earlier session's open job this session's, when you chose to continue it |
    | `rewind_job` | list the job's checkpoints, or move its branch back to one with your words; undone the same way |
-   | `undo_merge` | take back the last `merge_job` in your checkout, while it is still where that merge left it |
+   | `undo_merge` | take back the last merge into your checkout, automatic or through `merge_job`, while it is still where that merge left it |
    | `stop_job` | stop the whole job; `run_job` resumes it |
    | `contract` | draft what "better" means for a task with no fixed end; the baseline is measured at once |
    | `contract_round` | work a draft contract out with you (preferences, red team, loopholes, baseline) and freeze it |
@@ -234,9 +236,21 @@ Jev and the plugin securing every task:
    `refs/jev/<job>/before-rewind-<n>`, which is a checkpoint too, so a rewind is undone by rewinding to it. Tasks
    whose change left the branch show as `undone` on the board; unfinished tasks are given up with their worktrees,
    because a branch cut from the old tip would bring the undone commits back on its next merge. It is refused while
-   a worker of the job runs, and it never touches your checkout. `undo_merge` takes back the last `merge_job` there,
-   only while the checkout is exactly where that merge left it; the commits stay on the job branch. The conversation
+   a worker of the job runs, and it never touches your checkout. `undo_merge` takes back the last merge there,
+   automatic or through `merge_job`, only while the checkout is exactly where that merge left it; the commits stay on
+   the job branch. The conversation
    itself is OpenCode's to rewind (undo or fork in the TUI); the plugin has no access to that.
+
+   **The job branch goes into the checkout by itself.** When the micromanager's turn ends and no task is open or live
+   (at least one merged), the branch `jev/<job>` is merged into your checkout without an acknowledgement: fast-forward
+   when possible, otherwise the job branch is rebased onto the checkout's HEAD inside the job's own worktree and the
+   job's final checks run again there, then fast-forwarded. A conflict or a failing
+   check leaves the branch and the checkout as they were and says so in a note. A checkout with uncommitted changes
+   is left to git: its fast-forward runs and git itself refuses when the dirty paths are in the way, and nothing is
+   stashed or forced. Jobs from an earlier session, halted jobs and jobs with nothing merged stay manual, and nothing
+   is swept at server start. `"autoMerge": false` turns the automatic merge off; `merge_job` is the manual fallback,
+   `undo_merge` takes an automatic merge back exactly as a manual one, and `discard_job` still gives the branch and
+   its worktrees back to git afterwards.
 
    **After a restart** the plugin knows the workers of the open jobs again from the job files: a worker continued by
    its session finishes and merges as before, and the micromanager cannot start over on its work by accident.
@@ -360,6 +374,7 @@ Optional settings in `~/.config/opencode/micromanager.jsonc`:
   // models to add or change by id
   "registry": [{ "id": "llamaswap/mimo", "disabled": true }],
   "parallel": 3,          // tasks of one job at the same time (1: one after another)
+  "autoMerge": true,      // merge the job branch into your checkout at job end; false leaves every merge to merge_job
   "perModel": 2,          // sessions of one cloud model at the same time; a local model serves one
   "trials": 1,            // attempts a hard writer task runs as, each on another model (1: one worker, then retry; at most 4)
   "trialDeadline": 20,    // minutes a trial decided by a fitness contract waits for its last attempts
@@ -379,6 +394,8 @@ Optional settings in `~/.config/opencode/micromanager.jsonc`:
 ```
 
 Hard rules (pushes, `sudo`, system installs, deleting tracked files, …) always go to you, whatever a preset says.
+`autoMerge` defaults to `true`: a completed job's branch goes into your checkout at its end, without an
+acknowledgement; `merge_job` and `undo_merge` stay for the manual case.
 
 The plugin registers its skills into OpenCode at startup: `deliberate` (the facilitator's rules) and six leaf skills
 for workers, adapted from mattpocock/skills and obra/superpowers (`skills/THIRD_PARTY.md`). They come from the
