@@ -55,9 +55,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, extname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
-  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, LOOK_ID, planText,
-  TOOL_IDS, type ToolDraft,
+  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, installWaitTool, LOOK_ID, planText,
+  TOOL_IDS, WAIT_ID, type ToolDraft,
 } from "./tools.ts"
+import { waitFor, waitTimeoutMs, watchAsk, watchFile, watchPid } from "./wait.ts"
 import { readBaseline, readLoopholes, readPrefs, roundFormOf, roundHeader } from "./contractround.ts"
 import { ChangeRequests, changeNote, changeResult, normalTarget, readChange, route, validateRequest, type ChangeAnswer, type ChangeKind } from "./checkchange.ts"
 import { HELPER_STEPS, Helpers } from "./helpers.ts"
@@ -1204,6 +1205,34 @@ const plugin = {
       for (const s of applied.steer) steering.set(s.session, s.note)
       return changeResult(pending, a, applied.text)
     }
+    // A worker's wait (src/wait.ts): it blocks instead of polling, so the worker spends no permission requests on
+    // asking whether its command is done. It waits on a process, a file, or a paused permission request of its own.
+    const runWait = async (args: Record<string, string>, sessionID: string): Promise<string> => {
+      const timeout = waitTimeoutMs(args.timeout ?? "")
+      const pid = args.pid ? Number(args.pid) : undefined
+      const line = args.line ? Number(args.line) : undefined
+      const file = args.file?.trim() ?? ""
+      const match = args.match?.trim() ?? ""
+      const id = args.id?.trim() ?? ""
+      if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) return `wait needs a real pid: ${args.pid} is not one.`
+      if (line !== undefined && (!Number.isInteger(line) || line <= 0)) return `wait needs a real line count: ${args.line} is not one.`
+      // The permission request of this worker: it waits for the answer and is told how it ended. The worker knows
+      // its own request by its id ("A1") or by a word of it; with no word, its own request is the one it waits for.
+      const mine = SHARED.asks.mine(sessionID)
+      if (id || (!pid && !file && mine.length === 1)) {
+        const pending = id ? SHARED.asks.find(id, sessionID) : mine[0]
+        const settled = pending ? SHARED.asks.settled(pending.id, sessionID) : undefined
+        if (!pending || !settled) return `There is no permission request of yours that waits for "${id}". Nothing to wait for.`
+        const result = await waitFor(watchAsk(settled, `the permission request ${pending.id}`), timeout)
+        record({ kind: "wait", sessionID, target: pending.id, outcome: result.outcome, waitedMs: result.waitedMs })
+        return result.text
+      }
+      if (!pid && !file) return "wait needs something to wait for: a pid, a file, or the id of a paused permission request."
+      const watch = pid !== undefined ? watchPid(pid) : watchFile(file, match || undefined, line)
+      const result = await waitFor(watch, timeout)
+      record({ kind: "wait", sessionID, target: pid !== undefined ? `pid ${pid}` : file, outcome: result.outcome, waitedMs: result.waitedMs })
+      return result.text
+    }
     // evolve_task (src/evolver.ts): OpenEvolve on one block, measured by a frozen contract, in the background. Its models
     // are reached through a bridge this process answers with tool-less sessions, so every call is charged to the job;
     // every candidate runs in the sandbox, and without one nothing starts. The best candidate goes through the task's
@@ -1733,7 +1762,7 @@ const plugin = {
         // paused: the micromanager or the user answers it (src/ask.ts)
       } else if (managed) {
         evaluation.effect = "deny"
-        evaluation.message = `This is refused, not queued: nobody is asked while you run (${outcome.reason}), and asking again would not bring the question back. It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it. Still, do not reach the same result by a route around this permission.`
+        evaluation.message = `This is refused, not queued: nobody is asked while you run (${outcome.reason}), and asking again would not bring the question back. It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it. Still, do not reach the same result by a route around this permission. If what you are waiting for is a command of your own, the wait tool blocks on it in one call (a pid, a log file, or a line of it) instead of a sleep loop: use it rather than polling.`
       }
       record({ kind: "permission", ...request, task: request.task?.slice(0, 500), ...outcome })
       log("info", `${evaluation.action} ${evaluation.resources.join(" | ").slice(0, 120)}: ${outcome.verdict} (${outcome.reason})`)
@@ -2654,6 +2683,11 @@ const plugin = {
         log("error", `${CHECK_CHANGE_ID} not installed: ${String(err)}`)
       }
       try {
+        installWaitTool(draft, (args, tctx) => runWait(args, tctx.sessionID!), (sessionID) => native.isWorker(sessionID) || SHARED.helperOf.has(sessionID))
+      } catch (err) {
+        log("error", `${WAIT_ID} not installed: ${String(err)}`)
+      }
+      try {
         installGraphTool(draft, async (a, tctx) => {
           const text = await native.askGraph(tctx.sessionID!, a.action, a.symbol, a.to)
           record({ kind: "graph", sessionID: tctx.sessionID, action: a.action, symbol: a.symbol.slice(0, 100), chars: text.length })
@@ -2919,6 +2953,9 @@ const plugin = {
         if (input.tools && !(input.sessionID && native.isWriter(input.sessionID))) delete input.tools[CHECK_CHANGE_ID]
         if (input.tools && !(input.sessionID && lookAllowed(input.sessionID))) delete input.tools[LOOK_ID]
         if (input.tools && !(input.sessionID && lookAllowed(input.sessionID))) delete input.tools[BROWSER_ID]
+        // The wait: a worker blocks instead of polling. Every worker of the micromanager, and the helpers it delegates
+        // to, may use it; nobody else may.
+        if (input.tools && !(input.sessionID && (native.isWorker(input.sessionID) || SHARED.helperOf.has(input.sessionID)))) delete input.tools[WAIT_ID]
         // A worker's run: its end is awaited once, then its task is settled (merged writer, reader, or unfinished).
         if (input.sessionID && (native.isWorker(input.sessionID) || SHARED.helperOf.has(input.sessionID))) void charge(input.sessionID).catch((err: unknown) => log("warn", `budget count failed: ${String(err)}`))
         if (input.sessionID && native.isWorker(input.sessionID)) {
@@ -2981,6 +3018,8 @@ const plugin = {
         delete input.tools[GRAPH_ID]
         delete input.tools[LOOK_ID]
         delete input.tools[BROWSER_ID]
+        // The wait belongs to the workers: the micromanager has no process of its own to wait for.
+        delete input.tools[WAIT_ID]
         // The micromanager delegates every file write. Leaving edit/write in its tool list only buys a denied turn when
         // it tries to do the work itself (live Quarto run, 2026-10-27).
         for (const id of ["edit", "write", "patch", "apply_patch", "multiedit"]) delete input.tools[id]

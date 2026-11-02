@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
 
-import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, planText, TOOL_IDS, type ToolDraft } from "../src/tools.ts"
+import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, installWaitTool, planText, TOOL_IDS, WAIT_ID, type ToolDraft } from "../src/tools.ts"
 import { newJob } from "../src/state.ts"
 import type { Signal } from "../src/watchdog.ts"
 
@@ -107,6 +107,18 @@ test("explore and research are for the micromanager's writers only", async () =>
   assert.deepEqual(await byId(added, "research").run({ question: "zod v4 api?" }, { agent: "coder", sessionID: "ses_writer" }), { content: "answer" })
   assert.match((await byId(added, "explore").run({ question: "q" }, { agent: "explorer", sessionID: "ses_helper" })).content, /^Only a worker that changes files/)
   assert.deepEqual(asked, ["ses_writer:explore:who calls x?", "ses_writer:research:zod v4 api?"])
+})
+
+test("the wait tool is for the workers of the micromanager, and for nobody else", async () => {
+  const { draft, added, str } = fakeDraft()
+  const waits: string[] = []
+  installWaitTool(draft, async (args, ctx) => { waits.push(`${ctx.sessionID}:${args.pid}`); return "waited" }, (id) => id === "ses_worker")
+  assert.deepEqual(byId(added, WAIT_ID).input, { mapped: { id: str, pid: str, file: str, match: str, line: str, timeout: str } })
+  assert.ok(!(TOOL_IDS as readonly string[]).includes(WAIT_ID), "the micromanager's tool list does not carry it")
+  const run = byId(added, WAIT_ID).run
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "coder", sessionID: "ses_worker" }), { content: "waited" })
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "micromanager", sessionID: "ses_user" }), { content: "Only a worker of the micromanager may use this tool." })
+  assert.deepEqual(waits, ["ses_worker:1234"])
 })
 
 test("a session the runner started is refused even as the micromanager agent", async () => {
