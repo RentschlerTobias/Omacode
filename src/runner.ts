@@ -1038,7 +1038,7 @@ export class Runner {
       if (answer.stopped) {
         // The watchdog stopped it: never resume that session.
         stage(task, "implement", "fail", `loop watchdog: ${answer.stopped.detail}`)
-        const next = await this.#nextRung(job, task, work, frozen, `stopped by the loop watchdog: ${answer.stopped.detail}`, handoffNote(answer.stopped, []).split("\n").at(-1)!)
+        const next = await this.#nextRung(job, task, work, frozen, `stopped by the loop watchdog: ${answer.stopped.detail}`, handoffNote(answer.stopped, await changedFiles(this.#worktree(job, task), this.#exec)))
         if (!next) return undefined
         ;[work, lastDiff, lastFailure] = [next, undefined, undefined]
         continue

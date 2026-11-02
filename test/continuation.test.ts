@@ -7,7 +7,7 @@ import { newJob, type Job, type Task } from "../src/state.ts"
 const task = (id: string, status: Task["status"], extra: Partial<Task> = {}): Task => ({
   id, title: `task ${id}`, description: "", role: "code", acceptance: [], dependsOn: [], files: [], wave: 0, status, attempts: 0, stages: [], signatures: [], ...extra,
 })
-const job = (tasks: Task[], extra: Partial<Job> = {}): Job => ({ ...newJob("job-1", "goal"), phase: "execute", native: true, integrationBranch: "jev/job-1", tasks, ...extra })
+const job = (tasks: Task[], extra: Partial<Job> = {}): Job => ({ ...newJob("job-1", "goal"), phase: "execute", native: true, integrationBranch: "micromanager/job-1", tasks, ...extra })
 
 test("the tasks whose dependencies are merged start, by priority, up to the parallel limit", () => {
   const j = job([
@@ -36,7 +36,7 @@ test("while workers run and nothing else can start, there is nothing to say", ()
 test("a job whose tasks are all merged is done; a cancelled task nobody needs does not hold it up", () => {
   const done = nextStep(job([task("T1", "merged"), task("T2", "merged")]), 3)!
   assert.equal(done.kind, "done")
-  assert.match(done.text, /2 of 2 tasks merged on jev\/job-1\. Tell the user/)
+  assert.match(done.text, /2 of 2 tasks merged on micromanager\/job-1\. Tell the user/)
   const without = nextStep(job([task("T1", "merged"), task("T2", "cancelled")]), 3)!
   assert.equal(without.kind, "done")
   assert.match(without.text, /1 of 2 tasks merged .*the rest were cancelled/)

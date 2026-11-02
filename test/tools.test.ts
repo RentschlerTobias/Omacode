@@ -210,7 +210,7 @@ function repo(): { project: string; branch: string } {
   writeFileSync(join(project, "a.txt"), "a\n")
   git("add", "-A")
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
-  const branch = "jev/job-1"
+  const branch = "micromanager/job-1"
   const wt = join(project, ".jev-micromanager", "worktrees", "job-1")
   git("worktree", "add", "-q", "-b", branch, wt, "HEAD")
   writeFileSync(join(wt, "b.txt"), "b\n")
@@ -241,10 +241,10 @@ test("steer_task on a running worker notes it; on a finished one it says how to 
 
 test("stop_task keeps the worktree and says where the work is", async () => {
   const { stopTaskAnswer } = await import("../src/plugin.ts")
-  const text = stopTaskAnswer(task({ worktree: "/wt/T1", branch: "jev/job-1--T1", session: "ses_live" }), "job-1", "ses_live", ["T2 add docs"])
+  const text = stopTaskAnswer(task({ worktree: "/wt/T1", branch: "micromanager/job-1--T1", session: "ses_live" }), "job-1", "ses_live", ["T2 add docs"])
   assert.match(text, /cancelled/)
   assert.match(text, /\/wt\/T1/, "the worktree's path is named")
-  assert.match(text, /jev\/job-1--T1/)
+  assert.match(text, /micromanager\/job-1--T1/)
   assert.match(text, /T2 add docs/, "the rest of the job is named")
   assert.doesNotMatch(text, /\b(deleted|removed|discarded)\b/i, "stopping a task never removes what it wrote")
   assert.match(stopTaskAnswer(task({ worktree: undefined, branch: undefined }), "job-1", undefined, []), /no worktree of its own/)
@@ -296,7 +296,7 @@ test("merge_job shows what would land, refuses unfinished work without the user'
   assert.equal(head(project), before, "nothing was written without the acknowledgement")
   const merged = await mergeJobInto(project, j, "the user said: the rest is not needed")
   assert.equal(merged.wrote, true)
-  assert.match(merged.text, /Merged jev\/job-1 into the checkout \(fast-forward\)/)
+  assert.match(merged.text, /Merged micromanager\/job-1 into the checkout \(fast-forward\)/)
   assert.equal(existsSync(join(project, "b.txt")), true, "the job's file is in the checkout")
   assert.match(merged.text, /discard_job gives them back to git/)
   // A branch the checkout already has: nothing to do, and still nothing written.
@@ -341,7 +341,7 @@ test("discard_job removes the worktree and the branch, and never the checkout", 
 test("a job load sweeps a stale task to a terminal state and reports the leftovers, once", async () => {
   const { reconcileJob } = await import("../src/store.ts")
   const live = new Set(["ses_live"])
-  const j = job({ tasks: [task({ id: "T1", session: "ses_dead" }), task({ id: "T2", session: "ses_live" }), task({ id: "T3", status: "merged", worktree: "/wt/T3", branch: "jev/job-1--T3" })] })
+  const j = job({ tasks: [task({ id: "T1", session: "ses_dead" }), task({ id: "T2", session: "ses_live" }), task({ id: "T3", status: "merged", worktree: "/wt/T3", branch: "micromanager/job-1--T3" })] })
   const { job: next, result } = reconcileJob(j, { aliveSessions: live })
   assert.deepEqual(result.changes.map((c) => [c.taskId, c.from, c.to]), [["T1", "running", "cancelled"]])
   assert.equal(next.tasks.find((t) => t.id === "T2")?.status, "running", "a live worker is never touched")
@@ -508,14 +508,14 @@ function rewindRepo() {
   const t2 = commit("c.txt", "T2: add c")
   const t3 = commit("d.txt", "T3: add d")
   const t4wt = join(project, ".jev-micromanager", "worktrees", "job-1--T4")
-  execFileSync("git", ["-C", project, "worktree", "add", "-q", "-b", "jev/job-1--T4", t4wt, branch])
+  execFileSync("git", ["-C", project, "worktree", "add", "-q", "-b", "micromanager/job-1--T4", t4wt, branch])
   const base = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
   const j = job({ integrationBranch: branch, integrationWorktree: wt, integrationBase: base })
   j.tasks = [
     task({ id: "T1", status: "merged" }),
     task({ id: "T2", title: "add c", status: "merged" }),
     task({ id: "T3", title: "add d", status: "merged" }),
-    task({ id: "T4", title: "add e", status: "running", worktree: t4wt, branch: "jev/job-1--T4" }),
+    task({ id: "T4", title: "add e", status: "running", worktree: t4wt, branch: "micromanager/job-1--T4" }),
   ]
   const tip = () => execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
   return { project, branch, wt, j, t1, t2, t3, tip }

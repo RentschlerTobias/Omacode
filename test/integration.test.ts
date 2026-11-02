@@ -275,8 +275,8 @@ test("rebaseTask rewrites with the configured committer and keeps the original a
     writeFileSync(join(dir, "base.txt"), "base\n")
     git("add", "-A")
     git("commit", "-qm", "base")
-    git("branch", "jev/job-1")
-    git("checkout", "-q", "-b", "jev/job-1--T1")
+    git("branch", "micromanager/job-1")
+    git("checkout", "-q", "-b", "micromanager/job-1--T1")
     // The task's commit has another author than the identity the rebase runs as.
     git("config", "user.name", "Original")
     git("config", "user.email", "o@o")
@@ -286,13 +286,13 @@ test("rebaseTask rewrites with the configured committer and keeps the original a
     // The integration branch moves on, committed by the user's identity.
     git("config", "user.name", "t")
     git("config", "user.email", "t@t")
-    git("checkout", "-q", "jev/job-1")
+    git("checkout", "-q", "micromanager/job-1")
     writeFileSync(join(dir, "i.txt"), "integration\n")
     git("add", "-A")
     git("commit", "-qm", "T2: integration")
-    git("checkout", "-q", "jev/job-1--T1")
+    git("checkout", "-q", "micromanager/job-1--T1")
 
-    assert.deepEqual(await rebaseTask({ worktree: dir }, "jev/job-1"), { ok: true, moved: true })
+    assert.deepEqual(await rebaseTask({ worktree: dir }, "micromanager/job-1"), { ok: true, moved: true })
     assert.equal(git("log", "-1", "--format=%s"), "T1: task")
     assert.equal(git("log", "-1", "--format=%an <%ae>"), "Original <o@o>", "the author is the one who wrote the change")
     assert.equal(git("log", "-1", "--format=%cn <%ce>"), "t <t@t>", "the committer is the user's configured identity")

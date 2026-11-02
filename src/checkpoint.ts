@@ -8,19 +8,50 @@ import type { Decider } from "./backends.ts"
 import type { Answer } from "./jev.ts"
 import type { Progress, Signal } from "./watchdog.ts"
 
-export type Verdict = "continue" | "fresh" | "handback"
+export type Verdict = "continue" | "fresh" | "handback" | "nudge"
 
 // Without an answer: a session that has not changed a file for 40 calls and keeps failing gets a fresh try; anything
 // else goes on (the watchdog's signatures still stop real loops).
+function noulOf(answers: Readonly<Record<string, Answer>>, keys: readonly string[]): number | undefined {
+  for (const k of keys) {
+    const a = answers[k]
+    if (a?.type === "noul") return (a as { noul: number }).noul
+  }
+  return undefined
+}
+
+export function loopEvidence(p: Progress): boolean {
+  const repeats = p.repeats ?? 0
+  if (repeats >= 3) return true
+  if (p.cycle === true) return true
+  const novelty = (p.newLines ?? 0) + (p.newFiles ?? 0) + (p.writes ?? 0)
+  if (novelty === 0) {
+    const n = p.calls ?? p.callsSinceWrite ?? 0
+    if (n >= 8) return true
+  }
+  return false
+}
+
 export function verdict(answers: Readonly<Record<string, Answer>>, p: Progress): Verdict {
+  // Loop evidence is code-level: a nudge comes first, before any restart.
+  if (loopEvidence(p)) return "nudge"
+
   const noul = (q: string) => (answers[q]?.type === "noul" ? (answers[q] as { noul: number }).noul : undefined)
-  const progressing = noul("making_progress")
-  if (progressing === undefined) return p.callsSinceWrite >= 40 && p.recentFailures >= 3 ? "fresh" : "continue"
-  // Cutting costs the work done, so only clear signs cut: progress clearly low, and a clear reason. A cloud Jev probe
-  // put a task that kept editing and testing at 0.50, a stuck one at 0.20 (another approach 0.69).
-  if (progressing >= STUCK_BELOW) return "continue"
-  if ((noul("task_unclear") ?? 0) >= NOUL_FLOOR) return "handback"
-  if ((noul("wrong_approach") ?? 0) >= NOUL_FLOOR) return "fresh"
+  const taskUnclear = noulOf(answers, ["task_unclear", "unclear", "blocked"])
+  if (taskUnclear !== undefined && taskUnclear >= NOUL_FLOOR) return "handback"
+
+  // 'fresh' ONLY with repetition evidence; never from call counts alone.
+  const hasRepetition = (p.repeats ?? 0) >= 1 || p.cycle === true
+  const wrongApproach = noulOf(answers, ["wrong_approach", "another_approach", "wrong"])
+  const isLoop = noulOf(answers, ["in_loop", "is_loop", "is_this_a_loop", "loop"])
+  const progressing = noulOf(answers, ["making_progress", "progress"])
+
+  if (progressing === undefined && Object.keys(answers).length === 0) {
+    // No answer: never 'fresh' from call counts alone.
+    return "continue"
+  }
+  if (progressing !== undefined && progressing >= STUCK_BELOW) return "continue"
+  if (hasRepetition && ((wrongApproach ?? 0) >= NOUL_FLOOR || (isLoop ?? 0) >= (1 - NOUL_FLOOR))) return "fresh"
   return "continue"
 }
 
@@ -28,7 +59,11 @@ const STUCK_BELOW = 0.35
 
 export function signalFor(v: Verdict, p: Progress): Signal | undefined {
   if (v === "continue") return undefined
-  const facts = `${p.steps} steps, ${p.writes} writes, ${p.callsSinceWrite} calls since the last one, ${p.recentFailures} of the last 12 calls failed`
+  const facts = `${p.steps} steps, ${p.writes} writes, ${p.callsSinceWrite} calls since the last one, ${p.recentFailures} of the last 12 calls failed, ${p.newLines ?? 0} new lines, ${p.newFiles ?? 0} new files, ${p.repeats ?? 0} repeats`
+  if (v === "nudge") {
+    const detail = p.repeatDetail ? `${p.repeatDetail}` : `repeated call ${p.repeats ?? 0}x`
+    return { kind: "checkpoint", severity: "nudge", detail: `task checkpoint: loop detected (${detail}; ${facts}); nudge` }
+  }
   return v === "fresh"
     ? { kind: "checkpoint", detail: `task checkpoint: no progress (${facts}); another approach` }
     : { kind: "handback", detail: `task checkpoint: the task looks unclear or blocked (${facts}); back to the micromanager` }
