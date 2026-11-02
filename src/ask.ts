@@ -48,6 +48,12 @@ export function askKey(action: string, resources: readonly string[]): string {
   return `${action}\0${resources.map((r) => r.trim().replace(/\s+/g, " ")).join("\0")}`
 }
 
+export function commandPrefix(resources: readonly string[]): string {
+  const first = resources[0] ?? ""
+  const parts = first.trim().split(/\s+/).filter(Boolean)
+  return parts.slice(0, 3).join(" ")
+}
+
 // The user's answer, in English or German, as short as people answer. Anything else is not an answer.
 export function askAnswer(text: string): AskDecision | undefined {
   const t = text.trim().toLowerCase().replace(/[.!?"']+$/g, "").replace(/^["']/, "").replace(/\s+/g, " ")
@@ -64,10 +70,30 @@ export class Asks {
   readonly #journal: (entry: Record<string, unknown>) => void
   readonly #timeoutMs: number
   #n = 0
+  readonly #persistedGrants = new Map<string, Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }>>()
 
   constructor(journal: (entry: Record<string, unknown>) => void = () => {}, timeoutMs = ASK_TIMEOUT_MS) {
     this.#journal = journal
     this.#timeoutMs = timeoutMs
+  }
+
+  loadPersistedGrants(jobId: string, grants: Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }> = []): void {
+    this.#persistedGrants.set(jobId, grants)
+    const set = new Set(grants.map((g) => g.key))
+    if (set.size) this.#granted.set(jobId, set)
+  }
+
+  persistedGrants(jobId: string): Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }> {
+    return this.#persistedGrants.get(jobId) ?? []
+  }
+
+  persistGrant(jobId: string, action: string, resources: readonly string[], directory?: string, taskSession?: string): void {
+    const key = askKey(action, resources)
+    const prefix = resources[0]?.split(/\s+/).slice(0, 3).join(" ") ?? action
+    const list = this.#persistedGrants.get(jobId) ?? []
+    if (list.some((g) => g.key === key)) return
+    list.push({ key, action, prefix, directory, taskSession })
+    this.#persistedGrants.set(jobId, list)
   }
 
   // What was decided before about exactly this request in this micromanager's job: asked once, never asked again.
@@ -148,6 +174,10 @@ export class Asks {
     const set = map.get(parent) ?? new Set<string>()
     set.add(key)
     map.set(parent, set)
+  }
+
+  grantKey(action: string, resources: readonly string[]): string {
+    return askKey(action, resources)
   }
 }
 

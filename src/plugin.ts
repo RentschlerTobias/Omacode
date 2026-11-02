@@ -215,6 +215,8 @@ interface Shared {
   continuing: Map<string, string> // micromanager session -> job id
   usage?: Usage // the tasks each model got this week, for the least-used pick of a role's pool (src/usage.ts)
   vault?: Vault // private data -> placeholders, for every session of the server (src/redact.ts)
+  // Persistent permission grants keyed by job, restored on load
+  persistentGrants?: Map<string, Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }>>
 }
 const SHARED: Shared = ((globalThis as { __micromanager?: Shared }).__micromanager ??= {
   workerTasks: new Map(),
@@ -1509,6 +1511,22 @@ const plugin = {
         record({ kind: "permission", sessionID: evaluation.sessionID, agent: evaluation.agent, action: evaluation.action, resources: evaluation.resources, verdict: "deny", reason: "refused for this job when it was asked before" })
         return true
       }
+      try {
+        const job = jobOfSession(evaluation.sessionID)
+        if (job) {
+          const saved = job.permissions?.grants ?? []
+          if (saved.length) {
+            const cmdPrefix = evaluation.resources[0]?.split(/\s+/).slice(0, 3).join(" ") ?? evaluation.action
+            const key = typeof (SHARED.asks as any).grantKey === "function" ? (SHARED.asks as any).grantKey(evaluation.action, evaluation.resources) : undefined
+            const hit = saved.some((g: any) => (g.key && key && g.key === key) || (g.action === evaluation.action && g.prefix && cmdPrefix.startsWith(g.prefix)) || (g.action === evaluation.action && !g.prefix && g.key === key))
+            if (hit) {
+              evaluation.effect = "allow"
+              record({ kind: "permission", sessionID: evaluation.sessionID, agent: evaluation.agent, action: evaluation.action, resources: evaluation.resources, verdict: "allow", reason: "allowed by persisted grant" })
+              return true
+            }
+          }
+        }
+      } catch {}
       evaluation.effect = "ask"
       const { sessionID, action, agent } = evaluation
       const resources = [...evaluation.resources]
@@ -2136,6 +2154,29 @@ const plugin = {
         tell(`${form.id}: ${pending.name} ${form.granted ? "is granted for this job" : "is refused for this job"}; the worker goes on.`)
       } else if (form.kind === "ask" && form.decision) {
         const r = await SHARED.asks.answer(form.id, form.decision, "user")
+        if (form.decision === "job" && project) {
+          try {
+            const ask = SHARED.asks.get(form.id)
+            if (ask) {
+              const all = listJobs(project)
+              let foundJob: any = all.find((j: any) => j.facilitator === ask.parent)
+              if (!foundJob) {
+                const jid = (SHARED.workerJobs as any)?.get(ask.sessionID)
+                if (jid) foundJob = all.find((j: any) => j.id === jid)
+              }
+              if (foundJob) {
+                const grants = foundJob.permissions?.grants ? [...foundJob.permissions.grants] : []
+                const key = typeof (SHARED.asks as any).grantKey === "function" ? (SHARED.asks as any).grantKey(ask.action, ask.resources) : ask.action + "\0" + (ask.resources || []).join("\0")
+                const prefix = (ask.resources?.[0] || "").split(/\s+/).slice(0, 3).join(" ")
+                if (!grants.some((g: any) => g.key === key)) {
+                  grants.push({ key, action: ask.action, prefix: prefix || ask.action, directory: (SHARED.workerDirs as any)?.get(ask.sessionID) })
+                  foundJob.permissions = { grants }
+                  saveJob(project, foundJob)
+                }
+              }
+            }
+          } catch {}
+        }
         tell(`${form.id}: ${r.text}`)
       }
     }

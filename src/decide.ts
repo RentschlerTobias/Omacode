@@ -273,8 +273,8 @@ export function hardRule(request: PermissionRequest, allowed: readonly string[] 
 }
 
 const READ_PROGRAMS = new Set([
-  "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "which", "type", "echo", "printf", "pwd", "file",
-  "stat", "du", "df", "tree", "diff", "cut", "tr", "basename", "dirname", "realpath", "env", "date", "true",
+  "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "which", "command", "type", "echo", "printf", "pwd", "file",
+  "stat", "du", "df", "tree", "diff", "cut", "tr", "basename", "dirname", "realpath", "env", "date", "true", "test", "[",
   // Reading programs a worker reaches for constantly (a live run denied 67 read-only commands without these).
   "sed", "awk", "jq", "md5sum", "sha256sum", "xxd", "od", "column", "comm", "nl", "fold", "tac", "expr", "seq",
 ])
