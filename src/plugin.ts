@@ -1463,7 +1463,7 @@ const plugin = {
         if (owned && loadControl(owned.project, owned.job.id).stopped) {
           throw new DelegationError(`Not continued: the user stopped job ${owned.job.id}. Nothing runs until they resume it (the sidebar's resume, or /stop again). Tell them in one sentence and end your turn.`)
         }
-        // A worker continued by its session: it stays in its worktree (spike), a merged writer gets a new task. It is
+        // A worker continued by its session: it stays in its worktree (spike), reusing its task's id. It is
         // alive again, so the sweep must not take it for one that ended without handing off (live run, 2026-10-25: a
         // continued worker's task was cancelled on disk while the worker went on).
         ended.delete(resumed)

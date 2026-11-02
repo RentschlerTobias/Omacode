@@ -79,9 +79,9 @@ const TASK_ALLOWED: Record<TaskStatus, readonly TaskStatus[]> = {
   fixing: ["running", "escalated"],
   escalated: ["running", "pending"],
   passed: ["merged", "pending", "escalated"], // in a parallel batch: merged by the train, or back after a conflict
-  merged: [],
+  merged: ["running"], // a continued worker reuses the same task (T3): next change on top of the merged one
   blocked: ["running", "planned", "pending"], // pending: the user answered, the task starts again
-  cancelled: [],
+  cancelled: ["running"], // a cancelled task is resumable without a new id (T3)
 }
 
 const TASK_FINAL = new Set<TaskStatus>(["merged", "cancelled"])
@@ -236,7 +236,8 @@ export function moveJob(job: Job, to: JobPhase, now = new Date()): void {
 
 export function canMoveTask(from: TaskStatus, to: TaskStatus): boolean {
   if (from === to) return true
-  if (TASK_FINAL.has(from)) return false
+  // A terminal task can still be continued in place (T3): merged or cancelled -> running reuses its id.
+  if (TASK_FINAL.has(from) && to !== "running") return false
   return TASK_ANYWHERE.includes(to) || TASK_ALLOWED[from].includes(to)
 }
 

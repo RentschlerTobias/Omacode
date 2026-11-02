@@ -561,7 +561,7 @@ test("a writer that ends without finishing is reported; continued, it finishes i
   assert.match((await native.finish("ses_w", "a")).text, /^Merged/)
 })
 
-test("a merged writer continued by its session gets a new task in a fresh worktree at the same place", async () => {
+test("a merged writer continued by its session reuses the same task in a fresh worktree at the same place", async () => {
   const project = repo()
   const native = new Native()
   const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "a", prompt: "x\nFiles: a.js\nChecks: test -f a.js" }, MODEL)
@@ -571,13 +571,13 @@ test("a merged writer continued by its session gets a new task in a fresh worktr
   await native.ended("ses_w")
   assert.ok(!existsSync(dir))
   const next = (await native.resume("ses_w"))!
-  assert.equal(next.id, "T2")
-  assert.equal(next.title, "a (continued)")
+  assert.equal(next.id, "T1")
+  assert.equal(next.title, "a")
   assert.ok(existsSync(join(dir, "a.js")), "the fresh worktree starts from the session branch, with T1's change")
   writeFileSync(join(dir, "a.js"), "a2\n")
   assert.match((await native.finish("ses_w", "a2")).text, /^Merged/)
   assert.deepEqual(native.running("ses_mm"), [])
-  assert.deepEqual(loadJob(project, d.job.id)!.tasks.map((t) => `${t.id}:${t.status}`), ["T1:merged", "T2:merged"])
+  assert.deepEqual(loadJob(project, d.job.id)!.tasks.map((t) => `${t.id}:${t.status}`), ["T1:merged"])
 })
 
 test("a project below the repository root: the worker and its checks stay in the project directory", async () => {
