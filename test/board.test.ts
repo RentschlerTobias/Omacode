@@ -11,7 +11,7 @@ const task = (id: string, status: Task["status"], extra: Partial<Task> = {}): Ta
 test("the board shows each task's state, model and what it does or waits for", () => {
   const job = newJob("job-1", "goal")
   job.rolling = true
-  job.integrationBranch = "jev/job-1"
+  job.integrationBranch = "micromanager/job-1"
   job.counters = { turns: 1, stalls: 0, replans: 0, tokens: 941_000, requests: 209, cost: 0.34 }
   job.tasks = [
     task("T1", "merged", { model: "opencode-go/deepseek-v4.1-flash", role: "explore" }),

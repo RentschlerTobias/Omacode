@@ -1024,7 +1024,7 @@ test("rolling: delegated tasks run, each reports to the orchestrator, and the jo
   const done = await r.run(job.id)
   assert.equal(done.phase, "execute", "a rolling job is never verified or wrapped by the runner")
   assert.deepEqual(ended, ["T1:merged", "T2:merged"])
-  assert.match(taskReport(done, done.tasks[0]!), /T1 write add.js: merged into jev\/job-20261005-120000-abcd[\s\S]*checks: test -f add.js: exit 0/)
+  assert.match(taskReport(done, done.tasks[0]!), /T1 write add.js: merged into micromanager\/job-20261005-120000-abcd[\s\S]*checks: test -f add.js: exit 0/)
   const log = execFileSync("git", ["-C", project, "log", "--format=%s", done.integrationBranch!]).toString()
   assert.match(log, /T2: write notes\nT1: write add.js/)
 })

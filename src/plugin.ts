@@ -2165,7 +2165,7 @@ export default {
       }
       if (watchdog.watching(call.sessionID)) {
         const failed = /\b(error|failed|not found|denied|exception|traceback)\b/i.test(resultText(call.result).slice(0, 600))
-        const signal = watchdog.onTool(call.sessionID, call.tool, call.input, failed)
+        const signal = watchdog.onTool(call.sessionID, call.tool, call.input, failed, call.result)
         if (signal) stop(call.sessionID, signal)
       }
       if (!runnerSessions.has(call.sessionID)) return

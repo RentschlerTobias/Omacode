@@ -80,6 +80,7 @@ export function handoffText(reason: string, details: string, changed: readonly s
     `A previous attempt at this task, by another model, failed: ${reason}.`,
     details ? `What it ran into:\n${details.slice(0, 3000)}` : "",
     changed.length ? `Files it already changed in this directory: ${changed.join(", ")}. Check them: keep what is right, fix what is wrong, and do not start over blindly.` : "It changed no file.",
+    `Digest: files touched: ${changed.join(", ") || "none"}; learned: ${changed.slice(-3).join(", ") || "none"}; last command: ${details.slice(0, 120) || "none"}`,
     "Try another way than the previous attempt if its way kept failing.",
   ].filter(Boolean).join("\n\n")
 }

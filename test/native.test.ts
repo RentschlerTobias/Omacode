@@ -108,7 +108,7 @@ test("run_job runs a planned job on native workers: its tasks start by their Tas
   const claimed = native.claim("ses_w1", child(d.prompt))!
   writeFileSync(join(claimed.dir, "add.js"), "export const add = (a, b) => a + b\n")
   const done = await native.finish("ses_w1", "wrote add.js")
-  assert.match(done.text, /^Merged into jev\/job-20261019-120000-ab12/)
+  assert.match(done.text, /^Merged into micromanager\/job-20261019-120000-ab12/)
   await native.ended("ses_w1")
   const owned = native.jobOf("ses_w1")!
   assert.equal(owned.job.tasks[0]!.status, "merged")
@@ -323,7 +323,7 @@ test("a writer works in its own worktree; failing checks go back to it, passing 
   const claimed = native.claim("ses_w1", child(d.prompt))!
   assert.equal(claimed.dir, join(project, ".micromanager", "worktrees", `${d.job.id}--T1`))
   assert.equal(claimed.parent, "ses_mm")
-  assert.equal(git(claimed.dir, "branch", "--show-current"), `jev/${d.job.id}--T1`)
+  assert.equal(git(claimed.dir, "branch", "--show-current"), `micromanager/${d.job.id}--T1`)
   assert.equal(native.claim("ses_w2", child(d.prompt)), undefined, "a task is claimed once")
   assert.ok(native.isWriter("ses_w1"))
   // what its helpers see of it (src/helpers.ts): its own directory and its task
@@ -340,8 +340,8 @@ test("a writer works in its own worktree; failing checks go back to it, passing 
 
   writeFileSync(join(claimed.dir, "add.js"), "export const add = (a, b) => a + b\n")
   const green = await native.finish("ses_w1", "wrote add.js")
-  assert.match(green.text, new RegExp(`^Merged into jev/${d.job.id} as [0-9a-f]+; checks passed: node -e "require\\(\\'\\./add\\.js\\'\\)"\\. Now end with your short report\\.$`))
-  assert.match(green.note!, /^\[micromanager\] T1 add add\.js: merged into jev\/\S+ \([0-9a-f]+\); checks passed/)
+  assert.match(green.text, new RegExp(`^Merged into micromanager/${d.job.id} as [0-9a-f]+; checks passed: node -e "require\\(\\'\\./add\\.js\\'\\)"\\. Now end with your short report\\.$`))
+  assert.match(green.note!, /^\[micromanager\] T1 add add\.js: merged into micromanager\/\S+ \([0-9a-f]+\); checks passed/)
   assert.equal(green.parent, "ses_mm")
   assert.equal(readFileSync(join(d.job.integrationWorktree!, "add.js"), "utf8"), "export const add = (a, b) => a + b\n")
   assert.ok(!existsSync(join(project, "add.js")), "the user's checkout is untouched")
@@ -419,11 +419,11 @@ test("a conflict on the merge train goes back to the worker, its change kept", a
   writeFileSync(join(db, "README.md"), "from b\n")
   assert.match((await native.finish("ses_a", "a")).text, /^Merged/)
   const r = await native.finish("ses_b", "b")
-  assert.match(r.text, /^Your commit does not apply on top of jev\/\S+, which other tasks moved on meanwhile \(conflict in README\.md\)\. Run git rebase/)
+  assert.match(r.text, /^Your commit does not apply on top of micromanager\/\S+, which other tasks moved on meanwhile \(conflict in README\.md\)\. Run git rebase/)
   assert.equal(loadJob(project, b.job.id)!.tasks[1]!.status, "escalated")
   assert.equal(git(db, "log", "--format=%s", "-1"), "T2: b", "the worker's commit stays in its worktree")
   // The worker resolves it and finishes again.
-  execFileSync("git", ["-C", db, "reset", "-q", "--hard", `jev/${b.job.id}`])
+  execFileSync("git", ["-C", db, "reset", "-q", "--hard", `micromanager/${b.job.id}`])
   writeFileSync(join(db, "README.md"), "from a\nfrom b\n")
   assert.match((await native.finish("ses_b", "b, rebased")).text, /^Merged/)
   assert.equal(readFileSync(join(a.job.integrationWorktree!, "README.md"), "utf8"), "from a\nfrom b\n")
@@ -661,7 +661,7 @@ test("after a restart the workers of open jobs are known again: continued, they 
   // it continues the worker instead: the change in its worktree merges with the checks from the job file
   await after.resume("ses_w1")
   const r = await after.finish("ses_w1", "deleted the pill")
-  assert.match(r.text, /^Merged into jev\/.*checks passed: node -e "require\('\.\/add\.js'\)"/s)
+  assert.match(r.text, /^Merged into micromanager\/.*checks passed: node -e "require\('\.\/add\.js'\)"/s)
   assert.equal(loadJob(project, d.job.id)!.tasks[0]!.status, "merged")
 })
 
@@ -1143,7 +1143,7 @@ test("an evolving task gets a worktree but no session; its best candidate goes t
   // The best candidate: written into the worktree, checked, measured, committed and merged.
   writeFileSync(join(prep.dir!, "ms.txt"), "100\n") // the contract measures ms.txt, unchanged here
   const merged = await native.finishEvolved(project, job.id, prep.task!.id, "function speed() {\n  return 1\n}\nmodule.exports = { speed }\n", "evolved speed")
-  assert.match(merged.text, /^Merged into jev\//)
+  assert.match(merged.text, /^Merged into micromanager\//)
   assert.match(readFileSync(join(job.integrationWorktree!, "speed.js"), "utf8"), /return 1/)
 
   // A candidate whose checks fail is blocked at once: there is no session to hand a fix round to.

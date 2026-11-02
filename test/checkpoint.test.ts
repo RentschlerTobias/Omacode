@@ -11,16 +11,16 @@ test("a checkpoint lets a progressing task go on, gives a stuck one another appr
   assert.equal(verdict({ making_progress: n(0.8) }, p()), "continue")
   assert.equal(verdict({ making_progress: n(0.45), wrong_approach: n(0.7) }, p()), "continue", "unsure: go on, cutting costs the work done")
   assert.equal(verdict({ making_progress: n(0.2), wrong_approach: n(0.3), task_unclear: n(0.2) }, p()), "continue", "no clear reason to cut")
-  assert.equal(verdict({ making_progress: n(0.2), wrong_approach: n(0.7), task_unclear: n(0.3) }, p()), "fresh")
+  assert.equal(verdict({ making_progress: n(0.2), wrong_approach: n(0.7), task_unclear: n(0.3) }, p({ repeats: 2 })), "fresh")
   assert.equal(verdict({ making_progress: n(0.2), wrong_approach: n(0.3), task_unclear: n(0.8) }, p()), "handback")
   assert.equal(signalFor("continue", p()), undefined)
   assert.equal(signalFor("fresh", p())?.kind, "checkpoint")
   assert.match(signalFor("handback", p({ callsSinceWrite: 44 }))!.detail, /44 calls since the last one; back to the micromanager|44 calls since the last one/)
 })
 
-test("without an answer, only a long stretch without writes and with failures gets a fresh try", () => {
+test("without an answer, call counts alone never give a fresh try", () => {
   assert.equal(verdict({}, p()), "continue")
-  assert.equal(verdict({}, p({ callsSinceWrite: 45, recentFailures: 4 })), "fresh")
+  assert.equal(verdict({}, p({ callsSinceWrite: 45, recentFailures: 4 })), "continue")
 })
 
 test("the watchdog counts writes and failures and says when a checkpoint is due", () => {
