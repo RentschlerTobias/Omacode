@@ -1,18 +1,21 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { request } from "node:http"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
 import { ensureFfmpeg, MAX_STEPS, parseSteps, runBrowser } from "../src/browser.ts"
 import { findChromium, serveDir } from "../src/look.ts"
 import { installBrowserTool, type ToolDraft } from "../src/tools.ts"
+import { tempDir } from "./harness.ts"
 
-const chromium = findChromium() ?? null
+// Real-browser tests need a Chromium on the host; they are opt-in so `npm test`
+// never launches one.
+const browserOn = process.env.MM_BROWSER_TESTS === "1"
+const chromium = browserOn ? findChromium() ?? null : null
 
 function site(): string {
-  const dir = mkdtempSync(join(tmpdir(), "playwright-"))
+  const dir = tempDir("playwright-")
   writeFileSync(join(dir, "index.html"), `<!doctype html><meta charset="utf-8"><title>Demo</title>
 <input id="name"><button id="go" onclick="document.getElementById('out').textContent='hi '+document.getElementById('name').value">Go</button>
 <output id="out"></output><div style="height:1200px"></div>`)
@@ -47,7 +50,8 @@ test("a page is driven without a browser only in tests: no browser means a sente
   assert.equal(r.images.length, 0)
 })
 
-test("an artifact directory outside the worker's own directory is refused", async () => {
+test("an artifact directory outside the worker's own directory is refused", async (t) => {
+  if (!chromium) return t.skip("no Chromium here; set MM_BROWSER_TESTS=1 for the real-browser tests")
   const dir = site()
   const r = await runBrowser({ path: "index.html", steps: "", out: "../elsewhere" }, dir, [], { base: dir, chromium })
   assert.match(r.text, /outside your directory/)
@@ -55,9 +59,9 @@ test("an artifact directory outside the worker's own directory is refused", asyn
 })
 
 test("a run clicks, fills, reads the page back and returns the picture and the files", async (t) => {
-  if (!chromium) return t.skip("no Chromium here")
+  if (!chromium) return t.skip("no Chromium here; set MM_BROWSER_TESTS=1 for the real-browser tests")
   const dir = site()
-  const media = mkdtempSync(join(tmpdir(), "playwright-media-"))
+  const media = tempDir("playwright-media-")
   const r = await runBrowser(
     {
       path: "index.html",
@@ -80,17 +84,17 @@ test("a run clicks, fills, reads the page back and returns the picture and the f
 })
 
 test("a step cannot navigate to a host the job was not granted", async (t) => {
-  if (!chromium) return t.skip("no Chromium here")
+  if (!chromium) return t.skip("no Chromium here; set MM_BROWSER_TESTS=1 for the real-browser tests")
   const dir = site()
-  const r = await runBrowser({ path: "index.html", steps: '[{"goto":"https://evil.test/"}]' }, dir, [], { base: mkdtempSync(join(tmpdir(), "playwright-media-")), chromium })
+  const r = await runBrowser({ path: "index.html", steps: '[{"goto":"https://evil.test/"}]' }, dir, [], { base: tempDir("playwright-media-"), chromium })
   assert.match(r.text, /failed: step 1 \(goto\) failed: https:\/\/evil\.test\/ is not a host this job may reach/)
 })
 
 test("a run with video writes a recording and hands back keyframes", async (t) => {
-  if (!chromium) return t.skip("no Chromium here")
+  if (!chromium) return t.skip("no Chromium here; set MM_BROWSER_TESTS=1 for the real-browser tests")
   if (!ensureFfmpeg().ok) return t.skip("no ffmpeg for the recording")
   const dir = site()
-  const media = mkdtempSync(join(tmpdir(), "playwright-media-"))
+  const media = tempDir("playwright-media-")
   const r = await runBrowser(
     { path: "index.html", steps: '[{"fill":["#name","Ada"]},{"click":"#go"},{"sleep":900}]', video: "true", width: "640", height: "480" },
     dir,

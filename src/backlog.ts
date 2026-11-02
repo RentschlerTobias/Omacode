@@ -14,6 +14,7 @@ import { dirname, join } from "node:path"
 import type { Question } from "./forms.ts"
 import { exec, type Exec } from "./integration.ts"
 import { checkProblem } from "./plan.ts"
+import { scrub } from "./redact.ts"
 import { failureDigest } from "./trials.ts"
 import { stateDir } from "./store.ts"
 import type { Job, Later, Task } from "./state.ts"
@@ -400,8 +401,10 @@ export async function publishIssue(project: string, item: BacklogItem, repo: str
   const scratch = mkdtempSync(join(tmpdir(), "mm-issue-"))
   try {
     const body = join(scratch, "body.md")
-    writeFileSync(body, renderItem({ ...item, issue: undefined }))
-    const r = await run("gh", ["issue", "create", "--repo", repo, "--title", item.title, "--label", ISSUE_LABEL, "--body-file", body], { cwd: project, timeoutMs: 60_000 })
+    // What goes to GitHub is redacted; the local item keeps its real title and body.
+    const safe: BacklogItem = { ...item, title: scrub(item.title) }
+    writeFileSync(body, scrub(renderItem({ ...safe, issue: undefined })))
+    const r = await run("gh", ["issue", "create", "--repo", repo, "--title", safe.title, "--label", ISSUE_LABEL, "--body-file", body], { cwd: project, timeoutMs: 60_000 })
     const url = r.stdout.trim().split("\n").find((l) => /^https:\/\/github\.com\//.test(l))
     if (r.code !== 0 || !url) return { problem: `gh issue create failed: ${r.stderr.trim().slice(0, 200) || `exit ${r.code}`}` }
     backend.save(project, { ...item, issue: url })

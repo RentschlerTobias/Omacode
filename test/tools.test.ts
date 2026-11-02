@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
+import { tempDir } from "./harness.ts"
 
-import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, planText, TOOL_IDS, type ToolDraft } from "../src/tools.ts"
+import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, installWaitTool, planText, TOOL_IDS, WAIT_ID, type ToolDraft } from "../src/tools.ts"
 import { newJob } from "../src/state.ts"
 import type { Signal } from "../src/watchdog.ts"
 
@@ -109,6 +109,18 @@ test("explore and research are for the micromanager's writers only", async () =>
   assert.deepEqual(asked, ["ses_writer:explore:who calls x?", "ses_writer:research:zod v4 api?"])
 })
 
+test("the wait tool is for the workers of the micromanager, and for nobody else", async () => {
+  const { draft, added, str } = fakeDraft()
+  const waits: string[] = []
+  installWaitTool(draft, async (args, ctx) => { waits.push(`${ctx.sessionID}:${args.pid}`); return "waited" }, (id) => id === "ses_worker")
+  assert.deepEqual(byId(added, WAIT_ID).input, { mapped: { id: str, pid: str, file: str, match: str, line: str, timeout: str } })
+  assert.ok(!(TOOL_IDS as readonly string[]).includes(WAIT_ID), "the micromanager's tool list does not carry it")
+  const run = byId(added, WAIT_ID).run
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "coder", sessionID: "ses_worker" }), { content: "waited" })
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "micromanager", sessionID: "ses_user" }), { content: "Only a worker of the micromanager may use this tool." })
+  assert.deepEqual(waits, ["ses_worker:1234"])
+})
+
 test("a session the runner started is refused even as the micromanager agent", async () => {
   const { draft, added } = fakeDraft()
   const ran: string[] = []
@@ -190,7 +202,7 @@ const job = (over: Partial<import("../src/state.ts").Job> = {}): import("../src/
 // is kept out of git through the repository's local exclude file (src/store.ts excludeFromGit), so it does not show up
 // as uncommitted work in the user's checkout.
 function repo(): { project: string; branch: string } {
-  const project = mkdtempSync(join(tmpdir(), "jd-merge-"))
+  const project = tempDir("jd-merge-")
   const git = (...args: string[]) => execFileSync("git", ["-C", project, ...args], { encoding: "utf8" })
   git("init", "-q")
   git("config", "user.name", "t")
@@ -380,8 +392,6 @@ test("request_access asks the user about a refused path rather than answering fo
 // after setup has returned, and a test that let those records land in the operator's real journal would be worse than
 // no test at all.
 async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record<string, Record<string, unknown>>) {
-  const { mkdtempSync } = await import("node:fs")
-  const { tmpdir } = await import("node:os")
   const { readJournal } = await import("../src/journal.ts")
   const plugin = (await import("../src/plugin.ts")).default
   const hooks: Record<string, ((arg: never) => Promise<void>)[]> = {}
@@ -401,7 +411,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
     },
   }
   const before = process.env.XDG_STATE_HOME
-  process.env.XDG_STATE_HOME = mkdtempSync(`${tmpdir()}/jev-setup-`)
+  process.env.XDG_STATE_HOME = tempDir("jev-setup-")
   // The stand-in host has no built-in read tool, so setup reports that it installed nothing. That is the expected
   // answer here, and it proves the logger's stderr fallback is live, but it is noise in a test run: the journal is
   // what these tests read.

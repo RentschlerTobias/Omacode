@@ -1,7 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
@@ -9,9 +8,10 @@ import { lastAssistantText, parseReport } from "../src/brief.ts"
 import { DEFAULT_REGISTRY, route } from "../src/registry.ts"
 import { Runner, summary, toModel, type SessionApi } from "../src/runner.ts"
 import { loadJob } from "../src/store.ts"
+import { tempDir } from "./harness.ts"
 
 function repo(): string {
-  const dir = mkdtempSync(join(tmpdir(), "jd-run-"))
+  const dir = tempDir("jd-run-")
   const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args])
   git("init", "-q")
   git("config", "user.name", "t")
@@ -1024,7 +1024,7 @@ test("rolling: delegated tasks run, each reports to the orchestrator, and the jo
   const done = await r.run(job.id)
   assert.equal(done.phase, "execute", "a rolling job is never verified or wrapped by the runner")
   assert.deepEqual(ended, ["T1:merged", "T2:merged"])
-  assert.match(taskReport(done, done.tasks[0]!), /T1 write add.js: merged into jev\/job-20261005-120000-abcd[\s\S]*checks: test -f add.js: exit 0/)
+  assert.match(taskReport(done, done.tasks[0]!), /T1 write add.js: merged into micromanager\/job-20261005-120000-abcd[\s\S]*checks: test -f add.js: exit 0/)
   const log = execFileSync("git", ["-C", project, "log", "--format=%s", done.integrationBranch!]).toString()
   assert.match(log, /T2: write notes\nT1: write add.js/)
 })

@@ -5,9 +5,9 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import { parseRedact } from "../src/config.ts"
-import { redact } from "../src/jev.ts"
+import { Jev, redact, type Question } from "../src/jev.ts"
 import {
-  findPii, findSecrets, guardedValue, ibanValid, knownSecrets, luhn, mapStrings, plausibleEntity, prose, requestTexts, restoreScope, scanNames, scrub,
+  DEFAULT_LABELS, findPii, findSecrets, guardedValue, ibanValid, knownSecrets, luhn, mapStrings, plausibleEntity, prose, requestTexts, restoreScope, scanNames, scrub,
   useVault, Vault,
 } from "../src/redact.ts"
 
@@ -151,8 +151,67 @@ test("scrub: the active vault's placeholders, or masked tokens without one", () 
 })
 
 test("settings: secrets and structured data on, names off by default; every switch checked", () => {
-  assert.deepEqual(parseRedact("{}"), { secrets: true, pii: true, names: false, threshold: 0.5, allow: [] })
-  assert.deepEqual(parseRedact('{ "redact": false }'), { secrets: false, pii: false, names: false, threshold: 0.5, allow: [] })
-  assert.deepEqual(parseRedact('{ "redact": { "names": true, "threshold": 0.35, "allow": ["ACME GmbH"] } }'), { secrets: true, pii: true, names: true, threshold: 0.35, allow: ["ACME GmbH"] })
-  for (const bad of ['{ "redact": "yes" }', '{ "redact": { "names": 1 } }', '{ "redact": { "threshold": 1.5 } }', '{ "redact": { "allow": "x" } }']) assert.throws(() => parseRedact(bad), /redact must be/)
+  assert.deepEqual(parseRedact("{}"), { secrets: true, pii: true, names: false, nameAddress: true, threshold: 0.5, allow: [] })
+  assert.deepEqual(parseRedact('{ "redact": false }'), { secrets: false, pii: false, names: false, nameAddress: true, threshold: 0.5, allow: [] })
+  assert.deepEqual(parseRedact('{ "redact": { "names": true, "threshold": 0.35, "allow": ["ACME GmbH"] } }'), { secrets: true, pii: true, names: true, nameAddress: true, threshold: 0.35, allow: ["ACME GmbH"] })
+  assert.deepEqual(parseRedact('{ "redact": { "nameAddress": false } }'), { secrets: true, pii: true, names: false, nameAddress: false, threshold: 0.5, allow: [] })
+  for (const bad of ['{ "redact": "yes" }', '{ "redact": { "names": 1 } }', '{ "redact": { "nameAddress": 1 } }', '{ "redact": { "threshold": 1.5 } }', '{ "redact": { "allow": "x" } }']) assert.throws(() => parseRedact(bad), /redact must be/)
+})
+
+test("name detection: job ids, task ids, branch slugs and shas never become people", async () => {
+  const ids = ["job-20261102-160648-87ae", "T1", "T12", "micromanager/job-20261102-160648-87ae--T3", "jev/job-20261102-160648-87ae", "f416b1d", "ABCDEF1234567890ABCDEF1234567890ABCDEF12"]
+  const fetcher = (async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+    entities: [[...ids.map((text) => ({ text, label: "person name" })), { text: "Anna Smith", label: "person name" }, { text: "Anna Smith", label: "person name" }]],
+  }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch
+  const v = vault()
+  const text = "Task T1 and T12 of job-20261102-160648-87ae on micromanager/job-20261102-160648-87ae--T3, legacy jev/job-20261102-160648-87ae at f416b1d and ABCDEF1234567890ABCDEF1234567890ABCDEF12 (Anna Smith)"
+  assert.equal(await scanNames(v, [text], { url: "http://127.0.0.1:8781/v1/entities", labels: DEFAULT_LABELS, threshold: 0.5 }, fetcher), 2)
+  const masked = v.redact(text)
+  for (const id of ids) assert.ok(masked.includes(id), `${id} stayed visible`)
+  assert.doesNotMatch(masked, /Anna Smith/, "a real person is still redacted")
+})
+
+test("Jev: question texts sent to api.typesafe.ai are redacted; the caller's copy stays real", async () => {
+  const v = vault()
+  const name = v.add("Anna", "person")!
+  const token = v.add("s3cr3t-Val-9876", "secret")!
+  useVault(v)
+  try {
+    const bodies: string[] = []
+    const fakeFetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ""))
+      return new Response(JSON.stringify({ answers: { q: { choice: "allow", confidence: 0.9 } } }), { status: 200, headers: { "content-type": "application/json" } })
+    }) as typeof fetch
+    const questions: Record<string, Question> = {
+      q: { type: "choice", instructions: "Anna asks about s3cr3t-Val-9876", criteria: { allow: "allowed", deny: "denied" } },
+    }
+    const original = questions.q.instructions
+    await new Jev("local", { url: "http://127.0.0.1:8781", fetch: fakeFetch }).ask("Anna asks", questions)
+    const sent = JSON.parse(bodies[0]!) as { state: string; questions: Record<string, { instructions: string }> }
+    assert.ok(!JSON.stringify(sent).includes("Anna"), "the wire body has no real name")
+    assert.ok(!JSON.stringify(sent).includes("s3cr3t-Val-9876"), "the wire body has no secret")
+    assert.ok(sent.state.includes(name))
+    assert.ok(sent.questions.q.instructions.includes(name))
+    assert.ok(sent.questions.q.instructions.includes(token))
+    assert.equal(questions.q.instructions, original, "the caller's questions stay real")
+  } finally {
+    useVault(undefined)
+  }
+})
+
+test("browser and playwright tool inputs are web inputs: placeholders are not restored into URLs or steps", () => {
+  assert.equal(restoreScope("playwright"), undefined)
+  assert.equal(restoreScope("browser"), undefined)
+  const v = vault()
+  const name = v.add("Anna", "person")!
+  useVault(v)
+  try {
+    const input = { url: `https://example.com/${name}`, steps: [{ action: "fill", selector: "#q", value: `Anna ${name}` }] }
+    const scope = restoreScope("playwright")
+    mapStrings(input, (s) => (scope ? v.restore(v.redact(s), scope) : v.redact(s)))
+    assert.doesNotMatch(JSON.stringify(input), /Anna/, "the browser sees no real name")
+    assert.match(input.url, new RegExp(name))
+  } finally {
+    useVault(undefined)
+  }
 })

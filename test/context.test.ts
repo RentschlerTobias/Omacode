@@ -1,14 +1,14 @@
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
 import { covers, ledger, type Message } from "../src/context/ledger.ts"
 import { ContextManager } from "../src/context/manager.ts"
+import { Summarizer } from "../src/context/summary.ts"
 import { epochDue, expectedRemaining, pricesOf } from "../src/context/policy.ts"
 import { PriceBook } from "../src/context/prices.ts"
 import { DEFAULT_RULES, findReplacements } from "../src/context/rules.ts"
+import { tempDir } from "./harness.ts"
 
 interface Call { tool: string; input: Record<string, unknown>; out: string; error?: boolean }
 
@@ -88,8 +88,8 @@ test("policy: the cache price decides, and the ceiling overrides it", () => {
   assert.deepEqual(pricesOf({ cost: [{ input: 0.15, output: 0.6, cache: { read: 0.003, write: 0 } }] }), { input: 0.15, cacheRead: 0.003 })
 })
 
-test("manager: nothing changes between epochs; an epoch applies everything at once, and it sticks across restarts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ctx-"))
+test("manager: nothing changes between epochs; an epoch applies everything at once, and it sticks across restarts", async () => {
+  const dir = tempDir("ctx-")
   const journal: Record<string, unknown>[] = []
   const calls: Call[] = [
     ...Array.from({ length: 6 }, (_, i): Call => ({ tool: "read", input: { path: `f${i}.ts` }, out: big(`F${i}`, 9000) })),
@@ -100,25 +100,40 @@ test("manager: nothing changes between epochs; an epoch applies everything at on
   const m = new ContextManager({ dir, journal: (e) => journal.push(e), policy: { minSavedTokens: 10_000 } })
   const early = history(calls.slice(0, 9))
   const before = JSON.stringify(early)
-  const r1 = m.apply("ses_1", early, { ceilingTokens: 1 })
+  const r1 = await m.apply("ses_1", early, { ceilingTokens: 1 })
   assert.equal(r1.epoch, undefined, "pending holds too little yet")
   assert.equal(JSON.stringify(early), before, "between epochs the messages stay byte-identical")
   const later = history(calls)
-  const r2 = m.apply("ses_1", later, { ceilingTokens: 1 })
+  const r2 = await m.apply("ses_1", later, { ceilingTokens: 1 })
   assert.equal(r2.epoch?.reason, "ceiling")
   assert.equal(r2.epoch?.applied, 6)
   assert.match(valueOf(later, "c0"), /^\[context: this read result/)
   assert.equal(journal[0]!.kind, "context.epoch")
   // the next turn renders the same replacements without a new epoch
   const next = history([...calls, ...filler(1)])
-  const r3 = m.apply("ses_1", next, { ceilingTokens: 1 })
+  const r3 = await m.apply("ses_1", next, { ceilingTokens: 1 })
   assert.equal(r3.epoch, undefined)
   assert.equal(JSON.stringify(next.slice(0, later.length)), JSON.stringify(later), "the prefix is the same bytes as in the epoch's request")
   // a restarted server reads the applied set back
   const fresh = new ContextManager({ dir })
   const again = history([...calls, ...filler(1)])
-  fresh.apply("ses_1", again, { ceilingTokens: 1e9 })
+  await fresh.apply("ses_1", again, { ceilingTokens: 1e9 })
   assert.equal(JSON.stringify(again), JSON.stringify(next))
+})
+
+test("manager: text-heavy session compacts at the ceiling", async () => {
+  const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "task brief" }] }]
+  for (let i = 0; i < 220; i++) {
+    msgs.push({ role: "assistant", content: [{ type: "text", text: "a".repeat(2000) }] })
+    msgs.push({ role: "user", content: [{ type: "text", text: "b".repeat(2000) }] })
+  }
+  const tailTexts = msgs.slice(-24).map((m) => (Array.isArray(m.content) ? (m.content as any[])[0]?.text : m.content))
+  const summarizer = new Summarizer({ generate: async () => "SUMMARY:\n" + "summarized work ".repeat(5) + "\n\nFACTS:\n- none" }, { keepTurns: 6, minChars: 10, timeoutMs: 1000 })
+  const m = new ContextManager({ dir: null, journal: () => {}, summarizer, policy: { minSavedTokens: 1 } })
+  const r = await m.apply("ses_txt", msgs, { ceilingTokens: 100000, keepTurns: 12 })
+  assert.equal(r.epoch?.reason, "ceiling")
+  const newTail = msgs.slice(-24).map((m) => (Array.isArray(m.content) ? (m.content as any[])[0]?.text : m.content))
+  assert.deepEqual(newTail, tailTexts)
 })
 
 test("price book: prices by provider and model from the host's catalog, read once a minute", async () => {
@@ -142,7 +157,7 @@ test("summary: the older turns form a segment; the answer is parsed; the summary
   assert.deepEqual(parseSummary("SUMMARY:\nRead f1 to f5; the parser lives in f3.ts at line 40, nothing changed yet.\n\nFACTS:\n- the parser is in f3.ts\n- none"), { summary: "Read f1 to f5; the parser lives in f3.ts at line 40, nothing changed yet.", facts: ["the parser is in f3.ts"] })
   assert.equal(parseSummary("no sections"), undefined)
   const facts: string[] = []
-  const s = new Summarizer({ generate: async () => "SUMMARY:\nThe agent read the files f1 to f5 and found the parser in f3.ts.\nFACTS:\n- the parser is in f3.ts", facts: async (f) => { facts.push(...f) } }, { minChars: 10_000 })
+  const s = new Summarizer({ generate: async () => "SUMMARY:\nThe agent read the files f1 to f5 and found the parser in f3.ts.\nFACTS:\n- the parser is in f3.ts", facts: async (f) => { facts.push(...f) } }, { minChars: 10_000, timeoutMs: 1000 })
   assert.equal(s.maybeStart("ses", msgs, l, new Set(["c0"]), 1000, 100_000), false, "far from the ceiling")
   assert.equal(s.maybeStart("ses", msgs, l, new Set(["c0"]), 90_000, 100_000), true)
   await new Promise((r) => setTimeout(r, 20))
@@ -156,7 +171,7 @@ test("summary: the older turns form a segment; the answer is parsed; the summary
 
 test("status: the server's file per session, the bar and the folded line the sidebar shows", async () => {
   const { bar, foldedContext, freshStatuses, readStatus, writeStatus } = await import("../src/context/status.ts")
-  const dir = mkdtempSync(join(tmpdir(), "status-"))
+  const dir = tempDir("status-")
   const s = { tokens: 60_000, ceiling: 120_000, summaryAt: 96_000, epochs: 2, savedChars: 284_000, pending: 3, recalled: ["tests need uv run"], at: Date.now() }
   writeStatus("ses_1", s, dir)
   assert.deepEqual(readStatus("ses_1", dir), s)

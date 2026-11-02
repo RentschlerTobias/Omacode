@@ -289,7 +289,7 @@ export function parseAllowOutside(text: string): readonly string[] {
   return out
 }
 
-// "sandbox": run worker commands in the sandbox (src/sandbox.ts; default true). "env": names of variables worker
+// "sandbox": run worker commands in the sandbox (src/shell/sandbox.ts; default true). "env": names of variables worker
 // commands keep beyond the allowlist ("DATABASE_URL", or "MYAPP_*"). "network": domains worker commands may reach
 // beyond the package registries ("api.example.com", "*.example.com", "host:8443"). Both lists are the user's standing
 // grants for every job; a single job's grants come from request_env / request_network.
@@ -342,27 +342,31 @@ export interface RedactSettings {
   readonly secrets: boolean
   readonly pii: boolean
   readonly names: boolean
+  // A project's opt-out of the name/address detector only: secrets, paths and structured data stay redacted when it is
+  // off. Name detection still needs "names": true, so the default (true) changes nothing on its own.
+  readonly nameAddress: boolean
   readonly threshold: number
   readonly allow: readonly string[]
 }
 
-export const DEFAULT_REDACT: RedactSettings = { secrets: true, pii: true, names: false, threshold: 0.5, allow: [] }
+export const DEFAULT_REDACT: RedactSettings = { secrets: true, pii: true, names: false, nameAddress: true, threshold: 0.5, allow: [] }
 
 export function parseRedact(text: string): RedactSettings {
   const raw = (JSON.parse(stripComments(text)) as { redact?: unknown }).redact
   if (raw === undefined) return DEFAULT_REDACT
   if (raw === false) return { ...DEFAULT_REDACT, secrets: false, pii: false, names: false }
   if (raw === true) return DEFAULT_REDACT
-  const shape = 'redact must be true, false or { "secrets": bool, "pii": bool, "names": bool, "threshold": 0..1, "allow": ["…"] }'
+  const shape = 'redact must be true, false or { "secrets": bool, "pii": bool, "names": bool, "nameAddress": bool, "threshold": 0..1, "allow": ["…"] }'
   if (typeof raw !== "object" || raw === null) throw new Error(shape)
   const r = raw as Record<string, unknown>
-  for (const k of ["secrets", "pii", "names"]) if (r[k] !== undefined && typeof r[k] !== "boolean") throw new Error(shape)
+  for (const k of ["secrets", "pii", "names", "nameAddress"]) if (r[k] !== undefined && typeof r[k] !== "boolean") throw new Error(shape)
   if (r.threshold !== undefined && (typeof r.threshold !== "number" || r.threshold <= 0 || r.threshold >= 1)) throw new Error(shape)
   if (r.allow !== undefined && !(Array.isArray(r.allow) && r.allow.every((a) => typeof a === "string"))) throw new Error(shape)
   return {
     secrets: (r.secrets as boolean | undefined) ?? DEFAULT_REDACT.secrets,
     pii: (r.pii as boolean | undefined) ?? DEFAULT_REDACT.pii,
     names: (r.names as boolean | undefined) ?? DEFAULT_REDACT.names,
+    nameAddress: (r.nameAddress as boolean | undefined) ?? DEFAULT_REDACT.nameAddress,
     threshold: (r.threshold as number | undefined) ?? DEFAULT_REDACT.threshold,
     allow: (r.allow as string[] | undefined) ?? [],
   }

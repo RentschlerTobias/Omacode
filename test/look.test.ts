@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { request } from "node:http"
 import { test } from "node:test"
 
 import { findChromium, hostAllowed, look, lookTarget, missingVisualEvidence, resolverRules, serveDir } from "../src/look.ts"
+import { tempDir } from "./harness.ts"
+
+// Real-browser cases are opt-in; `npm test` must never launch Chromium.
+const browserOn = process.env.MM_BROWSER_TESTS === "1"
 
 test("a visual writer cannot finish without a successful picture", () => {
   assert.equal(missingVisualEvidence("visual", false), true)
@@ -14,7 +17,7 @@ test("a visual writer cannot finish without a successful picture", () => {
 })
 
 function site(): string {
-  const dir = mkdtempSync(join(tmpdir(), "look-"))
+  const dir = tempDir("look-")
   mkdirSync(join(dir, "dist", "assets"), { recursive: true })
   writeFileSync(join(dir, "dist", "index.html"), '<!doctype html><link rel="stylesheet" href="/assets/app.css"><h1>Hi</h1><div style="height:1500px"></div>')
   writeFileSync(join(dir, "dist", "assets", "app.css"), "h1{color:rgb(0,128,0)}")
@@ -36,7 +39,7 @@ test("a look names a page, an svg, an image or a directory inside the worker's d
   assert.match((lookTarget({ path: ".env" }, dir, []) as { text: string }).text, /not shown/)
   assert.match((lookTarget({ path: "notes.txt" }, dir, []) as { text: string }).text, /no page or image/)
   assert.match((lookTarget({ path: "missing.html" }, dir, []) as { text: string }).text, /does not exist\. Build the page first/)
-  const outside = mkdtempSync(join(tmpdir(), "look-outside-"))
+  const outside = tempDir("look-outside-")
   writeFileSync(join(outside, "secret.html"), "<h1>secret</h1>")
   symlinkSync(join(outside, "secret.html"), join(dir, "leak.html"))
   assert.match((lookTarget({ path: "leak.html" }, dir, []) as { text: string }).text, /resolves outside your directory/)
@@ -65,7 +68,7 @@ test("the static server hands out the directory, never its environment files or 
     assert.equal(await get("/dist/"), 200)
     assert.equal(await get("/dist/assets/app.css"), 200)
     assert.equal(await get("/.env"), 403)
-    const outside = mkdtempSync(join(tmpdir(), "look-outside-"))
+    const outside = tempDir("look-outside-")
     writeFileSync(join(outside, "secret.css"), "body{display:none}")
     symlinkSync(outside, join(dir, "dist", "leak"))
     assert.equal(await get("/dist/leak/secret.css"), 403)
@@ -84,8 +87,8 @@ test("an image comes back as it is, without a browser; a page as a picture when 
   const img = await look({ path: "shot.png" }, dir, [], null)
   assert.equal(img.image?.mime, "image/png")
   assert.match((await look({ path: "dist" }, dir, [], null)).text, /No browser is installed/)
-  const chromium = findChromium()
-  if (!chromium) return t.skip("no Chromium here")
+  const chromium = browserOn ? findChromium() : null
+  if (!chromium) return t.skip("no Chromium here; set MM_BROWSER_TESTS=1 for the real-browser tests")
   const page = await look({ path: "dist", width: "800" }, dir, [], chromium)
   assert.equal(page.image?.mime, "image/png")
   assert.equal(page.image!.data.subarray(1, 4).toString(), "PNG")

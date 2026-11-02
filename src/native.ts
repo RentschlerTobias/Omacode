@@ -21,10 +21,10 @@ import { Graphs, graphBrief, queryGraph, type Graph } from "./graph.ts"
 import { HEADER } from "./hooks.ts"
 import { better, coarse, contractBrief, describe, guardViolations, heldOutDir, keepHeldOut, median, parseContract, reached, type Contract, type Measured } from "./contract.ts"
 import {
-  changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree,
+  changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
-} from "./integration.ts"
+} from "./worktree/git.ts"
 import { addDelegated, checkSetProblems, parseFiles } from "./plan.ts"
 import { WRITERS } from "./profile.ts"
 import { FIX_ROUNDS } from "./watchdog.ts"
@@ -679,7 +679,7 @@ export class Native {
     task.frozen = Object.fromEntries(entry.frozen)
   }
 
-  // A writer's frozen files as absolute paths, for the sandbox (src/sandbox.ts denyWrite) and the permission hook.
+  // A writer's frozen files as absolute paths, for the sandbox (src/shell/sandbox.ts denyWrite) and the permission hook.
   frozenOf(session: string): string[] {
     const entry = this.#entry(session)
     return entry?.writer && entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : []
@@ -1137,6 +1137,10 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       job.integrationWorktree = project
       job.integrationRel = ""
       return ""
+    }
+    if (job.integrationWorktree) {
+      const v = await validateIntegration(job, this.#exec)
+      if (!v.ok) throw new IntegrationError(`integration worktree invalid: ${v.message}`)
     }
     if (!job.integrationWorktree) {
       if ((await gitState(project, this.#exec)) !== "repo") {
@@ -1689,6 +1693,30 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     // a worker whose session died mid-task never gets this far but a silent no-op worker does.
     const touched = await changedFiles(entry.worktree, this.#exec, task.worktreeRel ?? job.integrationRel ?? "")
     if (!touched.length) {
+      // A task whose change is already on the integration branch (its branch is fully contained in it, and its declared
+      // files are already present there) legitimately needs no new commit: close it as done instead of blocking. A task
+      // that changed nothing but claims success is still blocked below.
+      let alreadyIntegrated = false
+      if (entry.branch && job.integrationBranch) {
+        const anc = await this.#exec("git", ["merge-base", "--is-ancestor", entry.branch, job.integrationBranch], { cwd: entry.worktree })
+        alreadyIntegrated = anc.code === 0
+      }
+      const rel = task.worktreeRel ?? job.integrationRel ?? ""
+      const integrationDir = taskDir(job.integrationWorktree ?? entry.worktree, rel)
+      const filesAlreadyThere = task.files.length > 0 && task.files.every((f) => {
+        try { return statSync(join(integrationDir, f)).isFile() } catch { return false }
+      })
+      if (alreadyIntegrated && filesAlreadyThere) {
+        stage(task, "gate", "pass", "no new changes: already on the integration branch")
+        moveTask(task, "passed")
+        await this.#dropWorktree(entry, task)
+        saveJob(entry.project, job)
+        return {
+          text: `Your checks pass, and your change is already on ${job.integrationBranch}, so there is nothing to commit; closed as done.`,
+          note: `[micromanager] ${task.id} ${task.title}: closed as done, its change is already on ${job.integrationBranch}; nothing committed.`,
+          parent: entry.parent,
+        }
+      }
       stage(task, "gate", "fail", "the checks passed but no file was changed")
       moveTask(task, "blocked")
       task.summary = "its checks passed but it changed no file, so nothing was verified."
@@ -2102,6 +2130,12 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // Rebase onto the session branch, the checks again when it moved, then the fast-forward.
   async #merge(entry: Entry, job: Job, task: Task): Promise<{ ok: true } | { ok: false; text: string }> {
+    const v = await validateIntegration(job, this.#exec)
+    if (!v.ok) {
+      moveTask(task, "escalated")
+      stage(task, "merge", "fail", v.message)
+      return { ok: false, text: `The integration worktree is not usable: ${v.message}. Fix it (or recreate it) and call finish_task again.` }
+    }
     const w = { worktree: entry.worktree, branch: entry.branch! }
     const step = await rebaseTask(w, job.integrationBranch!, this.#exec)
     if (!step.ok) {
@@ -2250,16 +2284,38 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   }
 
   // The live worker that works in a directory (a shell command's cwd: its own directory or below), for the sandbox
-  // (src/sandbox.ts). The deepest match wins, so a writer's worktree beats the job's integration worktree it lies in.
+  // The sandbox (src/shell/sandbox.ts). The deepest match wins, so a writer's worktree beats the job's integration worktree it lies in.
   workerAt(cwd: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
     const inside = (dir: string) => cwd === dir || cwd.startsWith(`${dir}/`)
     const found = [...this.#entries.values()]
       .filter((e) => !e.ended && (inside(e.dir) || inside(e.worktree)))
       .sort((a, b) => b.dir.length - a.dir.length)[0]
-    const task = found && this.#job(found)?.tasks.find((t) => t.id === found.taskId)
-    return found && task
-      ? { project: found.project, jobId: found.jobId, role: task.role as RoleId, writer: found.writer, dir: found.dir, worktree: found.worktree, frozen: found.writer && found.frozen ? [...found.frozen.keys()].map((f) => resolve(found.dir, f)) : [] }
-      : undefined
+    return found && this.#task(found) ? this.#facts(found) : undefined
+  }
+
+  // The live worker of a session, for the sandbox (src/shell/): the session that asked for the shell is known there,
+  // while the shell hook itself gets no session id. The same facts as workerAt, but by session instead of by directory.
+  workerBySession(session: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
+    const found = this.#entry(session)
+    if (!found || found.ended || !found.session) return undefined
+    return this.#task(found) ? this.#facts(found) : undefined
+  }
+
+  #task(entry: Entry): Task | undefined {
+    return this.#job(entry)?.tasks.find((t) => t.id === entry.taskId)
+  }
+
+  #facts(entry: Entry): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } {
+    const task = this.#task(entry)!
+    return {
+      project: entry.project,
+      jobId: entry.jobId,
+      role: task.role as RoleId,
+      writer: entry.writer,
+      dir: entry.dir,
+      worktree: entry.worktree,
+      frozen: entry.writer && entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : [],
+    }
   }
 
   // The workers of a micromanager session that still run.

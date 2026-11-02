@@ -4,7 +4,7 @@
 
 import { execFileSync } from "node:child_process"
 
-import { scrub } from "./redact.ts"
+import { mapStrings, scrub } from "./redact.ts"
 
 export type Question =
   | { type: "choice"; instructions: string; criteria: Record<string, string> } // option id -> meaning
@@ -54,6 +54,14 @@ export function redact(text: string): string {
   return scrub(text)
 }
 
+// The question texts carry the same private data the state does, so the wire body gets a redacted copy. The caller's
+// questions stay as they are: the ask flow journals them, and the local backends read them too.
+function wireQuestions(questions: Record<string, Question>): Record<string, Question> {
+  const copy = JSON.parse(JSON.stringify(questions)) as Record<string, Question>
+  mapStrings(copy, redact)
+  return copy
+}
+
 export class Jev {
   readonly #key: string
   readonly #url: string
@@ -76,7 +84,7 @@ export class Jev {
   async ask(state: string, questions: Record<string, Question>): Promise<Decision> {
     // The newest part of the state is at the end; a cut keeps it.
     const cut = state.length > this.#maxStateChars ? state.slice(-this.#maxStateChars) : state
-    const body = JSON.stringify({ model: this.#model, state: redact(cut), questions })
+    const body = JSON.stringify({ model: this.#model, state: redact(cut), questions: wireQuestions(questions) })
     const started = Date.now()
     for (let attempt = 0; ; attempt++) {
       let response: Response

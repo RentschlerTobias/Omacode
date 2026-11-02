@@ -212,6 +212,7 @@ export interface Job {
   merges?: { from: string; to: string; at: string }[] // what merge_job did to the user's checkout, for undo_merge
   created: string
   updated: string
+  permissions?: { grants?: Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }> }
 }
 
 export function canMoveJob(from: JobPhase, to: JobPhase): boolean {

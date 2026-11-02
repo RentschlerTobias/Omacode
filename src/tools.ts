@@ -444,6 +444,39 @@ export function installCheckChangeTool(draft: ToolDraft, request: (args: Record<
   })
 }
 
+// A worker's wait (src/wait.ts): block until a process ends, a file holds what the worker waits for, or a paused
+// permission request is answered. It runs nothing, so it needs no permission of its own, and it saves the worker the
+// poll loop that asks for the permission layer again every time. Every worker of the micromanager may use it; the
+// context hook hides it from every other session.
+export const WAIT_ID = "wait"
+
+export function installWaitTool(draft: ToolDraft, wait: (args: Record<string, string>, ctx: ToolContext) => Promise<string>, allowed: (sessionID: string) => boolean): void {
+  const read = draft.get("read")
+  const str = read?.input?.fields?.path
+  if (!read?.input?.mapFields || !str) throw new Error("the built-in read tool has no input schema to build from")
+  const fields = ["id", "pid", "file", "match", "line", "timeout"] as const
+  draft.add({
+    id: WAIT_ID,
+    name: WAIT_ID,
+    description:
+      "Block instead of polling: wait until a process ends, a file holds what you wait for, or a paused permission request is answered. It runs nothing, so it asks for no permission, and it ends the poll loop that asks for the permission layer again every time. " +
+      "pid: the process id to wait for, until it is gone. " +
+      "file: a file or log to watch, in your worktree or in your own TMPDIR. match: the text to wait for in it. line: the line count to wait for. " +
+      "id: a paused permission request (\"A1\") or a short label of one; with no id it waits for your own request when you have one. It ends when the request is answered, refused or dropped, and the answer is told to you. " +
+      "timeout: how long to wait, in seconds (\"60\", \"2m\"); the default is 60 seconds and the longest is 10 minutes. " +
+      "Every field must be given: pass \"\" for the ones you do not need. It returns what happened, how long it waited and, on a timeout, what it was watching.",
+    input: read.input.mapFields(() => Object.fromEntries(fields.map((f) => [f, str]))),
+    execute: async (args: Record<string, unknown>, ctx: ToolContext) => {
+      if (!ctx?.sessionID || !allowed(ctx.sessionID)) return { content: "Only a worker of the micromanager may use this tool." }
+      try {
+        return { content: await wait(Object.fromEntries(fields.map((f) => [f, String(args?.[f] ?? "").trim()])), ctx) }
+      } catch (err) {
+        return { content: `failed: ${err instanceof Error ? err.message : String(err)}` }
+      }
+    },
+  })
+}
+
 // The plan as the micromanager shows it to the user.
 export function planText(job: Job): string {
   const acceptance = job.acceptance.map((a) => `- ${a.id}: ${a.text}${a.verify ? ` (check: ${a.verify})` : ""}`)

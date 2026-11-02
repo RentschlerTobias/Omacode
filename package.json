@@ -6,7 +6,11 @@
   "description": "An OpenCode v2 plugin that orchestrates sub-agents, with TypeSafe Jev making the decisions",
   "exports": {
     ".": "./src/plugin.ts",
-    "./tui": "./src/tui.tsx"
+    "./tui": "./src/tui.tsx",
+    "./guard": "./src/guard/index.ts",
+    "./shell": "./src/shell/index.ts",
+    "./worktree": "./src/worktree/index.ts",
+    "./context": "./src/context/index.ts"
   },
   "files": [
     "src",
@@ -22,7 +26,7 @@
     "orchestration"
   ],
   "scripts": {
-    "test": "XDG_STATE_HOME=$(mktemp -d) node --test 'test/**/*.test.ts'",
+    "test": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "eval": "node src/cli.ts eval",
     "export-dataset": "node src/cli.ts export-dataset",

@@ -1,4 +1,4 @@
-// A worker's request for a variable or a host the sandbox keeps from it (src/sandbox.ts). A test that needs
+// A worker's request for a variable or a host the sandbox keeps from it (src/shell/sandbox.ts). A test that needs
 // DATABASE_URL, or a build that fetches from a host beyond the package registries, used to fail with no way to ask.
 // Now the worker calls request_env or request_network with the name and why; the plugin decides in steps:
 //   - never: a variable on the never list (sockets into the desktop, agent sockets, the plugin's own credentials), a
