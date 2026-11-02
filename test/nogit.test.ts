@@ -1,14 +1,14 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
 import { gitForm, readForm } from "../src/forms.ts"
 import { gitState, initRepo, MAX_FILE_BYTES, surveyFolder } from "../src/nogit.ts"
+import { tempDir } from "./harness.ts"
 
-const folder = () => mkdtempSync(join(tmpdir(), "mm-nogit-"))
+const folder = () => tempDir("mm-nogit-")
 const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args]).toString().trim()
 
 test("a folder is a repository, one without a commit, or none", async () => {

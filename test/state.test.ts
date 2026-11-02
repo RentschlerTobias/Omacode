@@ -39,7 +39,12 @@ test("a running task can be cancelled, which is where a sweep puts a worker that
   const task = { status: "running" } as Task
   assert.ok(canMoveTask(task.status, "cancelled"))
   moveTask(task, "cancelled")
-  assert.throws(() => moveTask(task, "running"), StateError)
+  // A cancelled task is resumable in place (T3), so cancelled -> running is now allowed.
+  assert.ok(canMoveTask(task.status, "running"))
+  moveTask(task, "running")
+  // Other terminal jumps are still illegal.
+  moveTask(task, "cancelled")
+  assert.throws(() => moveTask(task, "merged"), StateError)
 })
 
 test("a plan is parsed from the last json fence and turned into pending tasks with waves", () => {

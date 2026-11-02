@@ -4,10 +4,11 @@
 
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { after, test } from "node:test"
+
+import { tempDir } from "./harness.ts"
 
 import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
@@ -37,7 +38,7 @@ function fakeGit(answers: Record<string, string>, cwd = "/p") {
 
 // A real directory: preparing a worktree now creates the project directory inside it, as git does not check out empty
 // or untracked-only folders.
-const ROOT = mkdtempSync(join(tmpdir(), "micromanager-integration-"))
+const ROOT = tempDir("micromanager-integration-")
 after(() => rmSync(ROOT, { recursive: true, force: true }))
 const TOP = join(ROOT, "repo")
 const PROJECT = join(TOP, "a/b/c")
@@ -210,7 +211,7 @@ test("changed files are project-relative, the basis task.files is on", async () 
 // A real repository for the tests that need git's own identity resolution. The identity is the repository's, as a
 // user's checkout has it, never passed on the command line.
 function realRepo(prefix = "micromanager-commit-"): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
+  const dir = tempDir(prefix)
   const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args])
   git("init", "-q")
   git("config", "user.name", "t")
@@ -249,7 +250,7 @@ test("commitTask authors and commits as the repository's identity, with subject 
 })
 
 test("commitTask fails with git's own message when no identity is configured", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "micromanager-noidentity-"))
+  const dir = tempDir("micromanager-noidentity-")
   execFileSync("git", ["init", "-q", dir])
   const restore = withoutIdentity(() => {
     process.env.GIT_CONFIG_GLOBAL = "/dev/null"

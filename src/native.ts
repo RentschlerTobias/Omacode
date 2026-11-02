@@ -1432,33 +1432,23 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     return { dir: entry.dir, task: `${entry.taskId} ${task?.title ?? ""}: ${task?.description ?? ""}`, parent: entry.parent }
   }
 
-  // The micromanager continues a worker (subagent with its sessionID): a merged writer gets a fresh worktree from the
-  // session branch at the same place, as a new task, so its next change is checked and merged again.
+  // The micromanager continues a worker (subagent with its sessionID): a writer that ended (merged, cancelled, or
+  // stopped) runs again on the same task, reusing its id, branch and worktree.
   async resume(session: string): Promise<Task | undefined> {
     const entry = this.#entry(session)
     const job = entry && this.#job(entry)
     let task = job?.tasks.find((t) => t.id === entry!.taskId)
     if (!entry || !job || !task) return undefined
     entry.ended = false
-    if (entry.writer && (task.status === "merged" || task.status === "cancelled")) {
-      const added = addDelegated(job, { title: `${task.title} (continued)`, prompt: task.description, files: task.files, dependsOn: [], checks: entry.checks })
-      if (!added.task) return undefined
-      added.task.role = task.role
-      added.task.model = task.model
-      added.task.session = session
-      added.task.sessions = [session]
-      if (task.frozen) added.task.frozen = { ...task.frozen }
-      for (const s of ["ready", "planned", "running"] as const) moveTask(added.task, s)
-      stage(added.task, "delegate", "pass", `continues ${task.id} in session ${session}`)
-      this.#entries.delete(`${job.id}/${task.id}`)
-      entry.taskId = added.task.id
-      this.#entries.set(`${job.id}/${added.task.id}`, entry)
-      this.#bySession.set(session, `${job.id}/${added.task.id}`)
-      task = added.task
-    } else if (task.status === "escalated" || task.status === "blocked" || task.status === "passed") {
-      if (task.status === "passed") moveTask(task, "escalated") // a reader asked again
-      moveTask(task, "running")
-    }
+    const wasTerminal = task.status === "merged" || task.status === "cancelled"
+    if (task.status === "cancelled") restart(task)
+    if (task.status === "merged") moveTask(task, "running") // continued: next change on top of the merged one
+    else if (task.status === "passed") { moveTask(task, "escalated"); moveTask(task, "running") }
+    else if (task.status === "escalated" || task.status === "blocked") moveTask(task, "running")
+    if (wasTerminal) { task.attempts = 0; task.trial = undefined }
+    // readers and already-running tasks just keep going
+    task.session = session
+    task.sessions = [...new Set([...(task.sessions ?? []), session])]
     // The sidebar tells a stopped worker by its last stage ("end"): continuing it runs again.
     stage(task, "resume", "pass", `continued in session ${session}`)
     if (entry.writer && entry.removed) {
