@@ -39,7 +39,8 @@ import { lastAssistantText } from "./brief.ts"
 import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
 import { board } from "./board.ts"
 import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
-import { cleanEnv, looksSecret, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells, type Wrapper } from "./sandbox.ts"
+import { looksSecret, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
+import { installShell, type SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
 import { badName, GRANT_FLOOR, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
 import { accessForm, answersOf, formInput, gitForm, readForm, type Question } from "./forms.ts"
@@ -143,13 +144,9 @@ interface Context {
 }
 
 // What Session.get answers with: only the fields the backstop reads, and the directory under both names because the
-// internal record carries it as location.directory while the SDK type says directory.
-interface SessionRecord {
-  parentID?: string
-  agent?: string
-  directory?: string
-  location?: { directory?: string }
-}
+// internal record carries it as location.directory while the SDK type says directory. The shell plugin reads the same
+// record (src/shell/wire.ts).
+type SessionRecord = ShellSessionRecord
 
 // The commit of the plugin's own repository, and whether its tree has uncommitted changes, read once per server start.
 async function pluginCode(): Promise<{ commit: string; dirty: boolean | "unknown" }> {
@@ -190,12 +187,12 @@ interface Shared {
   grants: Map<string, Grants> // job -> what the user decided about the refused paths of this job
   asked: Map<string, Asked> // job -> the question waiting for an answer, so it is never asked twice at once
   native?: Native // the micromanager's workers on OpenCode's subagent tool, made by the first instance
-  sandbox?: Promise<Wrapper> // worker commands' sandbox (src/sandbox.ts), started once per server
+  sandbox?: Promise<Wrapper> // worker commands' sandbox (src/shell/sandbox.ts), started once per server
   // A wrapped command -> the command the worker wrote. OpenCode evaluates a shell's permission after the shell hook
   // wrapped it (live run, 2026-10-20: the rules and Jev saw a page of bwrap instead of `./probe.sh`), so the
   // permission hook puts the worker's own command back before anything judges it.
   unwrapped?: Map<string, string>
-  // The shells worker sessions asked for: only these are cleaned and wrapped (src/sandbox.ts WorkerShells).
+  // The shells worker sessions asked for: only these are cleaned and wrapped (src/shell/sandbox.ts WorkerShells).
   workerShells: WorkerShells
   code?: { commit: string; dirty: boolean | "unknown" } // the plugin code this server loaded
   asks: Asks // workers' paused permission requests, answered by the micromanager or the user (src/ask.ts)
@@ -882,7 +879,7 @@ const plugin = {
       const g = loadControl(project, jobId).grants
       return { env: g?.env ?? [], network: g?.network ?? [] }
     }
-    // Worker commands run in the sandbox (src/sandbox.ts); one per server, shared by every instance.
+    // Worker commands run in the sandbox (src/shell/sandbox.ts); one per server, shared by every instance.
     const sandbox = (SHARED.sandbox ??= startSandbox(settings.sandbox).then((box) => {
       if (!box.available) log("warn", `worker commands run without a sandbox: ${box.reason}`)
       return box
@@ -1320,30 +1317,69 @@ const plugin = {
       const state = box.available ? "on" : `off: ${box.reason}`
       if (loadControl(project, jobId).sandbox !== state) updateControl(project, jobId, { sandbox: state })
     }
-    // Every shell a worker starts: its environment cleaned to the allowlist, its command wrapped in the sandbox with the
-    // rules of its role. A shell that is no worker's (the user's own, another agent's, the micromanager's) is left as
-    // it is: its directory alone cannot tell, so the shell tool's execute.before notes a worker's command first.
-    await ctx.shell?.hook("create.before", async (input) => {
-      if (!SHARED.workerShells.take(input.command)) return
-      const cwd = String(input.cwd ?? "")
-      const found = native.workerAt(cwd)
-      // A worker of the older runner path: known only by its directory, and it writes there.
-      const dir = found ? undefined : [...workerDirs.values()].filter((d) => cwd === d || cwd.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
-      if (!found && !dir) return
-      const grants = found ? jobGrants(found.project, found.jobId) : { env: [], network: [] }
-      if (found) await markSandbox(found.project, found.jobId)
-      input.env = cleanEnv(input.env ?? process.env, [...settings.env, ...grants.env])
-      const box = await sandbox
-      if (!box.available) return
-      const temp = tempDirFor(found ? `${found.jobId}\0${found.writer ? found.worktree : found.dir}` : dir!)
-      const rules = found
-        ? rulesFor({ role: found.role, writer: found.writer, dir: found.dir, worktree: found.worktree, domains: [...settings.network, ...grants.network], frozen: found.frozen, temp })
-        : rulesFor({ role: "code", writer: true, dir: dir!, worktree: dir!, domains: [...settings.network], temp })
-      const wrapped = await box.wrap(withTemp(input.command, temp), rules)
-      const seen = (SHARED.unwrapped ??= new Map())
-      seen.set(wrapped, input.command)
-      if (seen.size > 500) seen.delete(seen.keys().next().value!)
-      input.command = wrapped
+    // Every shell a child session starts: its environment cleaned to the allowlist, its command wrapped in the sandbox
+    // with the rules of its role. A shell that is no child's (the user's own, the micromanager's own) is left as it
+    // is: the shell tool's execute.before notes a child's command first, and the shell hook wraps only what it takes.
+    // The wiring is the shell plugin's (src/shell/); this is what the micromanager knows about its own workers.
+    const shell = await installShell(ctx, {
+      sandbox: () => sandbox,
+      session: async (sessionID) => (await ctx.session.get({ sessionID }).catch(() => undefined)) as SessionRecord | undefined,
+      shells: SHARED.workerShells,
+      unwrapped: (SHARED.unwrapped ??= new Map()),
+      env: settings.env,
+      domains: settings.network,
+      // A session of the plugin's own: a native worker or one of the older runner's.
+      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID),
+      // The private temp directory of a command that runs in a directory the plugin knows nothing about: one per
+      // directory, so two children in different directories do not share one.
+      temp: (key) => tempDirFor(key),
+      extra: (sessionID, cwd) => {
+        // The micromanager's own worker: the one whose directory the command runs in, exactly as before the shell
+        // plugin took the wiring over. Its role, its worktree, its frozen files and its job's grants.
+        const found = native.workerAt(String(cwd ?? ""))
+        if (found) {
+          const grants = jobGrants(found.project, found.jobId)
+          return {
+            known: true,
+            worker: true,
+            role: found.role,
+            writer: found.writer,
+            dir: found.dir,
+            worktree: found.worktree,
+            frozen: found.frozen,
+            domains: grants.network,
+            env: grants.env,
+            temp: tempDirFor(`${found.jobId}\0${found.writer ? found.worktree : found.dir}`),
+            project: found.project,
+            jobId: found.jobId,
+          }
+        }
+        // A worker of the older runner path: known only by its directory, and it writes there.
+        const dir = [...workerDirs.values()].filter((d) => cwd === d || cwd!.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
+        if (runnerSessions.has(sessionID) && dir) {
+          return { known: true, worker: true, role: "code", writer: true, dir, worktree: dir, temp: tempDirFor(dir) }
+        }
+        // A session of the plugin's own whose command runs in a directory the plugin does not know: the plugin's own
+        // rule held before the shell plugin took the wiring over, and it holds now: such a command is not wrapped.
+        if (runnerSessions.has(sessionID) || native.isWorker(sessionID)) return { known: true }
+        return undefined
+      },
+      rules: (facts, input) => {
+        const dir = facts.dir ?? input.cwd ?? process.cwd()
+        return rulesFor({
+          role: facts.role ?? "code",
+          writer: facts.writer ?? true,
+          dir,
+          worktree: facts.worktree ?? dir,
+          domains: [...settings.network, ...(facts.domains ?? [])],
+          frozen: facts.frozen ?? [],
+          temp: facts.temp,
+        })
+      },
+      // A wrapped command means the job's worker runs in the sandbox; the job's control file says so.
+      onWrap: async (facts) => {
+        if (facts.project && facts.jobId) await markSandbox(facts.project, facts.jobId)
+      },
     })
     // The job a worker session works for: what the runner recorded when it dispatched the worker, so a vouch of
     // request_access and a reconciliation both know which job they are about. undefined for a session that is none of
@@ -1358,11 +1394,9 @@ const plugin = {
       // real values already. Redacting again keeps a name out of a web search and a secret out of a shell command.
       const scope = vault && restoreScope(call.tool)
       if (vault) mapStrings(call.input, (s) => (scope ? vault.restore(vault.redact(s), scope) : vault.redact(s)))
-      // A worker's shell: noted so the shell hook, which gets no session id, wraps this one and no other agent's.
-      if (call.tool === "shell" && call.sessionID && (runnerSessions.has(call.sessionID) || native.isWorker(call.sessionID))) {
-        SHARED.workerShells.expect(String(call.input.command ?? ""))
-        return
-      }
+      // A worker's shell is noted by the shell plugin (src/shell/wire.ts), which wraps this one and no other agent's.
+      // The note comes after the redaction, so the command the shell hook wraps is the one the tool will run.
+      await shell.note(call)
       // A delegation the plugin cannot isolate. From the micromanager this is still a refusal that names the name it
       // could not find (a live run asked for OpenCode's own `explore` and then looked for an `explore` role agent
       // that does not exist); from any other agent the call is deliberately left exactly as its caller wrote it,
@@ -1782,7 +1816,7 @@ const plugin = {
       const box = await sandbox
       record({
         kind: "plugin",
-        // Whether worker commands run in the sandbox (src/sandbox.ts), and why not.
+        // Whether worker commands run in the sandbox (src/shell/sandbox.ts), and why not.
         sandbox: box.available ? "on" : `off: ${box.reason}`,
         version: version(),
         // Which code this server runs: the plugin loads once per server, so after an update a server that was not

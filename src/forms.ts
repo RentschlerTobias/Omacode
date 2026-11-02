@@ -103,7 +103,7 @@ export function grantForm(id: string, kind: "env" | "network", name: string, tas
   }]
 }
 
-// The question when the project is no git repository (src/integration.ts): the recommended way first.
+// The question when the project is no git repository (src/worktree/git.ts): the recommended way first.
 export function gitForm(path: string, files: number, size: string, recommend: "init" | "none", excluded: readonly string[]): Question[] {
   const init = { label: `${GIT.init}${recommend === "init" ? " (Recommended)" : ""}`, description: `git init and a first commit${excluded.length ? `; left out: ${excluded.join(", ")}` : ""}` }
   const none = { label: `${GIT.none}${recommend === "none" ? " (Recommended)" : ""}`, description: "Workers change the folder directly, one task after another; checks run, nothing is committed" }

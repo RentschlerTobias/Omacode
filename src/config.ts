@@ -289,7 +289,7 @@ export function parseAllowOutside(text: string): readonly string[] {
   return out
 }
 
-// "sandbox": run worker commands in the sandbox (src/sandbox.ts; default true). "env": names of variables worker
+// "sandbox": run worker commands in the sandbox (src/shell/sandbox.ts; default true). "env": names of variables worker
 // commands keep beyond the allowlist ("DATABASE_URL", or "MYAPP_*"). "network": domains worker commands may reach
 // beyond the package registries ("api.example.com", "*.example.com", "host:8443"). Both lists are the user's standing
 // grants for every job; a single job's grants come from request_env / request_network.

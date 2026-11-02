@@ -24,7 +24,7 @@ import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
-} from "./integration.ts"
+} from "./worktree/git.ts"
 import { addDelegated, checkSetProblems, parseFiles } from "./plan.ts"
 import { WRITERS } from "./profile.ts"
 import { FIX_ROUNDS } from "./watchdog.ts"
@@ -679,7 +679,7 @@ export class Native {
     task.frozen = Object.fromEntries(entry.frozen)
   }
 
-  // A writer's frozen files as absolute paths, for the sandbox (src/sandbox.ts denyWrite) and the permission hook.
+  // A writer's frozen files as absolute paths, for the sandbox (src/shell/sandbox.ts denyWrite) and the permission hook.
   frozenOf(session: string): string[] {
     const entry = this.#entry(session)
     return entry?.writer && entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : []
@@ -2284,16 +2284,38 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   }
 
   // The live worker that works in a directory (a shell command's cwd: its own directory or below), for the sandbox
-  // (src/sandbox.ts). The deepest match wins, so a writer's worktree beats the job's integration worktree it lies in.
+  // The sandbox (src/shell/sandbox.ts). The deepest match wins, so a writer's worktree beats the job's integration worktree it lies in.
   workerAt(cwd: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
     const inside = (dir: string) => cwd === dir || cwd.startsWith(`${dir}/`)
     const found = [...this.#entries.values()]
       .filter((e) => !e.ended && (inside(e.dir) || inside(e.worktree)))
       .sort((a, b) => b.dir.length - a.dir.length)[0]
-    const task = found && this.#job(found)?.tasks.find((t) => t.id === found.taskId)
-    return found && task
-      ? { project: found.project, jobId: found.jobId, role: task.role as RoleId, writer: found.writer, dir: found.dir, worktree: found.worktree, frozen: found.writer && found.frozen ? [...found.frozen.keys()].map((f) => resolve(found.dir, f)) : [] }
-      : undefined
+    return found && this.#task(found) ? this.#facts(found) : undefined
+  }
+
+  // The live worker of a session, for the sandbox (src/shell/): the session that asked for the shell is known there,
+  // while the shell hook itself gets no session id. The same facts as workerAt, but by session instead of by directory.
+  workerBySession(session: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
+    const found = this.#entry(session)
+    if (!found || found.ended || !found.session) return undefined
+    return this.#task(found) ? this.#facts(found) : undefined
+  }
+
+  #task(entry: Entry): Task | undefined {
+    return this.#job(entry)?.tasks.find((t) => t.id === entry.taskId)
+  }
+
+  #facts(entry: Entry): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } {
+    const task = this.#task(entry)!
+    return {
+      project: entry.project,
+      jobId: entry.jobId,
+      role: task.role as RoleId,
+      writer: entry.writer,
+      dir: entry.dir,
+      worktree: entry.worktree,
+      frozen: entry.writer && entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : [],
+    }
   }
 
   // The workers of a micromanager session that still run.

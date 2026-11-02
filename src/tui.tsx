@@ -176,7 +176,7 @@ function JobControls(props: { context: Context; project: string; job: JobView })
   const opts = () => optionsOf(control(), lastOptions(props.project))
   const box = (on: boolean) => (on ? "☑" : "☐")
   const toggle = (key: "auto" | "parallel" | "review") => setControl(flipped(props.project, props.job, key))
-  // Whether the job's worker commands run in the sandbox, as the server last wrote it (src/sandbox.ts).
+  // Whether the job's worker commands run in the sandbox, as the server last wrote it (src/shell/sandbox.ts).
   const sandbox = () => control().sandbox
   return (
     <box>

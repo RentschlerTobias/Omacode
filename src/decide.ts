@@ -627,7 +627,7 @@ export async function decide(
   preset?: "allow" | "deny" | "user",
   root: string | undefined = request.directory,
   allowed: readonly string[] = [],
-  // Whether the worker's commands run in the sandbox (src/sandbox.ts). Without it a writer's command in its worktree
+  // Whether the worker's commands run in the sandbox (src/shell/sandbox.ts). Without it a writer's command in its worktree
   // is no longer allowed on its text alone: what the program does is unchecked, so Jev is asked as before.
   sandboxed = true,
 ): Promise<Outcome> {

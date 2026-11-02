@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
 import { heldOutRoot } from "../src/contract.ts"
+import { isChildShell, isDelegated } from "../src/shell/decide.ts"
 import { cleanEnv, looksSecret, neverHanded, REGISTRIES, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells } from "../src/sandbox.ts"
 
 test("a worker's environment is an allowlist; the never list beats any grant", () => {
@@ -46,7 +47,9 @@ test("a writer writes its worktree only, a reader nothing; keys and env files st
 test("the sandbox keeps a writer in its worktree, away from the user's keys and off the network", async (t) => {
   const sandbox = await startSandbox()
   if (!sandbox.available) return t.skip(`no sandbox here: ${sandbox.reason}`)
-  const root = mkdtempSync(join(homedir(), ".mm-sandbox-test-")) // not under /tmp, which the sandbox treats apart
+  // The tree the writer works in. It lies beside the workers' temp root (which the sandbox denies), not under it:
+  // the home directory is read-only in a worker's sandbox, and the temp root is the one place every worker shares.
+  const root = mkdtempSync(join(tmpdir(), ".mm-sandbox-test-"))
   try {
     const a = join(root, "A")
     const b = join(root, "B")
@@ -61,6 +64,13 @@ test("the sandbox keeps a writer in its worktree, away from the user's keys and 
       } catch (err) {
         return `failed: ${String((err as { stderr?: string }).stderr ?? err).trim().split("\n").pop()}`
       }
+    }
+    // The sandbox needs a unix socket for its proxy, and a worker's sandbox has no user namespaces to give it: a
+    // host that cannot run the sandbox at all skips the rest of the test rather than failing it.
+    try {
+      await sandbox.wrap("true", rulesFor({ role: "code", writer: true, dir: a, worktree: a, domains: [], frozen: [] }))
+    } catch (err) {
+      return t.skip(`the sandbox cannot run here: ${String(err).trim().split("\n").pop()}`)
     }
     assert.equal(await run(a, "echo ok > own.txt && cat own.txt"), "ok")
     assert.match(await run(b, `echo x > ${join(a, "theirs.txt")}`), /failed: .*(Read-only|Permission denied)/)
@@ -106,4 +116,38 @@ test("only a shell a worker asked for is wrapped, once per call", () => {
   assert.equal(shells.take("npm test"), true)
   assert.equal(shells.take("npm test"), true)
   assert.equal(shells.take("npm test"), false, "each call is taken once")
+})
+
+test("the sandbox wraps a child shell of any plugin and never the user's own shell", () => {
+  // The decision the shell plugin makes, without a host: a delegated child (a session with a parent) is wrapped,
+  // whatever plugin started it; a root session (the user's own interactive session) is left alone.
+  const child = { tool: "shell", sessionID: "ses_child" }
+  const root = { tool: "shell", sessionID: "ses_root" }
+
+  // A child of any plugin: the session record says it was delegated, and the plugin that started it is none of
+  // the sandbox's business.
+  assert.equal(isChildShell(child, { parentID: "ses_other_plugin" }), true, "a subagent of any plugin is wrapped")
+  assert.equal(isChildShell(child, { parentID: "ses_micromanager" }), true, "a subagent of the micromanager is wrapped")
+
+  // The user's own interactive shell: a root session has no parent, so it is never wrapped.
+  assert.equal(isChildShell(root, {}), false, "the user's own shell is not wrapped")
+  assert.equal(isChildShell(root, { parentID: undefined }), false, "the user's own shell is not wrapped")
+
+  // A session the plugin knows as a worker is a worker even without a parent id.
+  assert.equal(isChildShell(child, { worker: true }), true, "a known worker is wrapped")
+
+  // Only the shell tool is wrapped.
+  assert.equal(isChildShell({ tool: "bash", sessionID: "ses_child" }, { parentID: "ses_root" }), false, "another tool is not a shell")
+
+  assert.equal(isDelegated({ parentID: "ses_root" }), true)
+  assert.equal(isDelegated({}), false)
+})
+
+test("the shell remembers which session asked for a command", () => {
+  const shells = new WorkerShells()
+  assert.equal(shells.sessionOf("npm test"), undefined, "a command nobody asked for has no session")
+  shells.expect("npm test", "ses_worker")
+  assert.equal(shells.sessionOf("npm test"), "ses_worker", "the session that asked is remembered")
+  assert.equal(shells.take("npm test"), true)
+  assert.equal(shells.sessionOf("npm test"), undefined, "the session goes with the command")
 })
