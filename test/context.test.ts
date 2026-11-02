@@ -4,6 +4,7 @@ import { test } from "node:test"
 
 import { covers, ledger, type Message } from "../src/context/ledger.ts"
 import { ContextManager } from "../src/context/manager.ts"
+import { Summarizer } from "../src/context/summary.ts"
 import { epochDue, expectedRemaining, pricesOf } from "../src/context/policy.ts"
 import { PriceBook } from "../src/context/prices.ts"
 import { DEFAULT_RULES, findReplacements } from "../src/context/rules.ts"
@@ -87,7 +88,7 @@ test("policy: the cache price decides, and the ceiling overrides it", () => {
   assert.deepEqual(pricesOf({ cost: [{ input: 0.15, output: 0.6, cache: { read: 0.003, write: 0 } }] }), { input: 0.15, cacheRead: 0.003 })
 })
 
-test("manager: nothing changes between epochs; an epoch applies everything at once, and it sticks across restarts", () => {
+test("manager: nothing changes between epochs; an epoch applies everything at once, and it sticks across restarts", async () => {
   const dir = tempDir("ctx-")
   const journal: Record<string, unknown>[] = []
   const calls: Call[] = [
@@ -99,25 +100,40 @@ test("manager: nothing changes between epochs; an epoch applies everything at on
   const m = new ContextManager({ dir, journal: (e) => journal.push(e), policy: { minSavedTokens: 10_000 } })
   const early = history(calls.slice(0, 9))
   const before = JSON.stringify(early)
-  const r1 = m.apply("ses_1", early, { ceilingTokens: 1 })
+  const r1 = await m.apply("ses_1", early, { ceilingTokens: 1 })
   assert.equal(r1.epoch, undefined, "pending holds too little yet")
   assert.equal(JSON.stringify(early), before, "between epochs the messages stay byte-identical")
   const later = history(calls)
-  const r2 = m.apply("ses_1", later, { ceilingTokens: 1 })
+  const r2 = await m.apply("ses_1", later, { ceilingTokens: 1 })
   assert.equal(r2.epoch?.reason, "ceiling")
   assert.equal(r2.epoch?.applied, 6)
   assert.match(valueOf(later, "c0"), /^\[context: this read result/)
   assert.equal(journal[0]!.kind, "context.epoch")
   // the next turn renders the same replacements without a new epoch
   const next = history([...calls, ...filler(1)])
-  const r3 = m.apply("ses_1", next, { ceilingTokens: 1 })
+  const r3 = await m.apply("ses_1", next, { ceilingTokens: 1 })
   assert.equal(r3.epoch, undefined)
   assert.equal(JSON.stringify(next.slice(0, later.length)), JSON.stringify(later), "the prefix is the same bytes as in the epoch's request")
   // a restarted server reads the applied set back
   const fresh = new ContextManager({ dir })
   const again = history([...calls, ...filler(1)])
-  fresh.apply("ses_1", again, { ceilingTokens: 1e9 })
+  await fresh.apply("ses_1", again, { ceilingTokens: 1e9 })
   assert.equal(JSON.stringify(again), JSON.stringify(next))
+})
+
+test("manager: text-heavy session compacts at the ceiling", async () => {
+  const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "task brief" }] }]
+  for (let i = 0; i < 220; i++) {
+    msgs.push({ role: "assistant", content: [{ type: "text", text: "a".repeat(2000) }] })
+    msgs.push({ role: "user", content: [{ type: "text", text: "b".repeat(2000) }] })
+  }
+  const tailTexts = msgs.slice(-24).map((m) => (Array.isArray(m.content) ? (m.content as any[])[0]?.text : m.content))
+  const summarizer = new Summarizer({ generate: async () => "SUMMARY:\n" + "summarized work ".repeat(5) + "\n\nFACTS:\n- none" }, { keepTurns: 6, minChars: 10, timeoutMs: 1000 })
+  const m = new ContextManager({ dir: null, journal: () => {}, summarizer, policy: { minSavedTokens: 1 } })
+  const r = await m.apply("ses_txt", msgs, { ceilingTokens: 100000, keepTurns: 12 })
+  assert.equal(r.epoch?.reason, "ceiling")
+  const newTail = msgs.slice(-24).map((m) => (Array.isArray(m.content) ? (m.content as any[])[0]?.text : m.content))
+  assert.deepEqual(newTail, tailTexts)
 })
 
 test("price book: prices by provider and model from the host's catalog, read once a minute", async () => {

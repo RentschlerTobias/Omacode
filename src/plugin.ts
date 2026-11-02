@@ -2900,7 +2900,6 @@ const plugin = {
     // with its own rules in epochs, so the prompt's prefix stays byte-identical between them (src/context/manager.ts).
     const compactor = new Compactor(decider, record)
     const workerJudge = new Compactor(decider, record, { keepTurns: 8, ruleAge: 20, tools: new Set(["read", "grep", "glob", "list", "webfetch", "websearch"]), subject: "worker" })
-    const contextManager = new ContextManager({ journal: record })
     const priceBook = new PriceBook(() => ctx.model?.list())
     // Stage 3: a session near its ceiling gets its older turns summarized by DeepSeek V4.1 Flash (the user's pick,
     // 2026-10-20) in a hidden, tool-less session; the facts it lists go to the memory first (src/context/summary.ts).
@@ -2915,6 +2914,7 @@ const plugin = {
       facts: async (facts, sessionID) => { for (const text of facts) await memory.capture({ text, source: `summary ${sessionID}` }, project) },
       journal: record,
     })
+    const contextManager = new ContextManager({ journal: record, summarizer })
     const manageContext = async (input: SessionHookInput, orchestrator: boolean) => {
       if (!input.sessionID || !Array.isArray(input.messages)) return
       let epoch = false
@@ -2930,7 +2930,7 @@ const plugin = {
           ...summarizer.ready(input.sessionID, applied),
         ]
         const baseChars = (input.system ?? []).reduce((n, p) => n + (p.text?.length ?? 0), 0)
-        const r = contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars })
+        const r = await contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars, keepTurns: orchestrator ? 12 : 8 })
         if (r.epoch) log("info", `context epoch (${r.epoch.reason}) in ${input.sessionID}: ${r.epoch.applied} results, ${r.epoch.savedChars} characters`)
         epoch = Boolean(r.epoch)
         // A worker's notes came with its brief, the first user message: read them from there for the sidebar.
