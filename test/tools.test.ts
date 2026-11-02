@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
+import { tempDir } from "./harness.ts"
 
 import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, planText, TOOL_IDS, type ToolDraft } from "../src/tools.ts"
 import { newJob } from "../src/state.ts"
@@ -190,7 +190,7 @@ const job = (over: Partial<import("../src/state.ts").Job> = {}): import("../src/
 // is kept out of git through the repository's local exclude file (src/store.ts excludeFromGit), so it does not show up
 // as uncommitted work in the user's checkout.
 function repo(): { project: string; branch: string } {
-  const project = mkdtempSync(join(tmpdir(), "jd-merge-"))
+  const project = tempDir("jd-merge-")
   const git = (...args: string[]) => execFileSync("git", ["-C", project, ...args], { encoding: "utf8" })
   git("init", "-q")
   git("config", "user.name", "t")
@@ -380,8 +380,6 @@ test("request_access asks the user about a refused path rather than answering fo
 // after setup has returned, and a test that let those records land in the operator's real journal would be worse than
 // no test at all.
 async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record<string, Record<string, unknown>>) {
-  const { mkdtempSync } = await import("node:fs")
-  const { tmpdir } = await import("node:os")
   const { readJournal } = await import("../src/journal.ts")
   const plugin = (await import("../src/plugin.ts")).default
   const hooks: Record<string, ((arg: never) => Promise<void>)[]> = {}
@@ -401,7 +399,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
     },
   }
   const before = process.env.XDG_STATE_HOME
-  process.env.XDG_STATE_HOME = mkdtempSync(`${tmpdir()}/jev-setup-`)
+  process.env.XDG_STATE_HOME = tempDir("jev-setup-")
   // The stand-in host has no built-in read tool, so setup reports that it installed nothing. That is the expected
   // answer here, and it proves the logger's stderr fallback is live, but it is noise in a test run: the journal is
   // what these tests read.

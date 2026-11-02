@@ -1,6 +1,4 @@
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
-import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
@@ -9,6 +7,7 @@ import { ContextManager } from "../src/context/manager.ts"
 import { epochDue, expectedRemaining, pricesOf } from "../src/context/policy.ts"
 import { PriceBook } from "../src/context/prices.ts"
 import { DEFAULT_RULES, findReplacements } from "../src/context/rules.ts"
+import { tempDir } from "./harness.ts"
 
 interface Call { tool: string; input: Record<string, unknown>; out: string; error?: boolean }
 
@@ -89,7 +88,7 @@ test("policy: the cache price decides, and the ceiling overrides it", () => {
 })
 
 test("manager: nothing changes between epochs; an epoch applies everything at once, and it sticks across restarts", () => {
-  const dir = mkdtempSync(join(tmpdir(), "ctx-"))
+  const dir = tempDir("ctx-")
   const journal: Record<string, unknown>[] = []
   const calls: Call[] = [
     ...Array.from({ length: 6 }, (_, i): Call => ({ tool: "read", input: { path: `f${i}.ts` }, out: big(`F${i}`, 9000) })),
@@ -142,7 +141,7 @@ test("summary: the older turns form a segment; the answer is parsed; the summary
   assert.deepEqual(parseSummary("SUMMARY:\nRead f1 to f5; the parser lives in f3.ts at line 40, nothing changed yet.\n\nFACTS:\n- the parser is in f3.ts\n- none"), { summary: "Read f1 to f5; the parser lives in f3.ts at line 40, nothing changed yet.", facts: ["the parser is in f3.ts"] })
   assert.equal(parseSummary("no sections"), undefined)
   const facts: string[] = []
-  const s = new Summarizer({ generate: async () => "SUMMARY:\nThe agent read the files f1 to f5 and found the parser in f3.ts.\nFACTS:\n- the parser is in f3.ts", facts: async (f) => { facts.push(...f) } }, { minChars: 10_000 })
+  const s = new Summarizer({ generate: async () => "SUMMARY:\nThe agent read the files f1 to f5 and found the parser in f3.ts.\nFACTS:\n- the parser is in f3.ts", facts: async (f) => { facts.push(...f) } }, { minChars: 10_000, timeoutMs: 1000 })
   assert.equal(s.maybeStart("ses", msgs, l, new Set(["c0"]), 1000, 100_000), false, "far from the ceiling")
   assert.equal(s.maybeStart("ses", msgs, l, new Set(["c0"]), 90_000, 100_000), true)
   await new Promise((r) => setTimeout(r, 20))
@@ -156,7 +155,7 @@ test("summary: the older turns form a segment; the answer is parsed; the summary
 
 test("status: the server's file per session, the bar and the folded line the sidebar shows", async () => {
   const { bar, foldedContext, freshStatuses, readStatus, writeStatus } = await import("../src/context/status.ts")
-  const dir = mkdtempSync(join(tmpdir(), "status-"))
+  const dir = tempDir("status-")
   const s = { tokens: 60_000, ceiling: 120_000, summaryAt: 96_000, epochs: 2, savedChars: 284_000, pending: 3, recalled: ["tests need uv run"], at: Date.now() }
   writeStatus("ses_1", s, dir)
   assert.deepEqual(readStatus("ses_1", dir), s)

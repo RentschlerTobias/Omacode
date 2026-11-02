@@ -48,7 +48,7 @@ function answers(topLevel: string, status = ""): Record<string, string> {
     "git rev-parse --show-toplevel": `${topLevel}\n`,
     "git rev-parse HEAD": "abc1234def\n",
     "git status --porcelain -z --untracked-files=all": status.replace(/\n/g, "\0"),
-    [`git worktree add -q -b jev/${JOB} ${PROJECT}/${DIR}/worktrees/${JOB} HEAD`]: "",
+    [`git worktree add -q -b micromanager/${JOB} ${PROJECT}/${DIR}/worktrees/${JOB} HEAD`]: "",
   }
 }
 
@@ -56,7 +56,7 @@ test("a project that is the repository root keeps everything as it was", async (
   const { run, calls } = fakeGit(answers(TOP))
   const i = await prepareIntegration(TOP, JOB, run)
   assert.equal(i.rel, "", "no offset: the worktree and the project are the same directory")
-  assert.equal(i.branch, `jev/${JOB}`)
+  assert.equal(i.branch, `micromanager/${JOB}`)
   assert.equal(i.base, "abc1234def")
   assert.equal(i.worktree, `${TOP}/${DIR}/worktrees/${JOB}`)
   assert.equal(i.dirty, false)
@@ -67,7 +67,7 @@ test("a project that is the repository root keeps everything as it was", async (
     ["git", ["rev-parse", "--show-toplevel"]],
     ["git", ["rev-parse", "HEAD"]],
     ["git", ["status", "--porcelain", "-z", "--untracked-files=all"]],
-    ["git", ["worktree", "add", "-q", "-b", `jev/${JOB}`, `${TOP}/${DIR}/worktrees/${JOB}`, "HEAD"]],
+    ["git", ["worktree", "add", "-q", "-b", `micromanager/${JOB}`, `${TOP}/${DIR}/worktrees/${JOB}`, "HEAD"]],
   ])
   assert.ok(calls.every((c) => c.cwd === TOP), "every call runs in the project")
   assert.deepEqual(taskDir(i.worktree, i.rel), i.worktree)
@@ -82,7 +82,7 @@ test("a project below the repository root records the offset git reports, asked 
   assert.deepEqual([top!.command, top!.cwd], ["git", PROJECT], "git is asked from the project, not from the root")
   // The worktree is still registered at the worktree root, which is what git materialises and what git commands need.
   assert.equal(i.worktree, `${PROJECT}/${DIR}/worktrees/${JOB}`)
-  assert.deepEqual(calls.at(-1)!.args, ["worktree", "add", "-q", "-b", `jev/${JOB}`, i.worktree, "HEAD"])
+  assert.deepEqual(calls.at(-1)!.args, ["worktree", "add", "-q", "-b", `micromanager/${JOB}`, i.worktree, "HEAD"])
   assert.equal(taskDir(i.worktree, i.rel), `${i.worktree}/a/b/c`, "the worker works three levels down")
   assert.ok(existsSync(`${i.worktree}/a/b/c`), "the offset directory exists even when the commit has no files there")
 })
@@ -102,17 +102,17 @@ test("an offset that leaves the repository or the worktree is refused", () => {
 
 test("a task worktree gives the git root and the directory to work in", async () => {
   const { run, calls } = fakeGit(answers(TOP), PROJECT)
-  const w = await prepareTaskWorktree(PROJECT, JOB, "T1", `jev/${JOB}`, run, undefined, "a/b/c")
+  const w = await prepareTaskWorktree(PROJECT, JOB, "T1", `micromanager/${JOB}`, run, undefined, "a/b/c")
   assert.equal(w.worktree, `${PROJECT}/${DIR}/worktrees/${JOB}--T1`, "the git worktree root")
   assert.equal(w.dir, `${w.worktree}/a/b/c`, "where the worker and its checks run")
   assert.equal(w.rel, "a/b/c")
   assert.ok(existsSync(w.dir), "the worker's directory is created inside the fresh worktree")
   // git is still told to add the worktree at the root, and to remove it there too.
   const add = calls.find((c) => c.args[0] === "worktree" && c.args[1] === "add")!
-  assert.deepEqual([...add.args], ["worktree", "add", "-q", "-b", `jev/${JOB}--T1`, w.worktree, `jev/${JOB}`])
+  assert.deepEqual([...add.args], ["worktree", "add", "-q", "-b", `micromanager/${JOB}--T1`, w.worktree, `micromanager/${JOB}`])
   assert.deepEqual([...calls.find((c) => c.args[1] === "remove")!.args.slice(0, 3)], ["worktree", "remove", "--force"])
 
-  const root = await prepareTaskWorktree(PROJECT, JOB, "T2", `jev/${JOB}`, run, undefined, "")
+  const root = await prepareTaskWorktree(PROJECT, JOB, "T2", `micromanager/${JOB}`, run, undefined, "")
   assert.equal(root.dir, root.worktree, "no offset: the project is the root, as before")
   assert.ok(existsSync(root.dir), "the checkout root exists")
 })

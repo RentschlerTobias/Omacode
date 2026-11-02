@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
+import { tempDir } from "./harness.ts"
 
 import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
 import { capture, learnedLines } from "../src/context/capture.ts"
@@ -11,7 +11,7 @@ import { CoreSnapshots, recall, recallBlock, RecentRecalls } from "../src/contex
 import { diversify, search } from "../src/context/search.ts"
 import { CORE_BUDGET, MemoryStore, parseEntry, projectSlug, renderEntry } from "../src/context/store.ts"
 
-const dir = () => mkdtempSync(join(tmpdir(), "mem-"))
+const dir = () => tempDir("mem-")
 
 // A fake embedding service: a bag of words hashed into 64 dimensions, so texts sharing words are close.
 function fakeEmbedder(down = false): Embedder {

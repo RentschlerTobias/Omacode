@@ -1,8 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { loadPicks, NO_PICKS, parsePicks, parseRouting, parseSandbox, savePicks, stripComments } from "../src/config.ts"
@@ -10,6 +9,7 @@ import { backstop, DELEGATION_TOOLS, delegationRole, HEADER, notRouted, routeDel
 import { modelAvailability } from "../src/plugin.ts"
 import { family, MODELS, ROLES, roleById } from "../src/roles.ts"
 import { DEFAULT_ROUTING, chooseModel, guessNeeds, withPicks } from "../src/routing.ts"
+import { tempDir } from "./harness.ts"
 
 
 test("a role's first model, images to the vision model, a review in another family", async () => {
@@ -181,7 +181,7 @@ test("the TUI's picks replace a role's pool and the vision model, over the confi
 })
 
 test("the picks file: written whole, read again only when it changed, ignored when broken", () => {
-  const path = join(mkdtempSync(join(tmpdir(), "mm-picks-")), "micromanager-models.json")
+  const path = join(tempDir("mm-picks-"), "micromanager-models.json")
   assert.deepEqual(loadPicks(path), NO_PICKS, "no file: no picks")
   savePicks({ models: { code: [MODELS.glm, MODELS.mimo] } }, path)
   assert.deepEqual(loadPicks(path).models.code, [MODELS.glm, MODELS.mimo])

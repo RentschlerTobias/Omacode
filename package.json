@@ -22,7 +22,7 @@
     "orchestration"
   ],
   "scripts": {
-    "test": "XDG_STATE_HOME=$(mktemp -d) node --test 'test/**/*.test.ts'",
+    "test": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "eval": "node src/cli.ts eval",
     "export-dataset": "node src/cli.ts export-dataset",
