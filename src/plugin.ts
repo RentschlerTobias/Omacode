@@ -858,7 +858,7 @@ export function grantAnswer(text: string): boolean | undefined {
   return undefined
 }
 
-export default {
+const plugin = {
   id: "micromanager",
   setup: async (ctx: Context): Promise<void> => {
     const log = logger(ctx)
@@ -3009,3 +3009,6 @@ export default {
     }
   },
 }
+
+export default plugin;
+export { plugin as setupPlugin };
