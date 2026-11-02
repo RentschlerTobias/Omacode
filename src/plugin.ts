@@ -26,7 +26,9 @@ import { WRITERS } from "./profile.ts"
 import { recentFailure, Runner, summary, taskReport, toModel, type SessionApi } from "./runner.ts"
 import { checkGuards } from "./gate.ts"
 import { Compactor, stub as compactStub } from "./compact.ts"
-import { ContextManager } from "./context/manager.ts"
+import { ContextManager, contextDir } from "./context/manager.ts"
+import { writeDigest } from "./context/digest.ts"
+import { findUsage, ReportedUsage, tapResponse } from "./context/tokens.ts"
 import { PriceBook } from "./context/prices.ts"
 import { learnedLines } from "./context/capture.ts"
 import { describe as describeEntry, Memory } from "./context/memory.ts"
@@ -42,7 +44,7 @@ import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
 import { looksSecret, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
 import { installShell, type SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
-import { badName, GRANT_FLOOR, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
+import { badName, GRANT_FLOOR, grantBatchNote, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
 import { accessForm, answersOf, formInput, gitForm, readForm, type Question } from "./forms.ts"
 import { gitState, humanSize, initRepo, surveyFolder } from "./nogit.ts"
 import { CHECK_BUG, CHECK_BUG_FLOOR, CLASSIFY, LOCAL_BLOCK, LOCAL_BLOCK_FLOOR, NOUL_FLOOR, OPEN_ENDED, OPEN_ENDED_FLOOR } from "./catalog.ts"
@@ -1070,6 +1072,7 @@ const plugin = {
     }
     const native = (SHARED.native ??= new Native({
       installedSkills, planFirst: true, noGit: (dir) => noGitNote(dir), evolverReady: () => evolverReady, evolverCallCost, evolverMaxEvalSeconds: () => loadSettings().evolverMaxEvalSeconds,
+      checkTimeoutMs: settings.checkTimeoutMs,
       trialDeadlineMs: settings.trialDeadline * 60_000, trialPick: settings.trialPick, trialGrace: settings.trialGrace,
       idle: (session) => idleAttempt(SHARED.watchdog.progress(session)),
       // The picture of a "user" trial's attempt for the comparison page: its preview page, rendered like look does.
@@ -1148,9 +1151,9 @@ const plugin = {
           log("warn", `Jev on ${GRANT_IDS[kind]} ${name} failed: ${String(err)}`)
         }
       }
-      const { pending, answer, fresh } = SHARED.grantRequests.open({ kind, name, why, sessionID, parent: owner.parent, task: owner.task, project: where.project, jobId, secrets: kind === "network" ? facts.secrets : [] })
+      const { pending, answer, fresh, batch } = SHARED.grantRequests.open({ kind, name, why, sessionID, parent: owner.parent, task: owner.task, project: where.project, jobId, secrets: kind === "network" ? facts.secrets : [] })
       if (fresh) {
-        await say({ sessionID: owner.parent, text: grantNote(pending), resume: true }).catch((err: unknown) => log("warn", `grant note failed: ${String(err)}`))
+        await say({ sessionID: owner.parent, text: grantBatchNote(batch), resume: true }).catch((err: unknown) => log("warn", `grant note failed: ${String(err)}`))
         if (notify !== "off") notifyDesktop(`${pending.id}: a worker waits for you`, `${kind === "env" ? "variable" : "host"} ${name}`)
       }
       const r = await answer
@@ -1864,6 +1867,8 @@ const plugin = {
     const cores = new CoreSnapshots()
     // The notes a session got from the memory most recently, for the sidebar (src/context/status.ts).
     const recalledFor = new Map<string, string[]>()
+    // What the provider counted for each session's last answer, next to the plugin's own estimate (src/context/tokens.ts).
+    const reported = new ReportedUsage()
     // The memory's numbers for the sidebar, written after each write and at most every 30 seconds otherwise.
     const memoryWrites = { added: 0, duplicate: 0, contradicts: 0, day: new Date().toDateString() }
     let memoryStatsAt = 0
@@ -2046,6 +2051,7 @@ const plugin = {
         budget,
         parallel,
         perModel,
+        checkTimeoutMs: settings.checkTimeoutMs,
         onWorker: (sessionID, task, rules) => {
           workerTasks.set(sessionID, task)
           if (rules.length) workerRules.set(sessionID, rules)
@@ -2216,6 +2222,21 @@ const plugin = {
         SHARED.grantRequests.answer(form.id, form.granted)
         log("info", `the user ${form.granted ? "granted" : "refused"} ${pending.name} for job ${pending.jobId}`)
         tell(`${form.id}: ${pending.name} ${form.granted ? "is granted for this job" : "is refused for this job"}; the worker goes on.`)
+      } else if (form.kind === "grants") {
+        // A batch: the requests of one worker session that wait together, each answered on its own.
+        const lines: string[] = []
+        for (const a of form.answers) {
+          const pending = SHARED.grantRequests.get(a.id)
+          if (!pending || pending.parent !== sessionID) continue
+          if (a.granted === undefined) {
+            lines.push(`${a.id}: "${a.said ?? ""}" is no answer; it stays open`)
+            continue
+          }
+          addGrant(pending.project, pending.jobId, pending.kind, pending.name, a.granted)
+          lines.push(`${a.id}: ${pending.name} ${a.granted ? "is granted for this job" : "is refused for this job"}`)
+        }
+        SHARED.grantRequests.answerBatch(form.answers.filter((a) => a.granted !== undefined).map((a) => ({ id: a.id, granted: a.granted })))
+        tell(lines.length ? `${lines.join("; ")}; the workers go on.` : "none of the batch was answered; the workers still wait.")
       } else if (form.kind === "ask" && form.decision) {
         const r = await SHARED.asks.answer(form.id, form.decision, "user")
         if (form.decision === "job" && project) {
@@ -2768,6 +2789,21 @@ const plugin = {
       }
     })
 
+    // What the provider counted for each answer: the plugin's own estimate is a guess, the provider's number is not
+    // (src/context/tokens.ts). The hook may not exist in this build of the host; without it the estimate stands.
+    try {
+      ctx.session.hook("http.response", (event: HttpResponseEvent) => {
+        if (!event.sessionID) return
+        const sessionID = event.sessionID
+        event.response = tapResponse(event.response, (text) => {
+          const usage = findUsage(text)
+          if (usage) reported.record(sessionID, usage)
+        })
+      })
+    } catch (err) {
+      log("info", `provider usage hook unavailable: ${String(err)}`)
+    }
+
     await ctx.session.hook("prompt", async (input) => {
       const sessionID = input.sessionID
       const text = String(input.prompt?.text ?? "")
@@ -2904,6 +2940,18 @@ const plugin = {
     // Stage 3: a session near its ceiling gets its older turns summarized by DeepSeek V4.1 Flash (the user's pick,
     // 2026-10-20) in a hidden, tool-less session; the facts it lists go to the memory first (src/context/summary.ts).
     const SUMMARY_MODEL = "opencode-go/deepseek-v4.1-flash"
+    // The STATE digest: the job and task state written out before a compaction takes the transcript away, so the
+    // orchestrator keeps the thread (src/context/digest.ts).
+    const digest = (sessionID: string, reason: string): void => {
+      try {
+        const job = jobOfSession(sessionID) ?? (project ? listJobs(project).find((j) => j.facilitator === sessionID) : undefined)
+        const task = job?.tasks.find((t) => t.session === sessionID)
+        if (!job && !task) return // nothing of the plugin's here: no state to keep
+        writeDigest({ job, task, sessionID, reason }, contextDir(), record)
+      } catch (err) {
+        log("warn", `state digest failed: ${String(err)}`)
+      }
+    }
     const summarizer = new Summarizer({
       generate: async (_system, prompt, label) => {
         const s = await ctx.session.create({ title: `[context] summary · ${label}`, agent: SUMMARIZER_AGENT, model: toModel(SUMMARY_MODEL), location: { directory: project } })
@@ -2913,8 +2961,18 @@ const plugin = {
       },
       facts: async (facts, sessionID) => { for (const text of facts) await memory.capture({ text, source: `summary ${sessionID}` }, project) },
       journal: record,
+      digest: (sessionID, reason) => digest(sessionID, reason),
     })
-    const contextManager = new ContextManager({ journal: record, summarizer })
+    const contextManager = new ContextManager({
+      journal: record,
+      summarizer,
+      digest: (state) => {
+        const job = state.job ?? (project ? listJobs(project).find((j) => j.facilitator === state.sessionID) : undefined)
+        const task = state.task ?? job?.tasks.find((t) => t.session === state.sessionID)
+        if (!job && !task) return
+        writeDigest({ ...state, job, task }, contextDir(), record)
+      },
+    })
     const manageContext = async (input: SessionHookInput, orchestrator: boolean) => {
       if (!input.sessionID || !Array.isArray(input.messages)) return
       let epoch = false
@@ -2924,13 +2982,20 @@ const plugin = {
         const applied = new Set(contextManager.applied(input.sessionID).map((r) => r.id))
         const l = contextLedger(input.messages as never)
         const savedChars = contextManager.applied(input.sessionID).reduce((n, r) => n + r.saved, 0)
-        summarizer.maybeStart(input.sessionID, input.messages as never, l, applied, (l.chars + (input.system ?? []).reduce((n, p) => n + (p.text?.length ?? 0), 0) - savedChars) / 3.5, ceilingTokens)
+        // What the provider counted for this session's last answer, next to the plugin's own estimate.
+        const reportedTokens = reported.tokens(input.sessionID)
+        const estimatedTokens = (l.chars + (input.system ?? []).reduce((n, p) => n + (p.text?.length ?? 0), 0) - savedChars) / 3.5
+        summarizer.maybeStart(input.sessionID, input.messages as never, l, applied, reportedTokens ? Math.max(estimatedTokens, reportedTokens) : estimatedTokens, ceilingTokens)
         const judged = [
           ...[...pruned.values()].map((c) => ({ id: c.id, reason: "judged" as const, result: compactStub(c), saved: c.size - compactStub(c).length })),
           ...summarizer.ready(input.sessionID, applied),
         ]
         const baseChars = (input.system ?? []).reduce((n, p) => n + (p.text?.length ?? 0), 0)
-        const r = await contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars, keepTurns: orchestrator ? 12 : 8 })
+        // The state the digest writes before a compaction: the job and the task of this session.
+        const digestJob = jobOfSession(input.sessionID) ?? (project ? listJobs(project).find((j) => j.facilitator === input.sessionID) : undefined)
+        const digestTask = digestJob?.tasks.find((t) => t.session === input.sessionID)
+        const state = digestJob || digestTask ? { job: digestJob, task: digestTask, sessionID: input.sessionID } : undefined
+        const r = await contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars, keepTurns: orchestrator ? 12 : 8, ...(state ? { state } : {}), ...(reportedTokens ? { reportedTokens } : {}) })
         if (r.epoch) log("info", `context epoch (${r.epoch.reason}) in ${input.sessionID}: ${r.epoch.applied} results, ${r.epoch.savedChars} characters`)
         epoch = Boolean(r.epoch)
         // A worker's notes came with its brief, the first user message: read them from there for the sidebar.

@@ -4,6 +4,9 @@ import { test } from "node:test"
 
 import { covers, ledger, type Message } from "../src/context/ledger.ts"
 import { ContextManager } from "../src/context/manager.ts"
+import { digestText, readDigest, writeDigest } from "../src/context/digest.ts"
+import { findUsage, tapResponse, usageOf } from "../src/context/tokens.ts"
+import { newJob, type Task } from "../src/state.ts"
 import { Summarizer } from "../src/context/summary.ts"
 import { epochDue, expectedRemaining, pricesOf } from "../src/context/policy.ts"
 import { PriceBook } from "../src/context/prices.ts"
@@ -134,6 +137,85 @@ test("manager: text-heavy session compacts at the ceiling", async () => {
   assert.equal(r.epoch?.reason, "ceiling")
   const newTail = msgs.slice(-24).map((m) => (Array.isArray(m.content) ? (m.content as any[])[0]?.text : m.content))
   assert.deepEqual(newTail, tailTexts)
+})
+
+test("a STATE digest is written before a compaction, so the orchestrator keeps the thread", async () => {
+  const dir = tempDir("digest")
+  const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "task brief" }] }]
+  for (let i = 0; i < 220; i++) {
+    msgs.push({ role: "assistant", content: [{ type: "text", text: "a".repeat(2000) }] })
+    msgs.push({ role: "user", content: [{ type: "text", text: "b".repeat(2000) }] })
+  }
+  const job = newJob("j1", "the goal")
+  const task = { id: "T1", title: "the work", status: "running", session: "ses_digest" } as unknown as Task
+  job.tasks.push(task)
+  const journal: Record<string, unknown>[] = []
+  const digests: { sessionID?: string; reason?: string }[] = []
+  const summarizer = new Summarizer({ generate: async () => "SUMMARY:\n" + "summarized work ".repeat(5) + "\n\nFACTS:\n- none" }, { keepTurns: 6, minChars: 10, timeoutMs: 1000 })
+  const m = new ContextManager({
+    dir,
+    journal: (e) => journal.push(e),
+    summarizer,
+    policy: { minSavedTokens: 1 },
+    digest: (state) => {
+      digests.push({ sessionID: state.sessionID, reason: state.reason })
+      writeDigest(state, dir, (e) => journal.push(e))
+    },
+  })
+  const r = await m.apply("ses_digest", msgs, { ceilingTokens: 100000, keepTurns: 12, state: { sessionID: "ses_digest", job, task } })
+  assert.equal(r.epoch?.reason, "ceiling")
+  assert.deepEqual(digests.map((d) => d.sessionID), ["ses_digest"], "the digest comes before the compaction is applied")
+  assert.ok(digests[0]?.reason === "epoch" || digests[0]?.reason === "summary", `the digest says why: ${digests[0]?.reason}`)
+  const written = readDigest(dir, "ses_digest")
+  assert.ok(written, "the digest is on disk")
+  assert.match(written, /the goal/, "the job's goal is in the digest")
+  assert.match(written, /T1 the work \[running\]/, "the task and its status are in the digest")
+  assert.ok(journal.some((e) => e.kind === "context.digest"), "the journal has the digest too")
+})
+
+test("provider usage: what the provider counted is read from its answer and used next to the estimate", async () => {
+  // The names providers use: OpenAI, Anthropic, and the plain ones.
+  assert.deepEqual(usageOf({ usage: { prompt_tokens: 1200, completion_tokens: 300 } }), { input: 1200, output: 300, total: 1500 })
+  assert.deepEqual(usageOf({ usage: { input_tokens: 40, output_tokens: 10 } }), { input: 40, output: 10, total: 50 })
+  assert.deepEqual(usageOf({ usage: { input: 7, output: 3 } }), { input: 7, output: 3, total: 10 })
+  assert.equal(usageOf({ usage: {} }), undefined)
+  assert.equal(usageOf({}), undefined)
+
+  // A stream puts the usage in its last event.
+  const stream = ['data: {"choices":[]}', 'data: {"usage":{"input_tokens":90,"output_tokens":10}}', "data: [DONE]"].join("\n")
+  assert.deepEqual(findUsage(stream), { input: 90, output: 10, total: 100 })
+  assert.equal(findUsage("not json at all"), undefined)
+
+  // The body is tapped, not read: the host still gets every byte.
+  const seen: string[] = []
+  const tapped = tapResponse(new Response('{"usage":{"total_tokens":42}}', { headers: { "content-type": "application/json" } }), (t) => seen.push(t))
+  assert.equal(await tapped.text(), '{"usage":{"total_tokens":42}}', "the host gets the same bytes")
+  assert.equal(seen.join(""), '{"usage":{"total_tokens":42}}', "the usage is found on the way")
+
+  // The trigger: the provider's count counts next to the estimate, the bigger of the two wins.
+  const msgs: Message[] = [{ role: "user", content: [{ type: "text", text: "task brief" }] }]
+  for (let i = 0; i < 220; i++) msgs.push({ role: "assistant", content: [{ type: "text", text: "x".repeat(200) }] })
+  const l = ledger(msgs)
+  const estimate = l.chars / 3.5
+  assert.ok(estimate < 50_000, `the estimate is small here: ${estimate}`)
+
+  // The estimate alone: under the ceiling, nothing happens.
+  const withoutReport = new ContextManager({})
+  const before = await withoutReport.apply("ses_u", msgs, { ceilingTokens: 50_000 })
+  assert.equal(before.epoch, undefined, "the estimate alone is under the ceiling")
+  assert.ok(before.contextTokens > 1000, `the estimate is what the manager counts: ${before.contextTokens}`)
+
+  // The provider's count is bigger: it wins, and the ceiling is reached.
+  const summarizer = new Summarizer({ generate: async () => "SUMMARY:\n" + "the earlier turns were summarized. ".repeat(3) + "\n\nFACTS:\n- none" }, { keepTurns: 6, minChars: 10, timeoutMs: 1000 })
+  const withReport = new ContextManager({ summarizer })
+  const after = await withReport.apply("ses_u", msgs, { ceilingTokens: 50_000, reportedTokens: 60_000 })
+  assert.equal(after.contextTokens, 60_000, "the provider's count is counted next to the estimate")
+  assert.equal(after.epoch?.reason, "ceiling", "the bigger count reaches the ceiling")
+
+  // The estimate is bigger: it wins.
+  const over = new ContextManager({})
+  const r = await over.apply("ses_u", msgs, { ceilingTokens: Math.round(estimate) - 1, reportedTokens: 1 })
+  assert.ok(r.contextTokens > 1, `the estimate is the fallback: ${r.contextTokens}`)
 })
 
 test("price book: prices by provider and model from the host's catalog, read once a minute", async () => {

@@ -11,7 +11,7 @@
 // A grant holds for the job and is kept in its control file (src/control.ts), names and hosts only. The worker sees a
 // variable's name, never its value, and no model ever does: Jev gets the value's shape at most.
 
-import { formInput, grantForm } from "./forms.ts"
+import { formInput, grantBatchForm, grantForm } from "./forms.ts"
 import { ENV_ALLOW, looksSecret, neverHanded, REGISTRIES } from "./sandbox.ts"
 
 export type GrantKind = "env" | "network"
@@ -114,6 +114,10 @@ interface Waiting extends PendingGrant {
 
 // The requests waiting for the user. The worker's tool call waits on its promise; the form's answer, the worker's end
 // or the timeout settles it.
+//
+// The requests of one worker session wait together: a worker that needs a variable and a host asks for both while the
+// first answer is still open, and the user sees one form with a question per item instead of two rounds of waiting.
+// Every item keeps its own answer: the user may allow one and refuse the other.
 export class GrantRequests {
   readonly #pending = new Map<string, Waiting>()
   readonly #journal: (entry: Record<string, unknown>) => void
@@ -126,9 +130,9 @@ export class GrantRequests {
   }
 
   // A request for the same name of the same job that waits already: the second worker waits on the first one's form.
-  open(request: GrantRequest): { pending: PendingGrant; answer: Promise<GrantAnswer>; fresh: boolean } {
+  open(request: GrantRequest): { pending: PendingGrant; answer: Promise<GrantAnswer>; fresh: boolean; batch: PendingGrant[] } {
     const same = [...this.#pending.values()].find((p) => p.project === request.project && p.jobId === request.jobId && p.kind === request.kind && p.name === request.name)
-    if (same) return { pending: strip(same), answer: same.answer, fresh: false }
+    if (same) return { pending: strip(same), answer: same.answer, fresh: false, batch: this.#batchOf(same.sessionID) }
     const id = `G${++this.#n}`
     let settle!: (answer: GrantAnswer) => void
     const answer = new Promise<GrantAnswer>((resolve) => (settle = resolve))
@@ -141,7 +145,20 @@ export class GrantRequests {
     waiting.timer.unref?.()
     this.#pending.set(id, waiting)
     this.#journal({ kind: "grant", event: "asked", id, grant: request.kind, name: request.name, why: request.why.slice(0, 300), sessionID: request.sessionID, job: request.jobId })
-    return { pending: strip(waiting), answer, fresh: true }
+    // The worker asked for this while another of its requests was still open: the user is asked about both at once, so
+    // the micromanager is told again about the whole batch.
+    const batch = this.#batchOf(request.sessionID)
+    return { pending: strip(waiting), answer, fresh: true, batch }
+  }
+
+  // The requests of one worker session that wait right now: the batch the user answers in one form.
+  #batchOf(sessionID: string): PendingGrant[] {
+    return [...this.#pending.values()].filter((p) => p.sessionID === sessionID).map(strip)
+  }
+
+  // The requests of one worker session that wait right now.
+  batch(sessionID: string): PendingGrant[] {
+    return this.#batchOf(sessionID)
   }
 
   get(id: string): PendingGrant | undefined {
@@ -156,6 +173,17 @@ export class GrantRequests {
     this.#journal({ kind: "grant", event: "answered", id, grant: p.kind, name: p.name, granted, sessionID: p.sessionID, job: p.jobId, waitedMs: Date.now() - p.at })
     p.settle({ granted, by: "user" })
     return strip(p)
+  }
+
+  // The user's answers to a batch: one answer per item, the items that wait under it. Returns the requests it settled.
+  answerBatch(answers: readonly { readonly id: string; readonly granted?: boolean }[]): PendingGrant[] {
+    const settled: PendingGrant[] = []
+    for (const a of answers) {
+      if (a.granted === undefined) continue // typed text is no answer: the item keeps waiting
+      const p = this.answer(a.id, a.granted)
+      if (p) settled.push(p)
+    }
+    return settled
   }
 
   // The requests of workers that ended: refused quietly, nobody waits for them any more.
@@ -187,6 +215,15 @@ function strip(p: Waiting): PendingGrant {
 export function grantNote(p: PendingGrant, timeoutMs = GRANT_TIMEOUT_MS): string {
   const what = p.kind === "env" ? `the variable ${p.name}` : `the host ${p.name}`
   return `[micromanager] ${p.id}: worker ${p.task} waits for ${what} (${p.why.slice(0, 300)}). Only the user can grant it: ask them with the question tool, with exactly this input (a form that waits for their answer; it reaches the plugin by itself), then end your turn:\n${formInput(grantForm(p.id, p.kind, p.name, p.task, p.why, p.secrets))}\nWithout an answer it is refused in ${Math.round(timeoutMs / 60_000)} minutes and the worker carries on without it.`
+}
+
+// The note that wakes the micromanager for a whole batch: the requests of one worker session that wait together. The
+// user answers them in one form, each on its own, so one round of waiting covers them all.
+export function grantBatchNote(batch: readonly PendingGrant[], timeoutMs = GRANT_TIMEOUT_MS): string {
+  if (batch.length === 1) return grantNote(batch[0]!, timeoutMs)
+  const what = batch.map((p) => `${p.id}: ${p.kind === "env" ? `the variable ${p.name}` : `the host ${p.name}`} (${p.why.slice(0, 300)})`).join("; ")
+  const form = grantBatchForm(batch.map((p) => ({ id: p.id, kind: p.kind, name: p.name, why: p.why, secrets: p.secrets })), batch[0]!.task)
+  return `[micromanager] ${batch.length} requests of worker ${batch[0]!.task} wait together: ${what}. Only the user can grant them: ask them with the question tool, with exactly this input (one form with a question per request; it waits for their answer and reaches the plugin by itself), then end your turn:\n${formInput(form)}\nWithout an answer they are refused in ${Math.round(timeoutMs / 60_000)} minutes and the worker carries on without them.`
 }
 
 // What the worker reads once its request is decided.

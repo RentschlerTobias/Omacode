@@ -20,6 +20,7 @@ import {
   changedFiles, commitTask, exec as defaultExec, fastForward, frozenCheck, hashFiles, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, revertFiles,
   runGate, taskDir, workingDiff, type Exec, type GateResult,
 } from "./integration.ts"
+import { checkTimeoutOf } from "./worktree/git.ts"
 import { redact } from "./jev.ts"
 import { learnQuestions, readMemory, RECALL_MAX, writeMemory } from "./memory.ts"
 import { record } from "./journal.ts"
@@ -84,6 +85,7 @@ export interface RunnerDeps {
   readonly perModel?: number // sessions of one cloud model at the same time; a local model serves one at a time
   readonly taskEnded?: (job: Job, task: Task) => void // a task of a rolling job merged, escalated or waits for the user
   readonly waiting?: (sessionID: string) => boolean // a permission request of the session is paused for an answer (src/ask.ts)
+  readonly checkTimeoutMs?: number // how long one check may run (default 300 s); the job may override it
 }
 
 // Thrown out of a session turn when the user stopped the job; run() pauses the job, and the next run resumes it.
@@ -134,6 +136,11 @@ export class Runner {
 
   #policies(job: Job, task?: string): Policies {
     return { ...(this.#d.policies ?? {}), job: job.pins, ...(task && job.taskPins?.[task] ? { task: job.taskPins[task] } : {}) }
+  }
+
+  // How long one of this job's checks may run: the job's own setting where it has one, else the config's, else 300 s.
+  #checkTimeout(job: Job | undefined): number {
+    return checkTimeoutOf(job, this.#d.checkTimeoutMs)
   }
 
   // A model's family as the registry knows it ("qwen" for qwen3.8-flash and qwen3.8-u alike), so "another family"
@@ -708,7 +715,7 @@ export class Runner {
     let step = await rebaseTask(w, job.integrationBranch!, this.#exec)
     if (step.ok && step.moved) {
       const checks = [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-      const failed = (await runGate(w.worktree, checks, this.#exec, undefined, this.#dir(job, task))).filter((r) => !r.passed)
+      const failed = (await runGate(w.worktree, checks, this.#exec, this.#checkTimeout(job), this.#dir(job, task))).filter((r) => !r.passed)
       if (failed.length) step = { ok: false, conflict: `checks fail on top of the newer commits (in ${this.#dir(job, task)}): ${failed.map((f) => f.command).join(", ")}` }
     }
     if (step.ok) step = await fastForward(job.integrationWorktree!, w.branch, this.#exec)
@@ -1075,7 +1082,7 @@ export class Runner {
         return undefined
       }
       moveTask(task, "gating")
-      const results = [...(await runGate(worktree, checks, this.#exec, undefined, dir, { cancelled: () => Boolean(this.#d.cancelled?.()) })), ...(await frozenCheck(worktree, frozen, this.#exec))]
+      const results = [...(await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir, { cancelled: () => Boolean(this.#d.cancelled?.()) })), ...(await frozenCheck(worktree, frozen, this.#exec))]
       const failed = results.filter((r) => !r.passed)
       const changed = await changedFiles(worktree, this.#exec, task.worktreeRel ?? job.integrationRel ?? "")
       const outside = task.files.length ? changed.filter((f) => !task.files.includes(f) && !frozen.has(f)) : changed
@@ -1178,7 +1185,7 @@ export class Runner {
       this.#say(`${task.id}: no red stage (${tests.length === 0 ? "no tests written" : "no checks"}), going on as P2`)
       return new Map()
     }
-    const results = await runGate(worktree, checks, this.#exec, undefined, dir)
+    const results = await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir)
     if (results.every((r) => r.passed)) {
       stage(task, "red", "skip", "the new tests pass before the change, so they do not show the missing behaviour")
       this.#say(`${task.id}: the tests pass before the change; not frozen, going on as P2`)
@@ -1281,7 +1288,7 @@ export class Runner {
     }
     moveTask(task, "gating")
     const checks = [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-    const failed = (await runGate(worktree, checks, this.#exec, undefined, dir)).filter((r) => !r.passed)
+    const failed = (await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir)).filter((r) => !r.passed)
     if (failed.length) return await this.#escalate(job, task, `checks fail after the research (in ${dir}): ${failed.map((f) => f.command).join(", ")}`)
     moveTask(task, "passed")
     task.summary = `research written to ${path}`
@@ -1383,7 +1390,7 @@ export class Runner {
   async #verify(job: Job): Promise<void> {
     moveJob(job, "verify")
     const checks = [...new Set(job.acceptance.map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-    const results = await runGate(job.integrationWorktree!, checks, this.#exec, undefined, taskDir(job.integrationWorktree!, job.integrationRel ?? ""))
+    const results = await runGate(job.integrationWorktree!, checks, this.#exec, this.#checkTimeout(job), taskDir(job.integrationWorktree!, job.integrationRel ?? ""))
     const failed = results.filter((r) => !r.passed)
     if (failed.length > 0) {
       moveJob(job, "execute")

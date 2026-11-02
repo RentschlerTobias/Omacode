@@ -107,6 +107,8 @@ export interface SummarizerDeps {
   readonly generate: (system: string, prompt: string, label: string) => Promise<string>
   readonly facts?: (facts: readonly string[], sessionID: string) => Promise<void>
   readonly journal?: (e: Record<string, unknown>) => void
+  // Writes the STATE digest before the summary replaces the transcript (src/context/digest.ts).
+  readonly digest?: (sessionID: string, reason: string) => void
 }
 
 // One summary per session at a time, in the background; its replacements are handed to the manager until applied.
@@ -142,6 +144,8 @@ export class Summarizer {
     if (contextTokens < this.#o.startAt * ceilingTokens) return false
     const s = segmentOf(messages, l, applied, this.#o)
     if (!s) return false
+    // The digest first: the summary will replace the turns this thread built.
+    this.#d.digest?.(sessionID, "summary")
     this.#running.add(sessionID)
     const sizes = new Map(l.items.map((i) => [i.id, i.size]))
     const started = Date.now()

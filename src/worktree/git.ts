@@ -222,6 +222,19 @@ export interface GateResult {
   readonly score?: Measured
 }
 
+// The default cap of one check: five minutes. A check is a command the worker wrote, and a command that hangs
+// (a test waiting for a port, a build waiting for a network) would hold the gate forever, so it is bounded.
+export const DEFAULT_CHECK_TIMEOUT_MS = 300_000
+
+// How long this job's checks may run: the job's own setting where it has one, else the config's, else the default.
+// The job's setting wins over the config's, because a job that was given a longer cap (a slow integration suite)
+// should not be cut back to the config's default.
+export function checkTimeoutOf(job: Pick<Job, "checkTimeoutMs"> | undefined, configMs?: number): number {
+  if (job?.checkTimeoutMs !== undefined && Number.isFinite(job.checkTimeoutMs) && job.checkTimeoutMs > 0) return job.checkTimeoutMs
+  if (configMs !== undefined && Number.isFinite(configMs) && configMs > 0) return configMs
+  return DEFAULT_CHECK_TIMEOUT_MS
+}
+
 // Runs each check in the task's directory at low priority; a check passes on exit code 0.
 // worktree is the git worktree root; dir is where the worker's own paths resolve, which is the project directory inside
 // the worktree. Without it a check names a file of the project and the shell looks for it in the wrong tree.
@@ -232,7 +245,7 @@ export interface Cancelled {
 // cancel: checked between checks, not inside one. A single check is bounded by its own timeout (300s by default),
 // because there is nothing to interrupt a shell with once it started; but without this a job with five checks could
 // not be stopped until all five ran, and stop_job looked broken for as long as the first one took.
-export async function runGate(worktree: string, commands: readonly string[], run: Exec = exec, timeoutMs = 300_000, dir?: string, cancel: Cancelled = {}): Promise<GateResult[]> {
+export async function runGate(worktree: string, commands: readonly string[], run: Exec = exec, timeoutMs = DEFAULT_CHECK_TIMEOUT_MS, dir?: string, cancel: Cancelled = {}): Promise<GateResult[]> {
   const cwd = dir ?? worktree
   const out: GateResult[] = []
   for (const command of commands) {

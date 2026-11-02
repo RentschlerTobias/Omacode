@@ -21,7 +21,7 @@ import { Graphs, graphBrief, queryGraph, type Graph } from "./graph.ts"
 import { HEADER } from "./hooks.ts"
 import { better, coarse, contractBrief, describe, guardViolations, heldOutDir, keepHeldOut, median, parseContract, reached, type Contract, type Measured } from "./contract.ts"
 import {
-  changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
+  changedFiles, checkTimeoutOf, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
 } from "./worktree/git.ts"
@@ -226,6 +226,9 @@ export interface NativeDeps {
   readonly evolverReady?: () => boolean
   readonly evolverCallCost?: () => number
   readonly evolverMaxEvalSeconds?: () => number // the "evolver.maxEvalSeconds" setting
+  // How long one of a job's checks may run: the job's own setting where it has one, else this (the "checkTimeout"
+  // setting), else the default of 300 s (src/worktree/git.ts).
+  readonly checkTimeoutMs?: number
 }
 
 export const TRIAL_DEADLINE_MS = 20 * 60_000
@@ -340,9 +343,17 @@ export class Native {
     this.#evolverReady = deps.evolverReady ?? (() => false)
     this.#evolverCallCost = deps.evolverCallCost ?? (() => 0.004)
     this.#evolverMax = deps.evolverMaxEvalSeconds ?? (() => EVOLVER_MAX_EVAL_S)
+    this.#checkTimeoutMs = deps.checkTimeoutMs
   }
 
   readonly #evolverMax: () => number
+
+  readonly #checkTimeoutMs: number | undefined
+
+  // How long a check of this job may run.
+  #checkTimeout(job: Job | undefined): number {
+    return checkTimeoutOf(job, this.#checkTimeoutMs)
+  }
 
   readonly #evolverReady: () => boolean
   readonly #evolverCallCost: () => number
@@ -1622,7 +1633,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     // they were, and the worker hears what it may not do.
     const frozen = entry.frozen ? await frozenChanged(entry.worktree, entry.frozen, this.#exec, entry.dir) : []
     if (frozen.length) await revertFiles(entry.worktree, frozen, this.#exec, entry.dir)
-    const results = await runGate(entry.worktree, entry.checks, this.#exec, undefined, entry.dir)
+    const results = await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)
     if (frozen.length) results.push({ command: "frozen files unchanged", passed: false, code: 1, output: `You changed ${frozen.join(", ")}, which you may read and run but not change; they are restored to how they were. Change the code instead. If one of them is wrong, ask for the change with request_check_change, with the line that shows it.` })
     const graded = gradedOf(results)
     if (graded) task.graded = graded
@@ -2134,7 +2145,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       return { ok: false, text: `Your commit does not apply on top of ${job.integrationBranch}, which other tasks moved on meanwhile (${step.conflict}). Run git rebase ${job.integrationBranch} in your directory, resolve the conflict keeping both changes, run the checks, and call finish_task again.` }
     }
     if (step.moved) {
-      const failed = (await runGate(entry.worktree, entry.checks, this.#exec, undefined, entry.dir)).filter((r) => !r.passed)
+      const failed = (await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)).filter((r) => !r.passed)
       if (failed.length) {
         moveTask(task, "escalated")
         stage(task, "merge", "fail", `checks fail on top of the newer commits: ${failed.map((f) => f.command).join(", ")}`)

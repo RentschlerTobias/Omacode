@@ -5,8 +5,8 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import { addGrant, loadControl } from "../src/control.ts"
-import { grantForm, readForm } from "../src/forms.ts"
-import { badName, grantNote, GrantRequests, grantResult, grantState, triage, valueShape, type GrantFacts } from "../src/grants.ts"
+import { grantBatchForm, grantForm, readForm } from "../src/forms.ts"
+import { badName, grantBatchNote, grantNote, GrantRequests, grantResult, grantState, triage, valueShape, type GrantFacts } from "../src/grants.ts"
 
 const env = (name: string, value: string | undefined, more: Partial<GrantFacts> = {}): GrantFacts => ({ kind: "env", name, value, open: [], refused: [], sandboxed: true, secrets: [], ...more })
 const host = (name: string, more: Partial<GrantFacts> = {}): GrantFacts => ({ kind: "network", name, open: [], refused: [], sandboxed: true, secrets: [], ...more })
@@ -82,6 +82,52 @@ test("requests: the user's answer settles the waiting call, a second worker wait
   assert.equal((await gone.answer).granted, false)
   assert.ok(journal.every((e) => !JSON.stringify(e).includes("postgres")))
   assert.match(grantResult("env", "X", false, "timeout"), /nobody answered in time/)
+})
+
+test("the requests of one worker session wait together in one ask, each answered on its own", async () => {
+  const journal: Record<string, unknown>[] = []
+  const requests = new GrantRequests((e) => journal.push(e), 30)
+  const base = { kind: "env" as const, why: "tests", parent: "mm", task: "T1", project: "/p", jobId: "job-1", secrets: [] }
+  const a = requests.open({ ...base, name: "DATABASE_URL", sessionID: "w1" })
+  const b = requests.open({ ...base, name: "REDIS_URL", sessionID: "w1" })
+  assert.deepEqual(a.batch.map((p) => p.id), ["G1"])
+  assert.deepEqual(b.batch.map((p) => p.id), ["G1", "G2"], "the second request joins the batch of its session")
+  assert.equal(b.fresh, true, "the micromanager is told about the batch again")
+  // The note asks once, with a question per request.
+  const note = grantBatchNote(b.batch)
+  assert.match(note, /2 requests of worker T1 wait together/)
+  assert.match(note, /Grant G1/)
+  assert.match(note, /Grant G2/)
+  // The form's answers are read per item.
+  const form = grantBatchForm(b.batch.map((p) => ({ id: p.id, kind: p.kind, name: p.name, why: p.why, secrets: p.secrets })), "T1")
+  assert.equal(form.length, 2)
+  const read = readForm(form, [["Allow for this job"], ["Refuse"]])
+  assert.equal(read?.kind, "grants")
+  assert.deepEqual(read?.kind === "grants" ? read.answers : [], [{ id: "G1", granted: true }, { id: "G2", granted: false }])
+  // The answer settles each item of the batch on its own.
+  assert.equal(requests.answer("G1", true)?.name, "DATABASE_URL")
+  assert.equal(requests.answer("G2", false)?.name, "REDIS_URL")
+  assert.deepEqual(await a.answer, { granted: true, by: "user" })
+  assert.deepEqual(await b.answer, { granted: false, by: "user" })
+})
+
+test("a batch is the worker session's own: another session's requests stay in their own", async () => {
+  const requests = new GrantRequests(() => {}, 30)
+  const base = { kind: "env" as const, why: "tests", parent: "mm", task: "T1", project: "/p", jobId: "job-1", secrets: [] }
+  const a = requests.open({ ...base, name: "DATABASE_URL", sessionID: "w1" })
+  const other = requests.open({ ...base, name: "API_KEY", sessionID: "w2" })
+  assert.deepEqual(a.batch.map((p) => p.id), ["G1"])
+  assert.deepEqual(other.batch.map((p) => p.id), ["G2"], "another worker's request is not in this batch")
+})
+
+test("a batch keeps the timeout: what nobody answered is refused, item by item", async () => {
+  const requests = new GrantRequests(() => {}, 20)
+  const base = { kind: "env" as const, why: "tests", parent: "mm", task: "T1", project: "/p", jobId: "job-1", secrets: [] }
+  const a = requests.open({ ...base, name: "DATABASE_URL", sessionID: "w1" })
+  const b = requests.open({ ...base, name: "REDIS_URL", sessionID: "w1" })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.deepEqual(await a.answer, { granted: false, by: "timeout" })
+  assert.deepEqual(await b.answer, { granted: false, by: "timeout" })
 })
 
 test("grants and refusals are kept per job in its control file, names only", () => {

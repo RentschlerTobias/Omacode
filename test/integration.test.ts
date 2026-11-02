@@ -14,6 +14,8 @@ import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
   projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type Run,
 } from "../src/integration.ts"
+import { parseCheckTimeout } from "../src/config.ts"
+import { checkTimeoutOf } from "../src/worktree/git.ts"
 import { useVault, Vault } from "../src/redact.ts"
 import { DIR } from "../src/store.ts"
 
@@ -183,6 +185,41 @@ test("a stopped job does not start the next check", async () => {
   const failing: Exec = async (_c, a) => (a.join(" ").includes("build") ? { code: 2, stdout: "", stderr: "boom" } : { code: 0, stdout: "", stderr: "" })
   const all = await runGate("/wt", ["npm test", "npm run build"], failing, undefined, "/wt", { cancelled: () => false })
   assert.deepEqual(all.map((r) => [r.passed, r.code]), [[true, 0], [false, 2]])
+})
+
+test("the check timeout: 300 s by default, the job's own setting where it has one", async () => {
+  // A check that hangs must not hold the gate for ever, and a job with a slow integration suite needs more than the
+  // default. The job's own setting wins over the config's, so a job that was given a longer cap is not cut back.
+  const seen: number[] = []
+  const record: Exec = async (_c, _a, options) => {
+    seen.push(options?.timeoutMs ?? 0)
+    return { code: 0, stdout: "", stderr: "" }
+  }
+  await runGate("/wt", ["npm test"], record)
+  assert.deepEqual(seen, [300_000], "the default is five minutes")
+
+  seen.length = 0
+  await runGate("/wt", ["npm test"], record, undefined)
+  assert.deepEqual(seen, [300_000], "no timeout given is still the default")
+
+  seen.length = 0
+  await runGate("/wt", ["npm test"], record, 60_000)
+  assert.deepEqual(seen, [60_000], "an explicit timeout is what the check gets")
+
+  assert.equal(checkTimeoutOf(undefined), 300_000, "no job and no config: the default")
+  assert.equal(checkTimeoutOf({ checkTimeoutMs: 900_000 }), 900_000, "the job's own setting")
+  assert.equal(checkTimeoutOf({ checkTimeoutMs: 900_000 }, 60_000), 900_000, "the job's setting wins over the config's")
+  assert.equal(checkTimeoutOf({}, 60_000), 60_000, "else the config's")
+  assert.equal(checkTimeoutOf(undefined, 60_000), 60_000, "the config's, where the job has none")
+  assert.equal(checkTimeoutOf({ checkTimeoutMs: 0 }, 60_000), 60_000, "a nonsense value is no value")
+})
+
+test("the check timeout comes from the config, in seconds", async () => {
+  assert.equal(parseCheckTimeout("{}"), 300_000, "no setting: the default of 300 s")
+  assert.equal(parseCheckTimeout('{ "checkTimeout": 60 }'), 60_000, "seconds")
+  assert.throws(() => parseCheckTimeout('{ "checkTimeout": 0 }'), /above 0/)
+  assert.throws(() => parseCheckTimeout('{ "checkTimeout": "60" }'), /number of seconds/)
+  assert.throws(() => parseCheckTimeout('{ "checkTimeout": -1 }'), /above 0/)
 })
 
 test("changed files are project-relative, the basis task.files is on", async () => {
