@@ -215,6 +215,42 @@ autoTest("a manual merge clears an earlier undo_merge flag", async (r) => {
   assert.equal(loadJob(r.repo, JOB_ID)!.mergeUndoneAt, undefined, "and the cleared flag survives a save")
 })
 
+autoTest("a manual merge through the handler persists merges and clears mergeUndoneAt, then undo_merge works", async (r) => {
+  commitBranch(r, "work.txt", "done\\n")
+  const job = autoJob(r)
+  job.mergeUndoneAt = r.git("rev-parse", `jev/${JOB_ID}`) // as if an earlier merge was undone
+  saveJob(r.repo, job)
+
+  // Two distinct job objects: the disk copy (found) and the native in-memory copy (target).
+  const diskCopy = loadJob(r.repo, JOB_ID)!
+  const nativeCopy = loadJob(r.repo, JOB_ID)!
+  assert.notEqual(diskCopy, nativeCopy, "the two copies are distinct objects")
+
+  // The handler's merge/save sequence: merge into the object that will be saved.
+  const target = nativeCopy
+  const out = await mergeJobInto(r.repo, target, "")
+  assert.equal(out.wrote, true, "the merge happened")
+  if (out.merge) {
+    target.merges = [...(target.merges ?? []), out.merge]
+    saveJob(r.repo, target)
+  }
+
+  const saved = loadJob(r.repo, JOB_ID)!
+  assert.equal(saved.merges?.length, 1, "the new merges entry persisted on disk")
+  assert.equal(saved.mergeUndoneAt, undefined, "mergeUndoneAt cleared on disk")
+
+  // undo_merge then works: take the manual merge back.
+  const toUndo = loadJob(r.repo, JOB_ID)!
+  const undo = await undoMerge(r.repo, toUndo, "yes")
+  assert.equal(undo.undid, true, "undo_merge undid the merge")
+  if (undo.undid) {
+    toUndo.merges = toUndo.merges?.slice(0, -1)
+    saveJob(r.repo, toUndo)
+  }
+  assert.equal(loadJob(r.repo, JOB_ID)!.merges?.length ?? 0, 0, "the merges entry is dropped after undo")
+  assert.equal(r.git("rev-parse", "HEAD"), r.base, "the checkout is back where it was")
+})
+
 autoTest("merge_job refuses a diverged and dirty checkout before touching the branch or the checkout", async (r) => {
   commitBranch(r, "work.txt", "done\n")
   commitCheckout(r, "main.txt", "checkout change\n") // the checkout diverged: a rebase would be the next step

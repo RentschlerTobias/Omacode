@@ -2366,12 +2366,13 @@ export default {
             const found = job.trim() ? loadSwept(job.trim()) : listSwept().find((j) => j.facilitator === tctx.sessionID) ?? listSwept()[0]
             if (!found) return "No job to merge. plan_job or start a worker first."
             if (scheduler.snapshot().running === found.id) return `Job ${found.id} is still running; merge it when it is done.`
-            const out = await mergeJobInto(project, found, ack, exec)
+            // mergeJobInto mutates the job it is given (mergeUndoneAt clearing); save that same object, not a fresh one,
+            // or those mutations and the new merges entry are lost on disk (object-identity bug).
+            const target = native.current(project, found.id) ?? found
+            const out = await mergeJobInto(project, target, ack, exec)
             if (out.merge) {
-              // On the copy this process holds when it holds one: native saves that copy over the file (src/native.ts current).
-              const job = native.current(project, found.id) ?? found
-              job.merges = [...(job.merges ?? []), out.merge]
-              saveJob(project, job)
+              target.merges = [...(target.merges ?? []), out.merge]
+              saveJob(project, target)
             }
             record({ kind: "merge", sessionID: tctx.sessionID, job: found.id, branch: found.integrationBranch, merged: out.wrote, ...(out.merge ?? {}), text: out.text.slice(-500) })
             return out.merge ? `${out.text}${draftsText(native.backlog(project, found, true), project)}` : out.text
