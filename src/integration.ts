@@ -6,7 +6,7 @@
 // finished work still merges and rewinds. Reading checkpoints accepts both prefixes.
 
 import { execFile } from "node:child_process"
-import { mkdirSync } from "node:fs"
+import { existsSync, mkdirSync } from "node:fs"
 import { join, relative, resolve, sep } from "node:path"
 
 import { measuredOf, median, parseScoreLines, type Contract, type Measured } from "./contract.ts"
@@ -160,6 +160,27 @@ export async function prepareIntegration(project: string, jobId: string, run: Ex
   if (added.code !== 0) throw new IntegrationError(`git worktree add failed: ${added.stderr.trim()}`)
   materializeTaskDir(worktree, rel)
   return { branch, worktree, base: head.stdout.trim(), rel, dirty, dirtySummary: summary }
+}
+
+// Validates the job's integration worktree before it is created or reused: it must exist, be a git work tree, and sit on
+// the job's integration branch. Returns an actionable message instead of leaving a cryptic git error for the merge.
+export async function validateIntegration(job: Job, run: Exec = exec): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!job.integrationWorktree || !job.integrationBranch) {
+    return { ok: false, message: "the job has no integration worktree or branch recorded" }
+  }
+  const wt = job.integrationWorktree
+  if (!existsSync(wt)) {
+    return { ok: false, message: `the integration worktree ${wt} does not exist` }
+  }
+  const inside = await run("git", ["rev-parse", "--is-inside-work-tree"], { cwd: wt })
+  if (inside.code !== 0 || inside.stdout.trim() !== "true") {
+    return { ok: false, message: `the integration worktree ${wt} is not a git work tree (${inside.stderr.trim() || "git rev-parse failed"})` }
+  }
+  const head = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: wt })
+  if (head.code !== 0 || head.stdout.trim() !== job.integrationBranch) {
+    return { ok: false, message: `the integration worktree ${wt} is on ${head.stdout.trim() || "unknown"}, expected ${job.integrationBranch}` }
+  }
+  return { ok: true }
 }
 
 // Files the worker changed in the worktree since the last commit, untracked ones included.

@@ -21,7 +21,7 @@ import { Graphs, graphBrief, queryGraph, type Graph } from "./graph.ts"
 import { HEADER } from "./hooks.ts"
 import { better, coarse, contractBrief, describe, guardViolations, heldOutDir, keepHeldOut, median, parseContract, reached, type Contract, type Measured } from "./contract.ts"
 import {
-  changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree,
+  changedFiles, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
 } from "./integration.ts"
@@ -1138,6 +1138,10 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       job.integrationRel = ""
       return ""
     }
+    if (job.integrationWorktree) {
+      const v = await validateIntegration(job, this.#exec)
+      if (!v.ok) throw new IntegrationError(`integration worktree invalid: ${v.message}`)
+    }
     if (!job.integrationWorktree) {
       if ((await gitState(project, this.#exec)) !== "repo") {
         if (!writer) return "" // a reader changes nothing: it reads the project folder itself, no question needed
@@ -1689,6 +1693,30 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     // a worker whose session died mid-task never gets this far but a silent no-op worker does.
     const touched = await changedFiles(entry.worktree, this.#exec, task.worktreeRel ?? job.integrationRel ?? "")
     if (!touched.length) {
+      // A task whose change is already on the integration branch (its branch is fully contained in it, and its declared
+      // files are already present there) legitimately needs no new commit: close it as done instead of blocking. A task
+      // that changed nothing but claims success is still blocked below.
+      let alreadyIntegrated = false
+      if (entry.branch && job.integrationBranch) {
+        const anc = await this.#exec("git", ["merge-base", "--is-ancestor", entry.branch, job.integrationBranch], { cwd: entry.worktree })
+        alreadyIntegrated = anc.code === 0
+      }
+      const rel = task.worktreeRel ?? job.integrationRel ?? ""
+      const integrationDir = taskDir(job.integrationWorktree ?? entry.worktree, rel)
+      const filesAlreadyThere = task.files.length > 0 && task.files.every((f) => {
+        try { return statSync(join(integrationDir, f)).isFile() } catch { return false }
+      })
+      if (alreadyIntegrated && filesAlreadyThere) {
+        stage(task, "gate", "pass", "no new changes: already on the integration branch")
+        moveTask(task, "passed")
+        await this.#dropWorktree(entry, task)
+        saveJob(entry.project, job)
+        return {
+          text: `Your checks pass, and your change is already on ${job.integrationBranch}, so there is nothing to commit; closed as done.`,
+          note: `[micromanager] ${task.id} ${task.title}: closed as done, its change is already on ${job.integrationBranch}; nothing committed.`,
+          parent: entry.parent,
+        }
+      }
       stage(task, "gate", "fail", "the checks passed but no file was changed")
       moveTask(task, "blocked")
       task.summary = "its checks passed but it changed no file, so nothing was verified."
@@ -2102,6 +2130,12 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // Rebase onto the session branch, the checks again when it moved, then the fast-forward.
   async #merge(entry: Entry, job: Job, task: Task): Promise<{ ok: true } | { ok: false; text: string }> {
+    const v = await validateIntegration(job, this.#exec)
+    if (!v.ok) {
+      moveTask(task, "escalated")
+      stage(task, "merge", "fail", v.message)
+      return { ok: false, text: `The integration worktree is not usable: ${v.message}. Fix it (or recreate it) and call finish_task again.` }
+    }
     const w = { worktree: entry.worktree, branch: entry.branch! }
     const step = await rebaseTask(w, job.integrationBranch!, this.#exec)
     if (!step.ok) {
