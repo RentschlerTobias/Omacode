@@ -103,6 +103,19 @@ export function grantForm(id: string, kind: "env" | "network", name: string, tas
   }]
 }
 
+// The question about several grants of one worker session at once (src/grants.ts). The worker asked for a variable and a
+// host while the first answer was still open; the user answers both in one form, each on its own.
+export function grantBatchForm(items: readonly { readonly id: string; readonly kind: "env" | "network"; readonly name: string; readonly why: string; readonly secrets?: readonly string[] }[], task: string): Question[] {
+  return items.map((item) => ({
+    header: `Grant ${item.id}`,
+    question: `Worker ${task} asks for ${item.kind === "env" ? `the variable ${item.name} in its shell commands (its value never reaches a model)` : `to reach ${item.name} from its shell commands${item.secrets?.length ? `. These commands already hold ${item.secrets.join(", ")}; with ${item.name} open they could send ${item.secrets.length > 1 ? "them" : "it"} there` : ""}`}. Why: ${item.why.slice(0, 300)}. Allow it?`,
+    options: [
+      { label: GRANT.job, description: item.kind === "env" ? "Every command of this job's workers gets it" : "Every command of this job's workers may reach it" },
+      { label: GRANT.refuse, description: "The worker carries on without it; it will not ask again" },
+    ],
+  }))
+}
+
 // The question when the project is no git repository (src/worktree/git.ts): the recommended way first.
 export function gitForm(path: string, files: number, size: string, recommend: "init" | "none", excluded: readonly string[]): Question[] {
   const init = { label: `${GIT.init}${recommend === "init" ? " (Recommended)" : ""}`, description: `git init and a first commit${excluded.length ? `; left out: ${excluded.join(", ")}` : ""}` }
@@ -122,6 +135,7 @@ export type Answer =
   | { readonly kind: "ask"; readonly id: string; readonly decision?: "once" | "job" | "refuse"; readonly said?: string }
   | { readonly kind: "git"; readonly decision?: "init" | "none" | "cancel"; readonly said?: string }
   | { readonly kind: "grant"; readonly id: string; readonly granted?: boolean; readonly said?: string }
+  | { readonly kind: "grants"; readonly answers: readonly { readonly id: string; readonly granted?: boolean; readonly said?: string }[] }
 
 const is = (answer: string, label: string) => answer.trim().toLowerCase().replace(/\s*\(recommended\)\s*$/, "") === label.toLowerCase()
 const pick = <K extends string>(answers: readonly string[], labels: Record<K, string>): { key?: K; said?: string } => {
@@ -150,10 +164,21 @@ export function readForm(questions: readonly Partial<Question>[], answers: reado
     const { key, said } = pick(of(at(H.git)), GIT)
     return { kind: "git", ...(key ? { decision: key } : {}), ...(said ? { said } : {}) }
   }
-  const grant = questions.findIndex((q) => /^Grant G\d+$/.test(q.header ?? ""))
-  if (grant >= 0) {
-    const { key, said } = pick(of(grant), GRANT)
-    return { kind: "grant", id: questions[grant]!.header!.split(" ")[1]!, ...(key ? { granted: key === "job" } : {}), ...(said ? { said } : {}) }
+  const grants = questions.map((q, i) => ({ q, i })).filter(({ q }) => /^Grant G\d+$/.test(q.header ?? ""))
+  if (grants.length) {
+    // One form with several grant questions is a batch (src/grants.ts): the user answered each of them on its own.
+    if (grants.length > 1) {
+      return {
+        kind: "grants",
+        answers: grants.map(({ q, i }) => {
+          const { key, said } = pick(of(i), GRANT)
+          return { id: q.header!.split(" ")[1]!, ...(key ? { granted: key === "job" } : {}), ...(said ? { said } : {}) }
+        }),
+      }
+    }
+    const { q, i } = grants[0]!
+    const { key, said } = pick(of(i), GRANT)
+    return { kind: "grant", id: q.header!.split(" ")[1]!, ...(key ? { granted: key === "job" } : {}), ...(said ? { said } : {}) }
   }
   const ask = questions.findIndex((q) => /^Request A\d+$/.test(q.header ?? ""))
   if (ask >= 0) {

@@ -178,6 +178,19 @@ export function parseBudget(text: string): Budget {
   return out
 }
 
+// "checkTimeout": how long one check of a task may run, in seconds (default 300). A check that hangs must not hold
+// the job's gate for ever, and a long build needs more than the default. The job may lower or raise it for itself
+// (src/state.ts Job.checkTimeoutMs); the default stays 300 s.
+export const DEFAULT_CHECK_TIMEOUT_MS = 300_000
+const CHECK_TIMEOUT_CEILING_MS = 3_600_000
+
+export function parseCheckTimeout(text: string): number {
+  const raw = (JSON.parse(stripComments(text)) as { checkTimeout?: unknown }).checkTimeout
+  if (raw === undefined) return DEFAULT_CHECK_TIMEOUT_MS
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) throw new Error("checkTimeout must be a number of seconds above 0")
+  return Math.min(Math.round(raw * 1000), CHECK_TIMEOUT_CEILING_MS)
+}
+
 // "parallel": tasks of one job at the same time (default 3, at most 6); 1 runs them one after another.
 // "perModel": sessions of one cloud model at the same time (default 2, at most 4); a local model serves one.
 export function parseParallel(text: string): { parallel: number; perModel: number } {
@@ -384,6 +397,8 @@ export interface Settings {
   readonly trials: number
   readonly trialDeadline: number // minutes
   readonly budget: Budget
+  // How long one check may run, in milliseconds (default 300 s). A job may override it (src/state.ts).
+  readonly checkTimeoutMs: number
   readonly notify: NotifyMode
   readonly routing: Routing
   readonly floors: Floors
@@ -410,6 +425,7 @@ const DEFAULTS: Omit<Settings, "registry"> = {
   trials: DEFAULT_TRIALS,
   trialDeadline: 20,
   budget: DEFAULT_BUDGET,
+  checkTimeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
   notify: "jobs",
   routing: DEFAULT_ROUTING,
   floors: DEFAULT_FLOORS,
@@ -434,7 +450,7 @@ export function loadSettings(path = configPath()): Settings & { error?: string }
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY } // no file: the defaults
   }
   try {
-    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), notify: parseNotify(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
+    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
   } catch (err) {
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY, error: `${path}: ${String(err)}` }
   }

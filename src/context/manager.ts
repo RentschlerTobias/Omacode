@@ -11,6 +11,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { ledger, resultText, type Ledger, type Message } from "./ledger.ts"
+import type { DigestState } from "./digest.ts"
 import { DEFAULT_POLICY, epochDue, type EpochVerdict, type PolicyOptions, type Prices } from "./policy.ts"
 import { DEFAULT_RULES, findReplacements, type Replacement, type RuleOptions } from "./rules.ts"
 import type { Summarizer } from "./summary.ts"
@@ -22,6 +23,8 @@ export interface ApplyInput {
   readonly extraCost?: number
   readonly baseChars?: number // the system prompt's characters: part of the context, never replaced
   readonly keepTurns?: number // turns kept raw when reducing text segments at the ceiling
+  readonly state?: DigestState // the job and task this session works on, for the digest (src/context/digest.ts)
+  readonly reportedTokens?: number // what the provider counted for this session's last answer (src/context/tokens.ts)
 }
 
 export interface ApplyResult {
@@ -43,6 +46,8 @@ export interface ManagerOptions {
   readonly journal?: (entry: Record<string, unknown>) => void
   readonly dir?: string | null // where `applied` is kept; null keeps it in memory only (tests, the replay bench)
   readonly summarizer?: Summarizer // used to reduce text segments when the ceiling is reached with nothing pending
+  // Writes the STATE digest before a compaction takes the transcript away (src/context/digest.ts). Absent: no digest.
+  readonly digest?: (state: DigestState, reason: string) => void
 }
 
 export function contextDir(): string {
@@ -96,6 +101,7 @@ export class ContextManager {
   readonly #journal: (entry: Record<string, unknown>) => void
   readonly #dir: string | null
   readonly #summarizer: Summarizer | undefined
+  readonly #digest: ((state: DigestState, reason: string) => void) | undefined
   readonly #sessions = new Map<string, SessionState>()
 
   constructor(o: ManagerOptions = {}) {
@@ -104,6 +110,7 @@ export class ContextManager {
     this.#journal = o.journal ?? (() => {})
     this.#dir = o.dir === undefined ? contextDir() : o.dir
     this.#summarizer = o.summarizer
+    this.#digest = o.digest
   }
 
   #state(sessionID: string): SessionState {
@@ -158,13 +165,15 @@ export class ContextManager {
     const ceilingTokens = input.ceilingTokens ?? this.#policy.ceilingTokens
     const appliedCharsNow = [...s.applied.values()].reduce((n, r) => n + r.saved, 0)
     const currentTokens = (l.chars + (input.baseChars ?? 0) - appliedCharsNow) / cpt
+    // The provider's own count next to the estimate: the bigger of the two is the truth about the context's size.
+    const countedTokens = input.reportedTokens ? Math.max(currentTokens, input.reportedTokens) : currentTokens
     if (s.pending.size) {
       const saved = [...s.pending.values()].reduce((n, r) => n + r.saved, 0)
       const first = s.pending.size ? Math.min(...[...s.pending.keys()].map((id) => at.get(id) ?? msgs.length)) : msgs.length
       const appliedChars = [...s.applied.values()].reduce((n, r) => n + r.saved, 0)
       const invalidatedChars = s.pending.size ? (l.chars - (l.offsets[first] ?? l.chars) - [...s.applied.values()].filter((r) => (at.get(r.id) ?? 0) >= first).reduce((n, r) => n + r.saved, 0)) : 0
       const verdict = epochDue({
-        contextTokens: currentTokens,
+        contextTokens: countedTokens,
         savedTokens: saved / cpt,
         invalidatedTokens: Math.max(0, invalidatedChars - saved) / cpt,
         turns: l.turns,
@@ -172,6 +181,8 @@ export class ContextManager {
         ...(input.extraCost ? { extraCost: input.extraCost } : {}),
       }, { ...this.#policy, ...(input.ceilingTokens ? { ceilingTokens: input.ceilingTokens } : {}) })
       if (verdict.due) {
+        // The digest first: what is replaced is the transcript, and the state the thread built must outlive it.
+        if (input.state) this.#digest?.({ ...input.state, reason: "epoch" }, "epoch")
         for (const [id, r] of s.pending) s.applied.set(id, r)
         const byReason: Record<string, number> = {}
         for (const r of s.pending.values()) byReason[r.reason] = (byReason[r.reason] ?? 0) + 1
@@ -181,11 +192,13 @@ export class ContextManager {
         this.#save(sessionID, s)
         this.#journal({ kind: "context.epoch", sessionID, epoch: s.epochs, reason: epoch.reason, applied: epoch.applied, savedChars: saved, invalidatedTokens: epoch.invalidatedTokens, contextTokens: Math.round(currentTokens), gain: +epoch.gain.toFixed(5), cost: +epoch.cost.toFixed(5), byReason })
       }
-    } else if (currentTokens >= ceilingTokens && this.#summarizer) {
+    } else if (countedTokens >= ceilingTokens && this.#summarizer) {
       const keepTurns = input.keepTurns ?? 12
       if (l.turns > keepTurns) {
         const summary = await this.#summarizer.summarizeText(sessionID, msgs, keepTurns)
         if (summary) {
+          // The digest first: the turns it replaces are the thread's own words.
+          if (input.state) this.#digest?.({ ...input.state, reason: "summary" }, "summary")
           let idx = msgs.length
           let turn = -1
           for (let i = 0; i < msgs.length; i++) {
@@ -209,7 +222,8 @@ export class ContextManager {
       }
     }
     const renderedChars = render(msgs, s.applied)
-    return { ...(epoch ? { epoch } : {}), renderedChars, pending: s.pending.size, contextTokens: Math.round((l.chars + (input.baseChars ?? 0) - renderedChars) / cpt) }
+    const estimated = (l.chars + (input.baseChars ?? 0) - renderedChars) / cpt
+    return { ...(epoch ? { epoch } : {}), renderedChars, pending: s.pending.size, contextTokens: Math.round(input.reportedTokens ? Math.max(estimated, input.reportedTokens) : estimated) }
   }
 
   #collect(l: Ledger, msgs: readonly Message[], s: SessionState, judged: readonly Replacement[]): void {
