@@ -1,13 +1,13 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
 import { heldOutRoot } from "../src/contract.ts"
 import { isChildShell, isDelegated } from "../src/shell/decide.ts"
 import { cleanEnv, looksSecret, neverHanded, REGISTRIES, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells } from "../src/sandbox.ts"
+import { tempDir } from "./harness.ts"
 
 test("a worker's environment is an allowlist; the never list beats any grant", () => {
   const env = {
@@ -47,9 +47,9 @@ test("a writer writes its worktree only, a reader nothing; keys and env files st
 test("the sandbox keeps a writer in its worktree, away from the user's keys and off the network", async (t) => {
   const sandbox = await startSandbox()
   if (!sandbox.available) return t.skip(`no sandbox here: ${sandbox.reason}`)
-  // The tree the writer works in. It lies beside the workers' temp root (which the sandbox denies), not under it:
-  // the home directory is read-only in a worker's sandbox, and the temp root is the one place every worker shares.
-  const root = mkdtempSync(join(tmpdir(), ".mm-sandbox-test-"))
+  // The tree the writer works in. It lies outside the workers' temp root (which the sandbox denies), and the helper
+  // keeps it writable where a worker's /tmp is not: the home directory is read-only in a worker's sandbox.
+  const root = tempDir(".mm-sandbox-test-")
   try {
     const a = join(root, "A")
     const b = join(root, "B")
@@ -70,7 +70,7 @@ test("the sandbox keeps a writer in its worktree, away from the user's keys and 
     try {
       await sandbox.wrap("true", rulesFor({ role: "code", writer: true, dir: a, worktree: a, domains: [], frozen: [] }))
     } catch (err) {
-      return t.skip(`the sandbox cannot run here: ${String(err).trim().split("\n").pop()}`)
+      return t.skip(`the sandbox runtime cannot open its socket here: ${String(err).trim().split("\n").pop()}`)
     }
     assert.equal(await run(a, "echo ok > own.txt && cat own.txt"), "ok")
     assert.match(await run(b, `echo x > ${join(a, "theirs.txt")}`), /failed: .*(Read-only|Permission denied)/)
