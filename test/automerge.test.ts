@@ -12,7 +12,7 @@ import { dirname, join } from "node:path"
 import { after, test } from "node:test"
 
 import { maybeAutoMerge, type AutoMergeOutcome } from "../src/automerge.ts"
-import { undoMerge } from "../src/plugin.ts"
+import { mergeJobInto, undoMerge } from "../src/plugin.ts"
 import { DIR, excludeFromGit, loadJob, saveJob } from "../src/store.ts"
 import type { Job, Task } from "../src/state.ts"
 
@@ -172,6 +172,47 @@ autoTest("a completed job auto-merges fast-forward, is recorded, and undo_merge 
   assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "base\n")
   assert.equal(readFileSync(join(r.repo, "mine.txt"), "utf8"), "the user's\n")
   assert.deepEqual(loadJob(r.repo, JOB_ID)!.merges, [{ from, to, at: outcome.merged.at }], "undoMerge does not rewrite the job: dropping the stale entry is the caller's")
+})
+
+autoTest("undo_merge keeps the next automatic merge from putting the branch back, until a new commit moves it", async (r) => {
+  commitBranch(r, "work.txt", "done\n")
+  const from = r.git("rev-parse", "HEAD") // the checkout's HEAD before the merge
+  const job = autoJob(r)
+  saveJob(r.repo, job)
+
+  const first = await maybeAutoMerge(r.repo, job)
+  assert.ok(first.merged, "the first merge happened")
+  assert.equal(r.git("rev-parse", "HEAD"), first.merged!.to)
+
+  // What the undo_merge handler does: it saves the job that undoMerge just changed.
+  const saved = loadJob(r.repo, JOB_ID)!
+  const undo = await undoMerge(r.repo, saved, "yes")
+  assert.equal(undo.undid, true)
+  assert.equal(saved.mergeUndoneAt, first.merged!.to, "the flag records the branch tip the user took back")
+  saveJob(r.repo, saved)
+
+  const blocked = await maybeAutoMerge(r.repo, saved)
+  skipped(blocked, "an undone tip must not come back on its own")
+  assert.equal(r.git("rev-parse", "HEAD"), from, "the checkout stays where the undo put it")
+
+  commitBranch(r, "more.txt", "new work\n") // genuinely new work moves the tip
+  const again = await maybeAutoMerge(r.repo, saved)
+  assert.ok(again.merged, "a branch moved past the undone tip merges again")
+  assert.notEqual(r.git("rev-parse", "HEAD"), from)
+})
+
+autoTest("a manual merge clears an earlier undo_merge flag", async (r) => {
+  commitBranch(r, "work.txt", "done\n")
+  const job = autoJob(r)
+  job.mergeUndoneAt = r.git("rev-parse", `jev/${JOB_ID}`) // as if the branch had just been undone
+  saveJob(r.repo, job)
+  const loaded = loadJob(r.repo, JOB_ID)!
+
+  const out = await mergeJobInto(r.repo, loaded, "")
+  assert.equal(out.wrote, true)
+  assert.equal(loaded.mergeUndoneAt, undefined, "the manual merge supersedes the old undo")
+  saveJob(r.repo, loaded)
+  assert.equal(loadJob(r.repo, JOB_ID)!.mergeUndoneAt, undefined, "and the cleared flag survives a save")
 })
 
 autoTest("autoMerge off means no merge, however finished the job is", async (r) => {

@@ -489,8 +489,9 @@ endless read loops.
   - The baseline gate runs once per job.
 - **Merge train:** one branch at a time; rebase → gate → merge; roll back on failure; a conflict goes back to its
   owner once, then to the user.
-- **Integrate (auto-merge, default on):** when the micromanager's turn ends and no task of the job is open or live (at
-  least one merged), the branch `jev/<job>` goes into the user's checkout by itself, without an acknowledgement —
+- **Integrate (auto-merge, default on):** runner jobs merge after their final checks; native/rolling jobs when the
+  micromanager's turn ends and no task of the job is open or live (at least one merged), the branch `jev/<job>` goes
+  into the user's checkout by itself, without an acknowledgement —
   `maybeAutoMerge` in `src/automerge.ts` over the `mergeIntoCheckout` engine (`src/integration.ts`) that `merge_job`
   also uses. The policy:
   - the checkout must still be on the branch it was on at job start (`integrationCheckout`), with no merge or rebase in

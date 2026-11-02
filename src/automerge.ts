@@ -1,11 +1,12 @@
-// Automatic merge: a job whose tasks are all merged goes into the user's checkout when the micromanager's turn ends,
-// without the user's ack (design.md §12, plus the user's "autoMerge" setting). merge_job stays the manual path, and
-// undo_merge takes an automatic merge back exactly as it takes a manual one.
+// Automatic merge: a job whose tasks are all merged goes into the user's checkout without the user's ack
+// (design.md §12, plus the user's "autoMerge" setting). Runner jobs merge right after their final checks
+// (#verify, src/runner.ts); native and rolling jobs when the micromanager's turn ends (src/plugin.ts onIdle).
+// merge_job stays the manual path, and undo_merge takes an automatic merge back exactly as it takes a manual one.
 //
 // It lives apart from plugin.ts and runner.ts so neither of them has to import the other through this.
 
 import { loadSettings } from "./config.ts"
-import { mergeIntoCheckout, type Exec } from "./integration.ts"
+import { exec, mergeIntoCheckout, type Exec } from "./integration.ts"
 import { saveJob } from "./store.ts"
 import type { Job } from "./state.ts"
 
@@ -46,6 +47,12 @@ export async function maybeAutoMerge(project: string, job: Job, opts: AutoMergeO
   if (!job.integrationCheckout || job.integrationCheckout === "HEAD" || !job.integrationBranch || !job.integrationWorktree || !job.integrationBase) return {}
   if (HALTED.has(job.phase)) return {}
   if (!complete(job)) return {}
+  // The branch tip the user took back with undo_merge stands until the branch moves again: a new task commit changes
+  // the tip, so genuinely new work merges while the undone tip does not come back by itself.
+  if (job.mergeUndoneAt) {
+    const tip = await (opts.run ?? exec)("git", ["rev-parse", job.integrationBranch], { cwd: job.integrationWorktree })
+    if (tip.code === 0 && tip.stdout.trim() === job.mergeUndoneAt) return {}
+  }
   if (merging.has(job.id)) return {}
   merging.add(job.id)
   try {

@@ -241,8 +241,9 @@ Jev and the plugin securing every task:
    the job branch. The conversation
    itself is OpenCode's to rewind (undo or fork in the TUI); the plugin has no access to that.
 
-   **The job branch goes into the checkout by itself.** When the micromanager's turn ends and no task is open or live
-   (at least one merged), the branch `jev/<job>` is merged into your checkout without an acknowledgement: fast-forward
+   **The job branch goes into the checkout by itself.** Runner jobs merge after their final checks; native/rolling
+   jobs when the micromanager's turn ends and no task is open or live (at least one merged). The branch `jev/<job>`
+   is merged into your checkout without an acknowledgement: fast-forward
    when possible, otherwise the job branch is rebased onto the checkout's HEAD inside the job's own worktree and the
    job's final checks run again there, then fast-forwarded. A conflict or a failing
    check leaves the branch and the checkout as they were and says so in a note. A checkout with uncommitted changes

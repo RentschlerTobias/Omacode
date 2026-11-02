@@ -21,6 +21,7 @@ declare module "./state.ts" {
     integrationBase?: string // the commit the job's branch started from
     integrationDirty?: string // uncommitted paths in the user's tree when the worktree was made, "" when it was clean
     integrationCheckout?: string // the branch the user's checkout was on when the job started
+    mergeUndoneAt?: string // the job branch tip the user took back with undo_merge; auto-merge waits until it moves
   }
   interface Task {
     worktreeRel?: string // the same offset for the task's own worktree
@@ -375,6 +376,13 @@ export async function mergeIntoCheckout(project: string, job: Pick<Job, "integra
   if (mergeHead.code === 0) return { ok: false, reason: "busy", detail: "MERGE_HEAD: a merge is already in progress in the user's checkout" }
   const rebaseHead = await run("git", ["rev-parse", "-q", "--verify", "REBASE_HEAD"], { cwd: project })
   if (rebaseHead.code === 0) return { ok: false, reason: "busy", detail: "REBASE_HEAD: a rebase is already in progress in the user's checkout" }
+  // A manual merge on a dirty checkout refuses before anything else that could rewrite the job branch: the dirty check
+  // sits ahead of the rebase decision, so a refusal never leaves the branch rebased in its worktree. The automatic
+  // path (allowDirty) skips this and lets git decide, restoring the pre-rebase tip when git refuses the ff.
+  if (policy.allowDirty !== true) {
+    const dirt = await dirtyPaths(project, run)
+    if (dirt.dirty) return { ok: false, reason: "dirty", detail: dirt.summary, paths: dirt.paths }
+  }
   const head = await run("git", ["rev-parse", "HEAD"], { cwd: project })
   if (head.code !== 0) return { ok: false, reason: "ff", detail: `cannot read the checkout's HEAD: ${head.stderr.trim().slice(-500)}` }
   const from = head.stdout.trim()
@@ -403,10 +411,6 @@ export async function mergeIntoCheckout(project: string, job: Pick<Job, "integra
         return { ok: false, reason: "checks", detail: failed.map((r) => r.command).join(", "), checks: results }
       }
     }
-  }
-  if (policy.allowDirty !== true) {
-    const dirt = await dirtyPaths(project, run)
-    if (dirt.dirty) return { ok: false, reason: "dirty", detail: dirt.summary, paths: dirt.paths }
   }
   const merged = await run("git", ["merge", "-q", "--ff-only", branch], { cwd: project })
   if (merged.code !== 0) {

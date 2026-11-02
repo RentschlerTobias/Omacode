@@ -229,6 +229,11 @@ const SHARED: Shared = ((globalThis as { __micromanager?: Shared }).__micromanag
   asked: new Map(),
 })
 
+// The auto-merge refusal reason last put out for each job: a standing refusal is told once, and again only when the
+// reason changes, so an idle wake does not repeat the same note forever. Module level, like SHARED: one map per plugin
+// instance, which is what serves the micromanager session whose idles these are.
+const lastRefusal = new Map<string, string>()
+
 // A path outside the project that a reader may read: one its task names (live test: "map oc-voice" needs oc-voice).
 // src/decide.ts owns the rule now (taskNamesPath), so the plugin's own layer asks the same question of the same helper:
 // two copies of a path rule drift apart, and only one of them would be fixed next time.
@@ -459,6 +464,9 @@ export async function mergeJobInto(project: string, job: Job, ack: string, run: 
     return said(`Not merged: ${why}. Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
   }
   const to = outcome.to
+  // A merge the user asked for stands: any undo_merge they did before it is superseded, so a later idle must not
+  // read the old flag as still holding back the branch.
+  job.mergeUndoneAt = undefined
   // What the merge did, for undo_merge: the caller keeps it on the job.
   return { ...done(`${head}\n\nMerged ${branch} into the checkout (fast-forward), now at ${to.slice(0, 7)}. The branch and its worktrees are still registered: discard_job gives them back to git; undo_merge takes this merge back.`), merge: { from: outcome.from, to, at: new Date().toISOString() } }
 }
@@ -635,6 +643,9 @@ export async function undoMerge(project: string, job: Job, ack: string, run: Exe
   if (!ack.trim()) return said(`${preview}\nNothing was changed. Show the user this, and repeat their words as ack to go on.`)
   const reset = await git("reset", "--keep", last.from)
   if (reset.code !== 0) return said(`Not undone: ${reset.stderr.trim()}. The checkout is as it was.`)
+  // What the user took back is the branch tip as it stood at the merge: an automatic merge must not put it back
+  // until the branch moves on its own. The undo_merge handler saves this with the job.
+  job.mergeUndoneAt = last.to
   return { ...done(`The checkout is back at ${last.from.slice(0, 7)}, as before merge_job. The commits are still on ${job.integrationBranch ?? "the job branch"}; merge_job brings them back.`), undid: true }
 }
 
@@ -1869,9 +1880,17 @@ export default {
           log("warn", `auto-merge failed: ${String(err)}`)
           return {}
         })
-        // A refusal repeats on every idle while the reason stands, so it does not resume the session: the note is
-        // there at its next turn. A merge is told at once, and the next idle finds nothing left to merge.
-        if (merged.note) await ctx.session.synthetic({ sessionID, text: merged.note, resume: Boolean(merged.merged) }).catch((err: unknown) => log("warn", `auto-merge note failed: ${String(err)}`))
+        // A standing refusal is told once per job, and again only when its reason changes: the note does not resume
+        // the session, and repeating it on every idle would be noise. A merge clears what was remembered, so a
+        // refusal that comes back later is put out as new.
+        if (merged.reason && merged.note) {
+          if (lastRefusal.get(found.id) !== merged.reason) {
+            lastRefusal.set(found.id, merged.reason)
+            await ctx.session.synthetic({ sessionID, text: merged.note, resume: Boolean(merged.merged) }).catch((err: unknown) => log("warn", `auto-merge note failed: ${String(err)}`))
+          }
+        } else if (merged.merged) {
+          lastRefusal.delete(found.id)
+        }
       }
       const job = autoJob(sessionID)
       if (!job) return

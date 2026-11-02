@@ -399,6 +399,25 @@ mergeTest("mergeIntoCheckout refuses a dirty checkout without allowDirty and wri
   assert.ok(!asked.calls.some((c) => c.startsWith("git merge ")), "no merge ever reached the checkout")
 })
 
+mergeTest("a dirty checkout refuses before a rebase and leaves the branch tip unchanged", async (r) => {
+  writeFileSync(join(r.wt, "work.txt"), "done\n")
+  execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
+  execFileSync("git", ["-C", r.wt, "commit", "-qm", "T1: done"], { encoding: "utf8" })
+  writeFileSync(join(r.repo, "main.txt"), "checkout change\n") // the checkout diverged: a rebase would be the next step
+  r.git("add", "-A")
+  r.git("commit", "-qm", "checkout change")
+  writeFileSync(join(r.repo, "base.txt"), "mine\n") // and the checkout is dirty
+  const tip = r.git("rev-parse", "jev/job-1")
+  const head = r.git("rev-parse", "HEAD")
+  const asked = recording()
+  const result: MergeResult = await mergeIntoCheckout(r.repo, mergeJob(r.wt, r.base), { checkout: "main" }, asked.run)
+  assert.deepEqual(result, { ok: false, reason: "dirty", detail: "base.txt", paths: ["base.txt"] })
+  assert.equal(r.git("rev-parse", "jev/job-1"), tip, "the branch tip is exactly as it was before the call")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), tip, "the job worktree was not rebased either")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout is unchanged")
+  assert.ok(!asked.calls.some((c) => c.startsWith("git rebase")), "no rebase ran before the refusal")
+})
+
 mergeTest("mergeIntoCheckout with allowDirty merges around an unrelated untracked file", async (r) => {
   writeFileSync(join(r.wt, "work.txt"), "done\n")
   execFileSync("git", ["-C", r.wt, "add", "-A"], { encoding: "utf8" })
