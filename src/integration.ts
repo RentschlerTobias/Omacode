@@ -10,6 +10,7 @@ import { mkdirSync } from "node:fs"
 import { join, relative, resolve, sep } from "node:path"
 
 import { measuredOf, median, parseScoreLines, type Contract, type Measured } from "./contract.ts"
+import { scrub } from "./redact.ts"
 import { stateDir } from "./store.ts"
 import type { Job, Task } from "./state.ts"
 
@@ -181,7 +182,8 @@ export async function changedFiles(worktree: string, run: Exec = exec, rel = "")
 export async function commitTask(worktree: string, subject: string, body: string, run: Exec = exec): Promise<string | undefined> {
   if ((await changedFiles(worktree, run)).length === 0) return undefined
   await run("git", ["add", "-A"], { cwd: worktree })
-  const commit = await run("git", ["commit", "-q", "-m", subject, "-m", body], { cwd: worktree })
+  // What lands in git history is redacted, like every other egress.
+  const commit = await run("git", ["commit", "-q", "-m", scrub(subject), "-m", scrub(body)], { cwd: worktree })
   if (commit.code !== 0) throw new IntegrationError(`git commit failed: ${commit.stderr.trim()}`)
   return (await run("git", ["rev-parse", "--short", "HEAD"], { cwd: worktree })).stdout.trim()
 }

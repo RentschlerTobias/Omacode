@@ -13,6 +13,7 @@ import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
   projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type Run,
 } from "../src/integration.ts"
+import { useVault, Vault } from "../src/redact.ts"
 import { DIR } from "../src/store.ts"
 
 interface Call {
@@ -318,4 +319,26 @@ test("revertFiles and hashFiles act in the directory the paths are relative to",
 
   const fallback = await hashFiles("/wt", ["references.bib"], record)
   assert.equal(seen.at(-1)!.cwd, "/wt", "without a directory it keeps the worktree root, as before")
+})
+
+test("commitTask redacts the subject and body before the git call", async () => {
+  const vault = new Vault({ path: null, allow: [], secrets: true, pii: true })
+  const name = vault.add("Anna", "person")!
+  useVault(vault)
+  try {
+    const calls: Array<{ command: string; args: readonly string[] }> = []
+    const run: Exec = async (command, args) => {
+      calls.push({ command, args })
+      if (args[0] === "status") return { code: 0, stdout: " M x\n", stderr: "" }
+      if (args[0] === "rev-parse") return { code: 0, stdout: "abc1234\n", stderr: "" }
+      return { code: 0, stdout: "", stderr: "" }
+    }
+    assert.equal(await commitTask("/wt", "T1: ask Anna about the API", "Job: job-1\nWorker: Anna", run), "abc1234")
+    const commit = calls.find((c) => c.args[0] === "commit")!
+    assert.equal(commit.args[commit.args.indexOf("-m") + 1], `T1: ask ${name} about the API`)
+    assert.equal(commit.args[commit.args.lastIndexOf("-m") + 1], `Job: job-1\nWorker: ${name}`)
+    assert.ok(!JSON.stringify(commit.args).includes("Anna"), "git never sees the real name")
+  } finally {
+    useVault(undefined)
+  }
 })

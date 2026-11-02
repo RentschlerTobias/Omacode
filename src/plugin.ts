@@ -899,7 +899,8 @@ const plugin = {
     const visible = (text: string): string => (vault ? vault.restore(text, (kind) => kind !== "secret") : text)
     const synthetic = ctx.session.synthetic.bind(ctx.session)
     const say = (args: { sessionID: string; text: string; resume: boolean }) => synthetic({ ...args, text: visible(args.text) })
-    const names: NameSettings | undefined = vault && settings.redact.names
+    // "nameAddress": false opts this project out of the name/address detector only; secrets and paths stay on.
+    const names: NameSettings | undefined = vault && settings.redact.names && settings.redact.nameAddress
       ? { url: (DEFAULT_BACKENDS.urls.gliner ?? "http://127.0.0.1:8781/v1/systemone").replace(/\/v1\/systemone$/, "/v1/entities"), labels: DEFAULT_LABELS, threshold: settings.redact.threshold }
       : undefined
     let namesDownSince = 0
