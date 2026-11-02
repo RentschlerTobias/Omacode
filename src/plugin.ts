@@ -2991,22 +2991,13 @@ const plugin = {
         }
       }
     }
-    await ctx.session.hook("context", async (input) => {
-      await shapeContext(input)
-      // Last, so the notes the plugin added on the way are covered too.
-      await redactRequest(input)
+    const { installGuard } = await import("./guard/wire.ts")
+    installGuard(ctx, {
+      getVault: () => vault,
+      getNames: () => names,
+      shapeContext,
+      log,
     })
-    // The model only saw placeholders, so its own answer comes back with them. Restore the real values before OpenCode
-    // parses and stores the response: the user reads a name, not T11. Secrets stay placeholders.
-    try {
-      await ctx.session.hook("http.response", (event) => {
-        if (vault) event.response = restoreResponse(event.response, vault)
-      })
-    } catch (err) {
-      // An OpenCode build without the response hook still redacts outgoing requests; it only cannot put the real
-      // values back into the model's own answer.
-      log("warn", `response restore hook unavailable: ${String(err)}`)
-    }
   },
 }
 
