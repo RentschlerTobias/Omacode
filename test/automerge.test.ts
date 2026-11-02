@@ -215,6 +215,24 @@ autoTest("a manual merge clears an earlier undo_merge flag", async (r) => {
   assert.equal(loadJob(r.repo, JOB_ID)!.mergeUndoneAt, undefined, "and the cleared flag survives a save")
 })
 
+autoTest("merge_job refuses a diverged and dirty checkout before touching the branch or the checkout", async (r) => {
+  commitBranch(r, "work.txt", "done\n")
+  commitCheckout(r, "main.txt", "checkout change\n") // the checkout diverged: a rebase would be the next step
+  writeFileSync(join(r.repo, "base.txt"), "mine\n") // and the checkout is dirty
+  const head = r.git("rev-parse", "HEAD")
+  const tip = r.git("rev-parse", `jev/${JOB_ID}`)
+  const wtHead = execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
+
+  const out = await mergeJobInto(r.repo, autoJob(r), "")
+  assert.equal(out.wrote, false)
+  assert.match(out.text, /^Not merged: the checkout has uncommitted changes/)
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout did not move")
+  assert.equal(r.git("rev-parse", `jev/${JOB_ID}`), tip, "the branch tip did not move")
+  assert.equal(execFileSync("git", ["-C", r.wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim(), wtHead, "the job worktree was not rebased")
+  assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "mine\n", "the user's edit stands")
+  assert.ok(!existsSync(join(r.repo, "work.txt")), "the branch's work did not land")
+})
+
 autoTest("autoMerge off means no merge, however finished the job is", async (r) => {
   await withAutoMerge(false, async () => {
     commitBranch(r, "work.txt", "done\n")
