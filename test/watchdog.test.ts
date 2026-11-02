@@ -252,3 +252,13 @@ test("the checkpoint comes at the session's interval, and sooner on signs of a s
   }
   assert.equal(e.checkpointDue("s"), true)
 })
+
+test("a read's result counts its unseen lines; the same lines again do not", () => {
+  const d = w({ sameCall: 99, readRepeat: 99 })
+  d.onTool("s", "read", { path: "a.ts" }, false, "one\ntwo")
+  assert.equal(d.progress("s")?.newLines, 2, "both lines are new")
+  d.onTool("s", "read", { path: "a.ts" }, false, "one\ntwo")
+  assert.equal(d.progress("s")?.newLines, 2, "the same lines are not new again")
+  d.onTool("s", "read", { path: "a.ts" }, false, "one\nthree")
+  assert.equal(d.progress("s")?.newLines, 3, "only the new line counts")
+})
