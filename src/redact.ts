@@ -398,7 +398,7 @@ export function requestTexts(messages: unknown, system: readonly { text?: string
 }
 
 const FILE_TOOLS = new Set(["write", "edit", "patch", "apply_patch", "multiedit"])
-const WEB_TOOLS = /web|fetch|search_web|research/i
+const WEB_TOOLS = /web|fetch|search_web|research|browser|playwright/i
 
 // Which placeholders a tool call gets back as real values: files get all of them, so a file keeps its key; the web
 // gets none, so a name never leaves in a URL; anything else gets everything but secrets, which a command could send
@@ -546,9 +546,14 @@ const ADDRESS_WORD =
 // A span GLiNER called a person or an address that is worth a placeholder: not an identifier, not a placeholder, and
 // shaped like the thing it claims to be. A person is two or more capitalized words (GLiNER called vm-host a person with
 // 0.849 confidence); an address has a house number and a street word, which keeps versions and product names out.
+// Machine-generated identifiers are never people: job ids (job-20261102-142854-b237), task ids (T1, T12), branch-like
+// slugs (micromanager/…, jev/…) and commit shas. A detector that reads one as a name put a placeholder where the board
+// shows a task id, so these are excluded before any name or address check.
+const MACHINE_ID = /\b(?:job-[0-9a-z-]+|T\d{1,4}|[0-9a-f]{7,40})\b|\b[\w.-]+\/[\w./-]+\b/i
+
 export function plausibleEntity(value: string, kind: Kind): boolean {
   const v = value.trim().replace(/\s+/g, " ")
-  if (v.length < 3 || isPlaceholder(v) || /[_/\\=<>{}()[\]`]/.test(v)) return false
+  if (v.length < 3 || isPlaceholder(v) || MACHINE_ID.test(v) || /[_/\\=<>{}()[\]`]/.test(v)) return false
   if (kind === "person") {
     if (/\d/.test(v)) return false
     const words = v.split(" ")

@@ -39,7 +39,8 @@ import { lastAssistantText } from "./brief.ts"
 import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
 import { board } from "./board.ts"
 import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
-import { cleanEnv, looksSecret, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells, type Wrapper } from "./sandbox.ts"
+import { looksSecret, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
+import { installShell, type SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
 import { badName, GRANT_FLOOR, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
 import { accessForm, answersOf, formInput, gitForm, readForm, type Question } from "./forms.ts"
@@ -55,9 +56,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, extname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
-  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, LOOK_ID, planText,
-  TOOL_IDS, type ToolDraft,
+  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, installWaitTool, LOOK_ID, planText,
+  TOOL_IDS, WAIT_ID, type ToolDraft,
 } from "./tools.ts"
+import { waitFor, waitTimeoutMs, watchAsk, watchFile, watchPid } from "./wait.ts"
 import { readBaseline, readLoopholes, readPrefs, roundFormOf, roundHeader } from "./contractround.ts"
 import { ChangeRequests, changeNote, changeResult, normalTarget, readChange, route, validateRequest, type ChangeAnswer, type ChangeKind } from "./checkchange.ts"
 import { HELPER_STEPS, Helpers } from "./helpers.ts"
@@ -142,13 +144,9 @@ interface Context {
 }
 
 // What Session.get answers with: only the fields the backstop reads, and the directory under both names because the
-// internal record carries it as location.directory while the SDK type says directory.
-interface SessionRecord {
-  parentID?: string
-  agent?: string
-  directory?: string
-  location?: { directory?: string }
-}
+// internal record carries it as location.directory while the SDK type says directory. The shell plugin reads the same
+// record (src/shell/wire.ts).
+type SessionRecord = ShellSessionRecord
 
 // The commit of the plugin's own repository, and whether its tree has uncommitted changes, read once per server start.
 async function pluginCode(): Promise<{ commit: string; dirty: boolean | "unknown" }> {
@@ -189,12 +187,12 @@ interface Shared {
   grants: Map<string, Grants> // job -> what the user decided about the refused paths of this job
   asked: Map<string, Asked> // job -> the question waiting for an answer, so it is never asked twice at once
   native?: Native // the micromanager's workers on OpenCode's subagent tool, made by the first instance
-  sandbox?: Promise<Wrapper> // worker commands' sandbox (src/sandbox.ts), started once per server
+  sandbox?: Promise<Wrapper> // worker commands' sandbox (src/shell/sandbox.ts), started once per server
   // A wrapped command -> the command the worker wrote. OpenCode evaluates a shell's permission after the shell hook
   // wrapped it (live run, 2026-10-20: the rules and Jev saw a page of bwrap instead of `./probe.sh`), so the
   // permission hook puts the worker's own command back before anything judges it.
   unwrapped?: Map<string, string>
-  // The shells worker sessions asked for: only these are cleaned and wrapped (src/sandbox.ts WorkerShells).
+  // The shells worker sessions asked for: only these are cleaned and wrapped (src/shell/sandbox.ts WorkerShells).
   workerShells: WorkerShells
   code?: { commit: string; dirty: boolean | "unknown" } // the plugin code this server loaded
   asks: Asks // workers' paused permission requests, answered by the micromanager or the user (src/ask.ts)
@@ -215,6 +213,8 @@ interface Shared {
   continuing: Map<string, string> // micromanager session -> job id
   usage?: Usage // the tasks each model got this week, for the least-used pick of a role's pool (src/usage.ts)
   vault?: Vault // private data -> placeholders, for every session of the server (src/redact.ts)
+  // Persistent permission grants keyed by job, restored on load
+  persistentGrants?: Map<string, Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }>>
 }
 const SHARED: Shared = ((globalThis as { __micromanager?: Shared }).__micromanager ??= {
   workerTasks: new Map(),
@@ -858,7 +858,7 @@ export function grantAnswer(text: string): boolean | undefined {
   return undefined
 }
 
-export default {
+const plugin = {
   id: "micromanager",
   setup: async (ctx: Context): Promise<void> => {
     const log = logger(ctx)
@@ -879,7 +879,7 @@ export default {
       const g = loadControl(project, jobId).grants
       return { env: g?.env ?? [], network: g?.network ?? [] }
     }
-    // Worker commands run in the sandbox (src/sandbox.ts); one per server, shared by every instance.
+    // Worker commands run in the sandbox (src/shell/sandbox.ts); one per server, shared by every instance.
     const sandbox = (SHARED.sandbox ??= startSandbox(settings.sandbox).then((box) => {
       if (!box.available) log("warn", `worker commands run without a sandbox: ${box.reason}`)
       return box
@@ -896,7 +896,8 @@ export default {
     const visible = (text: string): string => (vault ? vault.restore(text, (kind) => kind !== "secret") : text)
     const synthetic = ctx.session.synthetic.bind(ctx.session)
     const say = (args: { sessionID: string; text: string; resume: boolean }) => synthetic({ ...args, text: visible(args.text) })
-    const names: NameSettings | undefined = vault && settings.redact.names
+    // "nameAddress": false opts this project out of the name/address detector only; secrets and paths stay on.
+    const names: NameSettings | undefined = vault && settings.redact.names && settings.redact.nameAddress
       ? { url: (DEFAULT_BACKENDS.urls.gliner ?? "http://127.0.0.1:8781/v1/systemone").replace(/\/v1\/systemone$/, "/v1/entities"), labels: DEFAULT_LABELS, threshold: settings.redact.threshold }
       : undefined
     let namesDownSince = 0
@@ -1202,6 +1203,34 @@ export default {
       for (const s of applied.steer) steering.set(s.session, s.note)
       return changeResult(pending, a, applied.text)
     }
+    // A worker's wait (src/wait.ts): it blocks instead of polling, so the worker spends no permission requests on
+    // asking whether its command is done. It waits on a process, a file, or a paused permission request of its own.
+    const runWait = async (args: Record<string, string>, sessionID: string): Promise<string> => {
+      const timeout = waitTimeoutMs(args.timeout ?? "")
+      const pid = args.pid ? Number(args.pid) : undefined
+      const line = args.line ? Number(args.line) : undefined
+      const file = args.file?.trim() ?? ""
+      const match = args.match?.trim() ?? ""
+      const id = args.id?.trim() ?? ""
+      if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) return `wait needs a real pid: ${args.pid} is not one.`
+      if (line !== undefined && (!Number.isInteger(line) || line <= 0)) return `wait needs a real line count: ${args.line} is not one.`
+      // The permission request of this worker: it waits for the answer and is told how it ended. The worker knows
+      // its own request by its id ("A1") or by a word of it; with no word, its own request is the one it waits for.
+      const mine = SHARED.asks.mine(sessionID)
+      if (id || (!pid && !file && mine.length === 1)) {
+        const pending = id ? SHARED.asks.find(id, sessionID) : mine[0]
+        const settled = pending ? SHARED.asks.settled(pending.id, sessionID) : undefined
+        if (!pending || !settled) return `There is no permission request of yours that waits for "${id}". Nothing to wait for.`
+        const result = await waitFor(watchAsk(settled, `the permission request ${pending.id}`), timeout)
+        record({ kind: "wait", sessionID, target: pending.id, outcome: result.outcome, waitedMs: result.waitedMs })
+        return result.text
+      }
+      if (!pid && !file) return "wait needs something to wait for: a pid, a file, or the id of a paused permission request."
+      const watch = pid !== undefined ? watchPid(pid) : watchFile(file, match || undefined, line)
+      const result = await waitFor(watch, timeout)
+      record({ kind: "wait", sessionID, target: pid !== undefined ? `pid ${pid}` : file, outcome: result.outcome, waitedMs: result.waitedMs })
+      return result.text
+    }
     // evolve_task (src/evolver.ts): OpenEvolve on one block, measured by a frozen contract, in the background. Its models
     // are reached through a bridge this process answers with tool-less sessions, so every call is charged to the job;
     // every candidate runs in the sandbox, and without one nothing starts. The best candidate goes through the task's
@@ -1288,30 +1317,69 @@ export default {
       const state = box.available ? "on" : `off: ${box.reason}`
       if (loadControl(project, jobId).sandbox !== state) updateControl(project, jobId, { sandbox: state })
     }
-    // Every shell a worker starts: its environment cleaned to the allowlist, its command wrapped in the sandbox with the
-    // rules of its role. A shell that is no worker's (the user's own, another agent's, the micromanager's) is left as
-    // it is: its directory alone cannot tell, so the shell tool's execute.before notes a worker's command first.
-    await ctx.shell?.hook("create.before", async (input) => {
-      if (!SHARED.workerShells.take(input.command)) return
-      const cwd = String(input.cwd ?? "")
-      const found = native.workerAt(cwd)
-      // A worker of the older runner path: known only by its directory, and it writes there.
-      const dir = found ? undefined : [...workerDirs.values()].filter((d) => cwd === d || cwd.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
-      if (!found && !dir) return
-      const grants = found ? jobGrants(found.project, found.jobId) : { env: [], network: [] }
-      if (found) await markSandbox(found.project, found.jobId)
-      input.env = cleanEnv(input.env ?? process.env, [...settings.env, ...grants.env])
-      const box = await sandbox
-      if (!box.available) return
-      const temp = tempDirFor(found ? `${found.jobId}\0${found.writer ? found.worktree : found.dir}` : dir!)
-      const rules = found
-        ? rulesFor({ role: found.role, writer: found.writer, dir: found.dir, worktree: found.worktree, domains: [...settings.network, ...grants.network], frozen: found.frozen, temp })
-        : rulesFor({ role: "code", writer: true, dir: dir!, worktree: dir!, domains: [...settings.network], temp })
-      const wrapped = await box.wrap(withTemp(input.command, temp), rules)
-      const seen = (SHARED.unwrapped ??= new Map())
-      seen.set(wrapped, input.command)
-      if (seen.size > 500) seen.delete(seen.keys().next().value!)
-      input.command = wrapped
+    // Every shell a child session starts: its environment cleaned to the allowlist, its command wrapped in the sandbox
+    // with the rules of its role. A shell that is no child's (the user's own, the micromanager's own) is left as it
+    // is: the shell tool's execute.before notes a child's command first, and the shell hook wraps only what it takes.
+    // The wiring is the shell plugin's (src/shell/); this is what the micromanager knows about its own workers.
+    const shell = await installShell(ctx, {
+      sandbox: () => sandbox,
+      session: async (sessionID) => (await ctx.session.get({ sessionID }).catch(() => undefined)) as SessionRecord | undefined,
+      shells: SHARED.workerShells,
+      unwrapped: (SHARED.unwrapped ??= new Map()),
+      env: settings.env,
+      domains: settings.network,
+      // A session of the plugin's own: a native worker or one of the older runner's.
+      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID),
+      // The private temp directory of a command that runs in a directory the plugin knows nothing about: one per
+      // directory, so two children in different directories do not share one.
+      temp: (key) => tempDirFor(key),
+      extra: (sessionID, cwd) => {
+        // The micromanager's own worker: the one whose directory the command runs in, exactly as before the shell
+        // plugin took the wiring over. Its role, its worktree, its frozen files and its job's grants.
+        const found = native.workerAt(String(cwd ?? ""))
+        if (found) {
+          const grants = jobGrants(found.project, found.jobId)
+          return {
+            known: true,
+            worker: true,
+            role: found.role,
+            writer: found.writer,
+            dir: found.dir,
+            worktree: found.worktree,
+            frozen: found.frozen,
+            domains: grants.network,
+            env: grants.env,
+            temp: tempDirFor(`${found.jobId}\0${found.writer ? found.worktree : found.dir}`),
+            project: found.project,
+            jobId: found.jobId,
+          }
+        }
+        // A worker of the older runner path: known only by its directory, and it writes there.
+        const dir = [...workerDirs.values()].filter((d) => cwd === d || cwd!.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
+        if (runnerSessions.has(sessionID) && dir) {
+          return { known: true, worker: true, role: "code", writer: true, dir, worktree: dir, temp: tempDirFor(dir) }
+        }
+        // A session of the plugin's own whose command runs in a directory the plugin does not know: the plugin's own
+        // rule held before the shell plugin took the wiring over, and it holds now: such a command is not wrapped.
+        if (runnerSessions.has(sessionID) || native.isWorker(sessionID)) return { known: true }
+        return undefined
+      },
+      rules: (facts, input) => {
+        const dir = facts.dir ?? input.cwd ?? process.cwd()
+        return rulesFor({
+          role: facts.role ?? "code",
+          writer: facts.writer ?? true,
+          dir,
+          worktree: facts.worktree ?? dir,
+          domains: [...settings.network, ...(facts.domains ?? [])],
+          frozen: facts.frozen ?? [],
+          temp: facts.temp,
+        })
+      },
+      // A wrapped command means the job's worker runs in the sandbox; the job's control file says so.
+      onWrap: async (facts) => {
+        if (facts.project && facts.jobId) await markSandbox(facts.project, facts.jobId)
+      },
     })
     // The job a worker session works for: what the runner recorded when it dispatched the worker, so a vouch of
     // request_access and a reconciliation both know which job they are about. undefined for a session that is none of
@@ -1326,11 +1394,9 @@ export default {
       // real values already. Redacting again keeps a name out of a web search and a secret out of a shell command.
       const scope = vault && restoreScope(call.tool)
       if (vault) mapStrings(call.input, (s) => (scope ? vault.restore(vault.redact(s), scope) : vault.redact(s)))
-      // A worker's shell: noted so the shell hook, which gets no session id, wraps this one and no other agent's.
-      if (call.tool === "shell" && call.sessionID && (runnerSessions.has(call.sessionID) || native.isWorker(call.sessionID))) {
-        SHARED.workerShells.expect(String(call.input.command ?? ""))
-        return
-      }
+      // A worker's shell is noted by the shell plugin (src/shell/wire.ts), which wraps this one and no other agent's.
+      // The note comes after the redaction, so the command the shell hook wraps is the one the tool will run.
+      await shell.note(call)
       // A delegation the plugin cannot isolate. From the micromanager this is still a refusal that names the name it
       // could not find (a live run asked for OpenCode's own `explore` and then looked for an `explore` role agent
       // that does not exist); from any other agent the call is deliberately left exactly as its caller wrote it,
@@ -1509,6 +1575,22 @@ export default {
         record({ kind: "permission", sessionID: evaluation.sessionID, agent: evaluation.agent, action: evaluation.action, resources: evaluation.resources, verdict: "deny", reason: "refused for this job when it was asked before" })
         return true
       }
+      try {
+        const job = jobOfSession(evaluation.sessionID)
+        if (job) {
+          const saved = job.permissions?.grants ?? []
+          if (saved.length) {
+            const cmdPrefix = evaluation.resources[0]?.split(/\s+/).slice(0, 3).join(" ") ?? evaluation.action
+            const key = typeof (SHARED.asks as any).grantKey === "function" ? (SHARED.asks as any).grantKey(evaluation.action, evaluation.resources) : undefined
+            const hit = saved.some((g: any) => (g.key && key && g.key === key) || (g.action === evaluation.action && g.prefix && cmdPrefix.startsWith(g.prefix)) || (g.action === evaluation.action && !g.prefix && g.key === key))
+            if (hit) {
+              evaluation.effect = "allow"
+              record({ kind: "permission", sessionID: evaluation.sessionID, agent: evaluation.agent, action: evaluation.action, resources: evaluation.resources, verdict: "allow", reason: "allowed by persisted grant" })
+              return true
+            }
+          }
+        }
+      } catch {}
       evaluation.effect = "ask"
       const { sessionID, action, agent } = evaluation
       const resources = [...evaluation.resources]
@@ -1715,7 +1797,7 @@ export default {
         // paused: the micromanager or the user answers it (src/ask.ts)
       } else if (managed) {
         evaluation.effect = "deny"
-        evaluation.message = `This is refused, not queued: nobody is asked while you run (${outcome.reason}), and asking again would not bring the question back. It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it. Still, do not reach the same result by a route around this permission.`
+        evaluation.message = `This is refused, not queued: nobody is asked while you run (${outcome.reason}), and asking again would not bring the question back. It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it. Still, do not reach the same result by a route around this permission. If what you are waiting for is a command of your own, the wait tool blocks on it in one call (a pid, a log file, or a line of it) instead of a sleep loop: use it rather than polling.`
       }
       record({ kind: "permission", ...request, task: request.task?.slice(0, 500), ...outcome })
       log("info", `${evaluation.action} ${evaluation.resources.join(" | ").slice(0, 120)}: ${outcome.verdict} (${outcome.reason})`)
@@ -1734,7 +1816,7 @@ export default {
       const box = await sandbox
       record({
         kind: "plugin",
-        // Whether worker commands run in the sandbox (src/sandbox.ts), and why not.
+        // Whether worker commands run in the sandbox (src/shell/sandbox.ts), and why not.
         sandbox: box.available ? "on" : `off: ${box.reason}`,
         version: version(),
         // Which code this server runs: the plugin loads once per server, so after an update a server that was not
@@ -2136,6 +2218,29 @@ export default {
         tell(`${form.id}: ${pending.name} ${form.granted ? "is granted for this job" : "is refused for this job"}; the worker goes on.`)
       } else if (form.kind === "ask" && form.decision) {
         const r = await SHARED.asks.answer(form.id, form.decision, "user")
+        if (form.decision === "job" && project) {
+          try {
+            const ask = SHARED.asks.get(form.id)
+            if (ask) {
+              const all = listJobs(project)
+              let foundJob: any = all.find((j: any) => j.facilitator === ask.parent)
+              if (!foundJob) {
+                const jid = (SHARED.workerJobs as any)?.get(ask.sessionID)
+                if (jid) foundJob = all.find((j: any) => j.id === jid)
+              }
+              if (foundJob) {
+                const grants = foundJob.permissions?.grants ? [...foundJob.permissions.grants] : []
+                const key = typeof (SHARED.asks as any).grantKey === "function" ? (SHARED.asks as any).grantKey(ask.action, ask.resources) : ask.action + "\0" + (ask.resources || []).join("\0")
+                const prefix = (ask.resources?.[0] || "").split(/\s+/).slice(0, 3).join(" ")
+                if (!grants.some((g: any) => g.key === key)) {
+                  grants.push({ key, action: ask.action, prefix: prefix || ask.action, directory: (SHARED.workerDirs as any)?.get(ask.sessionID) })
+                  foundJob.permissions = { grants }
+                  saveJob(project, foundJob)
+                }
+              }
+            }
+          } catch {}
+        }
         tell(`${form.id}: ${r.text}`)
       }
     }
@@ -2165,7 +2270,7 @@ export default {
       }
       if (watchdog.watching(call.sessionID)) {
         const failed = /\b(error|failed|not found|denied|exception|traceback)\b/i.test(resultText(call.result).slice(0, 600))
-        const signal = watchdog.onTool(call.sessionID, call.tool, call.input, failed)
+        const signal = watchdog.onTool(call.sessionID, call.tool, call.input, failed, call.result)
         if (signal) stop(call.sessionID, signal)
       }
       if (!runnerSessions.has(call.sessionID)) return
@@ -2613,6 +2718,11 @@ export default {
         log("error", `${CHECK_CHANGE_ID} not installed: ${String(err)}`)
       }
       try {
+        installWaitTool(draft, (args, tctx) => runWait(args, tctx.sessionID!), (sessionID) => native.isWorker(sessionID) || SHARED.helperOf.has(sessionID))
+      } catch (err) {
+        log("error", `${WAIT_ID} not installed: ${String(err)}`)
+      }
+      try {
         installGraphTool(draft, async (a, tctx) => {
           const text = await native.askGraph(tctx.sessionID!, a.action, a.symbol, a.to)
           record({ kind: "graph", sessionID: tctx.sessionID, action: a.action, symbol: a.symbol.slice(0, 100), chars: text.length })
@@ -2790,7 +2900,6 @@ export default {
     // with its own rules in epochs, so the prompt's prefix stays byte-identical between them (src/context/manager.ts).
     const compactor = new Compactor(decider, record)
     const workerJudge = new Compactor(decider, record, { keepTurns: 8, ruleAge: 20, tools: new Set(["read", "grep", "glob", "list", "webfetch", "websearch"]), subject: "worker" })
-    const contextManager = new ContextManager({ journal: record })
     const priceBook = new PriceBook(() => ctx.model?.list())
     // Stage 3: a session near its ceiling gets its older turns summarized by DeepSeek V4.1 Flash (the user's pick,
     // 2026-10-20) in a hidden, tool-less session; the facts it lists go to the memory first (src/context/summary.ts).
@@ -2805,6 +2914,7 @@ export default {
       facts: async (facts, sessionID) => { for (const text of facts) await memory.capture({ text, source: `summary ${sessionID}` }, project) },
       journal: record,
     })
+    const contextManager = new ContextManager({ journal: record, summarizer })
     const manageContext = async (input: SessionHookInput, orchestrator: boolean) => {
       if (!input.sessionID || !Array.isArray(input.messages)) return
       let epoch = false
@@ -2820,7 +2930,7 @@ export default {
           ...summarizer.ready(input.sessionID, applied),
         ]
         const baseChars = (input.system ?? []).reduce((n, p) => n + (p.text?.length ?? 0), 0)
-        const r = contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars })
+        const r = await contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars, keepTurns: orchestrator ? 12 : 8 })
         if (r.epoch) log("info", `context epoch (${r.epoch.reason}) in ${input.sessionID}: ${r.epoch.applied} results, ${r.epoch.savedChars} characters`)
         epoch = Boolean(r.epoch)
         // A worker's notes came with its brief, the first user message: read them from there for the sidebar.
@@ -2878,6 +2988,9 @@ export default {
         if (input.tools && !(input.sessionID && native.isWriter(input.sessionID))) delete input.tools[CHECK_CHANGE_ID]
         if (input.tools && !(input.sessionID && lookAllowed(input.sessionID))) delete input.tools[LOOK_ID]
         if (input.tools && !(input.sessionID && lookAllowed(input.sessionID))) delete input.tools[BROWSER_ID]
+        // The wait: a worker blocks instead of polling. Every worker of the micromanager, and the helpers it delegates
+        // to, may use it; nobody else may.
+        if (input.tools && !(input.sessionID && (native.isWorker(input.sessionID) || SHARED.helperOf.has(input.sessionID)))) delete input.tools[WAIT_ID]
         // A worker's run: its end is awaited once, then its task is settled (merged writer, reader, or unfinished).
         if (input.sessionID && (native.isWorker(input.sessionID) || SHARED.helperOf.has(input.sessionID))) void charge(input.sessionID).catch((err: unknown) => log("warn", `budget count failed: ${String(err)}`))
         if (input.sessionID && native.isWorker(input.sessionID)) {
@@ -2940,6 +3053,8 @@ export default {
         delete input.tools[GRAPH_ID]
         delete input.tools[LOOK_ID]
         delete input.tools[BROWSER_ID]
+        // The wait belongs to the workers: the micromanager has no process of its own to wait for.
+        delete input.tools[WAIT_ID]
         // The micromanager delegates every file write. Leaving edit/write in its tool list only buys a denied turn when
         // it tries to do the work itself (live Quarto run, 2026-10-27).
         for (const id of ["edit", "write", "patch", "apply_patch", "multiedit"]) delete input.tools[id]
@@ -2991,21 +3106,15 @@ export default {
         }
       }
     }
-    await ctx.session.hook("context", async (input) => {
-      await shapeContext(input)
-      // Last, so the notes the plugin added on the way are covered too.
-      await redactRequest(input)
+    const { installGuard } = await import("./guard/wire.ts")
+    installGuard(ctx, {
+      getVault: () => vault,
+      getNames: () => names,
+      shapeContext,
+      log,
     })
-    // The model only saw placeholders, so its own answer comes back with them. Restore the real values before OpenCode
-    // parses and stores the response: the user reads a name, not T11. Secrets stay placeholders.
-    try {
-      await ctx.session.hook("http.response", (event) => {
-        if (vault) event.response = restoreResponse(event.response, vault)
-      })
-    } catch (err) {
-      // An OpenCode build without the response hook still redacts outgoing requests; it only cannot put the real
-      // values back into the model's own answer.
-      log("warn", `response restore hook unavailable: ${String(err)}`)
-    }
   },
 }
+
+export default plugin;
+export { plugin as setupPlugin };

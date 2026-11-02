@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { backlogTool, byTurn, draftFromLater, draftFromTrial, githubIssue, githubIssues, githubRepo, goalOf, localBackend, parseFrontMatter, parseItem, publishForm, publishIssue, readPublish, renderItem, slugOf, type BacklogItem } from "../src/backlog.ts"
+import { backlogTool, byTurn, draftFromLater, draftFromTrial, githubIssue, githubIssues, githubRepo, goalOf, localBackend, parseFrontMatter, parseItem, publishForm, publishIssue, readPublish, renderItem, slugOf, type BacklogBackend, type BacklogItem } from "../src/backlog.ts"
 import { parseGithubBacklog } from "../src/config.ts"
 import type { Exec } from "../src/integration.ts"
+import { useVault, Vault } from "../src/redact.ts"
 import { newJob, stage, type Task } from "../src/state.ts"
 
 const item = (extra: Partial<BacklogItem> = {}): BacklogItem => ({
@@ -135,4 +136,35 @@ test("GitHub issues of an opted-in repository are read as items; one is publishe
   assert.equal(localBackend.get(project, "faster-search")!.issue, "https://github.com/owner/repo/issues/12")
   assert.equal(parseGithubBacklog('{ "githubBacklog": ["Owner/Repo"] }')[0], "owner/repo")
   assert.throws(() => parseGithubBacklog('{ "githubBacklog": ["no-slash"] }'), /owner\/name/)
+})
+
+test("publishIssue: title and body go to GitHub redacted; the local item keeps its text", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mm-backlog-redact-"))
+  try {
+    const vault = new Vault({ path: null, allow: [], secrets: true, pii: true })
+    const name = vault.add("Anna", "person")!
+    useVault(vault)
+    try {
+      let saved: BacklogItem | undefined
+      const backend: BacklogBackend = { list: () => [], get: () => undefined, save: (_project, item) => { saved = item; return item.slug } }
+      const calls: Array<{ command: string; args: readonly string[] }> = []
+      let body = ""
+      const run = async (command: string, args: readonly string[]) => {
+        calls.push({ command, args })
+        if (command === "gh" && args.includes("--body-file")) body = readFileSync(String(args[args.indexOf("--body-file") + 1]), "utf8")
+        return { code: 0, stdout: "https://github.com/owner/repo/issues/13\n", stderr: "" }
+      }
+      const local = item({ slug: "fix-anna", title: "Fix the login for Anna", status: "ready" })
+      assert.deepEqual(await publishIssue(dir, local, "owner/repo", run, backend), { url: "https://github.com/owner/repo/issues/13" })
+      const create = calls.find((c) => c.command === "gh" && c.args.includes("--title"))!
+      assert.equal(create.args[create.args.indexOf("--title") + 1], `Fix the login for ${name}`)
+      assert.ok(!body.includes("Anna"), "the GitHub body has no real name")
+      assert.ok(body.includes(name), "the GitHub body carries the placeholder")
+      assert.equal(saved?.title, "Fix the login for Anna", "the local item keeps its real title")
+    } finally {
+      useVault(undefined)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

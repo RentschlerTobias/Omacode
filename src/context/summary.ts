@@ -10,6 +10,7 @@
 // The summary replaces tool results only (the first one carries it, the rest point to it), so every tool call keeps its
 // result and the message structure stays valid. It runs in the background; its replacements wait for the next epoch.
 
+import { ledger } from "./ledger.ts"
 import type { Ledger, Message } from "./ledger.ts"
 import { resultText } from "./ledger.ts"
 import type { Replacement } from "./rules.ts"
@@ -145,17 +146,60 @@ export class Summarizer {
     const sizes = new Map(l.items.map((i) => [i.id, i.size]))
     const started = Date.now()
     void (async () => {
+      let t: ReturnType<typeof setTimeout> | undefined
+      try {
+        const answer = await Promise.race([
+          this.#d.generate(SUMMARIZER_SYSTEM, summaryPrompt(s), `${sessionID} turns ${s.fromTurn}-${s.toTurn}`),
+          new Promise<string>((resolve) => { t = setTimeout(() => resolve(""), this.#o.timeoutMs) }),
+        ]).catch(() => "")
+        const parsed = parseSummary(answer)
+        this.#d.journal?.({ kind: "context.summary", sessionID, fromTurn: s.fromTurn, toTurn: s.toTurn, results: s.ids.length, chars: s.chars, summaryChars: parsed?.summary.length ?? 0, facts: parsed?.facts.length ?? 0, ms: Date.now() - started, ok: Boolean(parsed) })
+        if (!parsed) return
+        // The facts first: nothing is replaced before what lasts is kept.
+        if (parsed.facts.length && this.#d.facts) await this.#d.facts(parsed.facts.slice(0, 8), sessionID).catch(() => undefined)
+        this.#ready.set(sessionID, summaryReplacements(s, parsed.summary, sizes))
+      } finally {
+        if (t) clearTimeout(t)
+        this.#running.delete(sessionID)
+      }
+    })()
+    return true
+  }
+
+  // Synchronous-in-spirit (async) summarization of a text-only prefix: returns the summary text, or undefined.
+  async summarizeText(sessionID: string, messages: readonly Message[], keepTurns: number): Promise<string | undefined> {
+    const l = ledger(messages)
+    const until = l.turns - keepTurns
+    if (until <= 0) return undefined
+    const parts: string[] = []
+    let turn = -1
+    for (const m of messages) {
+      if (m.role === "assistant") turn++
+      if (turn < 0 || turn >= until) continue
+      if (m.role === "assistant") {
+        const said = textOf(m).trim()
+        if (said) parts.push(`[turn ${turn}] ${said.slice(0, 1500)}`)
+      } else if (m.role === "user") {
+        const said = textOf(m).trim()
+        if (said) parts.push(`[user] ${said.slice(0, 1500)}`)
+      }
+    }
+    let text = parts.join("\\n\\n")
+    if (!text || text.length < 1000) return undefined
+    if (text.length > this.#o.maxChars) text = `${text.slice(0, this.#o.maxChars / 2)}\\n[…]\\n${text.slice(-this.#o.maxChars / 2)}`
+    const first = messages.find((m) => m.role === "user")
+    const brief = first ? textOf(first).slice(0, 3000) : ""
+    let t: ReturnType<typeof setTimeout> | undefined
+    try {
       const answer = await Promise.race([
-        this.#d.generate(SUMMARIZER_SYSTEM, summaryPrompt(s), `${sessionID} turns ${s.fromTurn}-${s.toTurn}`),
-        new Promise<string>((resolve) => setTimeout(() => resolve(""), this.#o.timeoutMs)),
+        this.#d.generate(SUMMARIZER_SYSTEM, `Brief of the agent:\\n${brief}\\n\\nTranscript of turns 0-${until - 1}:\\n${text}`, `${sessionID} text`),
+        new Promise<string>((resolve) => { t = setTimeout(() => resolve(""), this.#o.timeoutMs) }),
       ]).catch(() => "")
       const parsed = parseSummary(answer)
-      this.#d.journal?.({ kind: "context.summary", sessionID, fromTurn: s.fromTurn, toTurn: s.toTurn, results: s.ids.length, chars: s.chars, summaryChars: parsed?.summary.length ?? 0, facts: parsed?.facts.length ?? 0, ms: Date.now() - started, ok: Boolean(parsed) })
-      if (!parsed) return
-      // The facts first: nothing is replaced before what lasts is kept.
-      if (parsed.facts.length && this.#d.facts) await this.#d.facts(parsed.facts.slice(0, 8), sessionID).catch(() => undefined)
-      this.#ready.set(sessionID, summaryReplacements(s, parsed.summary, sizes))
-    })().finally(() => this.#running.delete(sessionID))
-    return true
+      if (parsed?.facts.length && this.#d.facts) await this.#d.facts(parsed.facts.slice(0, 8), sessionID).catch(() => undefined)
+      return parsed?.summary
+    } finally {
+      if (t) clearTimeout(t)
+    }
   }
 }

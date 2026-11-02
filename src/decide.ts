@@ -273,8 +273,8 @@ export function hardRule(request: PermissionRequest, allowed: readonly string[] 
 }
 
 const READ_PROGRAMS = new Set([
-  "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "which", "type", "echo", "printf", "pwd", "file",
-  "stat", "du", "df", "tree", "diff", "cut", "tr", "basename", "dirname", "realpath", "env", "date", "true",
+  "ls", "cat", "head", "tail", "wc", "sort", "uniq", "grep", "rg", "which", "command", "type", "echo", "printf", "pwd", "file",
+  "stat", "du", "df", "tree", "diff", "cut", "tr", "basename", "dirname", "realpath", "env", "date", "true", "test", "[",
   // Reading programs a worker reaches for constantly (a live run denied 67 read-only commands without these).
   "sed", "awk", "jq", "md5sum", "sha256sum", "xxd", "od", "column", "comm", "nl", "fold", "tac", "expr", "seq",
 ])
@@ -627,7 +627,7 @@ export async function decide(
   preset?: "allow" | "deny" | "user",
   root: string | undefined = request.directory,
   allowed: readonly string[] = [],
-  // Whether the worker's commands run in the sandbox (src/sandbox.ts). Without it a writer's command in its worktree
+  // Whether the worker's commands run in the sandbox (src/shell/sandbox.ts). Without it a writer's command in its worktree
   // is no longer allowed on its text alone: what the program does is unchecked, so Jev is asked as before.
   sandboxed = true,
 ): Promise<Outcome> {

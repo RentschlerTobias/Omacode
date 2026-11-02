@@ -6,6 +6,8 @@
 // The signatures come from real failures: Kimi restarting its task, Gemini's read loops, and a local planner
 // that read the same directory sixty times in this project's own test.
 
+import { createHash } from "node:crypto"
+
 export type SignalKind = "steps" | "same_call" | "read_loop" | "no_new_files" | "restart" | "monologue" | "repeat_text" | "tokens" | "stalled" | "checkpoint" | "handback"
 
 // How hard a signal hits. A nudge asks the worker to get on with it (Jev decides whether to pass it on); a stop
@@ -83,6 +85,15 @@ export interface Progress {
   readonly writes: number
   readonly callsSinceWrite: number
   readonly filesRead: number
+  readonly newLines?: number
+  readonly newFiles?: number
+  readonly repeats?: number
+  readonly cycle?: boolean
+  readonly filesTouched?: readonly string[]
+  readonly repeatDetail?: string
+  readonly lastCommand?: string
+  readonly seenLines?: ReadonlyMap<string, ReadonlySet<string>>
+  readonly seenLineHashes?: ReadonlyMap<string, ReadonlySet<string>>
   readonly recent: readonly string[] // the last tool calls, short
   readonly recentFailures: number // failed tool calls among them
 }
@@ -108,12 +119,22 @@ interface State {
   calls: string[] // tool + input, in order
   readWindow: string[] // the read part key per call, "" for anything else, trimmed to limits.readWindow
   readPaths: Set<string>
+  checkpointReadPaths: Set<string>
+  writtenPaths: Set<string>
   quiet: number // calls in a row without a new path and without a search
   steps: number
   texts: string[] // normalized assistant texts seen so far
-  writes: number
+  writes: number // writes since the last checkpoint
+  totalWrites: number
   lastWrite: number // index into calls of the last write, -1 before any
   failed: boolean[] // per call: did it fail
+  seenLines: Map<string, Set<string>>
+  newLines: number // unseen lines since the last checkpoint
+  ring: string[] // last ~12 call signatures with identical result hash
+  lastCommand?: string
+  lastRepeatedKey?: string
+  lastRepeatedInput?: { tool: string; input: unknown }
+  lastRepeatedCount?: number
   // The adaptive checkpoint (src/checkpoint.ts): how many steps until the next review, and the step of the last one.
   // Without an interval the review comes every CHECKPOINT_STEPS steps, as before.
   interval?: number
@@ -135,6 +156,56 @@ function pathOf(input: unknown): string | undefined {
 
 const normalize = (text: string) => text.toLowerCase().replace(/\s+/g, " ").trim()
 
+
+
+function resultTextSafe(result: unknown): string {
+  try {
+    // Reuse the same shapes as hooks.resultText without importing (avoid cycle).
+    const r = result as { content?: unknown; output?: unknown } | undefined
+    if (!r || typeof r !== "object") return typeof result === "string" ? result : JSON.stringify(result ?? "")
+    const slots: string[] = []
+    if (Array.isArray(r.content)) for (const part of r.content as { text?: unknown }[]) if (part && typeof part.text === "string") slots.push(part.text as string)
+    if (typeof r.output === "string") slots.push(r.output as string)
+    else if (r.output && typeof r.output === "object") {
+      const o = r.output as Record<string, unknown>
+      for (const key of ["output", "content", "text"]) if (typeof o[key] === "string") slots.push(o[key] as string)
+    }
+    return slots.length ? slots.join("\n") : JSON.stringify(result)
+  } catch {
+    return String(result)
+  }
+}
+
+
+
+function detectCycle(ring: readonly string[]): boolean {
+  const n = ring.length
+  for (let patLen = 1; patLen <= 3; patLen++) {
+    if (n < patLen * 2) continue
+    for (let cycles = 2; cycles <= Math.floor(n / patLen); cycles++) {
+      const seg = ring.slice(-cycles * patLen)
+      const pat = seg.slice(0, patLen)
+      let ok = true
+      for (let i = 0; i < seg.length; i++) if (seg[i] !== pat[i % patLen]) { ok = false; break }
+      if (ok) return true
+    }
+  }
+  return false
+}
+
+function formatRepeat(tool: string, input: unknown, count: number): string {
+  const i = input as Record<string, unknown> | undefined
+  if (tool === "read") {
+    const path = i?.path ?? i?.filePath ?? i?.file_path
+    const offset = i?.offset
+    const limit = i?.limit
+    const where = offset !== undefined ? ` from line ${String(offset)}` : ""
+    const span = limit !== undefined ? ` for ${String(limit)} lines` : ""
+    return `read ${String(path)}${where}${span} ${count}x`
+  }
+  return `${tool} ${JSON.stringify(input)} ${count}x`
+}
+
 export class Watchdog {
   readonly #sessions = new Map<string, State>()
 
@@ -144,12 +215,18 @@ export class Watchdog {
       calls: [],
       readWindow: [],
       readPaths: new Set(),
+      checkpointReadPaths: new Set(),
+      writtenPaths: new Set(),
       quiet: 0,
       steps: 0,
       texts: [],
       writes: 0,
+      totalWrites: 0,
       lastWrite: -1,
       failed: [],
+      seenLines: new Map(),
+      newLines: 0,
+      ring: [],
       lastCheck: 0,
     })
   }
@@ -173,6 +250,14 @@ export class Watchdog {
     s.lastCheck = s.steps
     s.interval = interval
     s.next = s.steps + interval
+    // Reset the novelty accumulators and the repeat window: the next review starts fresh.
+    s.newLines = 0
+    s.writes = 0
+    s.ring = []
+    s.checkpointReadPaths = new Set(s.readPaths)
+    s.lastRepeatedKey = undefined
+    s.lastRepeatedInput = undefined
+    s.lastRepeatedCount = undefined
   }
 
   unwatch(sessionID: string): void {
@@ -184,19 +269,43 @@ export class Watchdog {
   }
 
   // failed: the call's result reads like an error (for the checkpoint's facts).
-  onTool(sessionID: string, tool: string, input: unknown, failed = false): Signal | undefined {
+  onTool(sessionID: string, tool: string, input: unknown, failedOrResult: unknown = false, resultMaybe?: unknown): Signal | undefined {
+    // Accept either (..., failed, result) or (..., result, failed) or (..., result) or (..., {result, failed}).
+    let failed = false
+    let result: unknown
+    if (failedOrResult && typeof failedOrResult === "object" && !Array.isArray(failedOrResult) && ("result" in (failedOrResult as object) || "failed" in (failedOrResult as object))) {
+      const o = failedOrResult as { result?: unknown; failed?: unknown }
+      result = o.result
+      failed = Boolean(o.failed)
+      if (resultMaybe !== undefined) result = resultMaybe
+    } else if (typeof failedOrResult === "boolean") {
+      failed = failedOrResult
+      result = resultMaybe
+    } else if (typeof resultMaybe === "boolean") {
+      result = failedOrResult
+      failed = resultMaybe
+    } else if (failedOrResult === undefined) {
+      result = resultMaybe
+    } else {
+      result = failedOrResult
+    }
+
     const s = this.#sessions.get(sessionID)
     if (!s) return undefined
     const key = `${tool} ${stable(input)}`
     s.calls.push(key)
     s.failed.push(failed)
+    const resultTextStr = result === undefined ? "" : (typeof result === "string" ? result : resultTextSafe(result))
     // One definition of "changed something": the writes counter and the re-read window reset on the same calls.
     // A `git commit` or `git add` through the shell is a write too; without this a session that read a file,
     // committed and read again kept its read count and looked like a loop.
     const wrote = WRITES.has(tool) || (tool === "shell" && /\b(git (add|commit)|>|tee|sed -i|mv|cp)\b/.test(stable(input)))
     if (wrote) {
       s.writes++
+      s.totalWrites++
       s.lastWrite = s.calls.length - 1
+      const path = pathOf(input)
+      if (path) s.writtenPaths.add(path)
     }
     // The same call again is a loop only when nothing was written in between: running the task's check after each
     // edit is the work, not a circle (live run, 2026-10-25: a worker was stopped for its third `node check.js` with an
@@ -204,7 +313,12 @@ export class Watchdog {
     const recent = s.calls.slice(-s.limits.window)
     const since = wrote ? recent : s.calls.slice(Math.max(s.lastWrite + 1, s.calls.length - s.limits.window))
     const same = since.filter((c) => c === key).length
-    if (same >= s.limits.sameCall) return { kind: "same_call", severity: "stop", detail: `${tool} with the same input ${same}x in the last ${recent.length} calls` }
+    if (same >= s.limits.sameCall) {
+      s.lastRepeatedKey = key
+      s.lastRepeatedInput = { tool, input }
+      s.lastRepeatedCount = same
+      return { kind: "same_call", severity: "stop", detail: `${tool} with the same input ${same}x in the last ${recent.length} calls` }
+    }
     const path = pathOf(input)
     const i = input as { offset?: unknown; limit?: unknown } | undefined
     // A long file read part by part (offset/limit) is no loop (live test: a reader stopped while reading
@@ -215,7 +329,12 @@ export class Watchdog {
     if (wrote) s.readWindow.length = 0 // a write changes what a re-read shows
     if (part) {
       const n = s.readWindow.filter((p) => p === part).length
-      if (n >= s.limits.readRepeat) return { kind: "read_loop", severity: "nudge", detail: `read ${path}${i?.offset !== undefined ? ` from line ${String(i.offset)}` : ""} ${n}x in a row with no write in between` }
+      if (n >= s.limits.readRepeat) {
+        s.lastRepeatedKey = key
+        s.lastRepeatedInput = { tool, input }
+        s.lastRepeatedCount = n
+        return { kind: "read_loop", severity: "nudge", detail: `read ${path}${i?.offset !== undefined ? ` from line ${String(i.offset)}` : ""} ${n}x in a row with no write in between` }
+      }
     }
     // Progress, not only new files. A search counts, and so does a command that ran and did not fail -- including
     // the `execute` tool, which is how a worker acts in code mode and which opens no path for the check below to
@@ -233,6 +352,54 @@ export class Watchdog {
     if (s.calls.length >= 2 * k && s.calls.slice(-k).join("\n") === s.calls.slice(0, k).join("\n")) {
       return { kind: "restart", detail: `the first ${k} calls came again: the session started over` }
     }
+
+    // --- novelty tracking (this task) ---------------------------------------------
+    if (READS.has(tool) && path) {
+      if (!s.readPaths.has(path)) s.readPaths.add(path)
+      // newFiles is computed in progress() from checkpointReadPaths; nothing to do here.
+      if (resultTextStr) {
+        const lines = resultTextStr.split(/\r?\n/).filter((l) => l.trim() !== "")
+        if (lines.length > 0) {
+          const seen = s.seenLines.get(path) ?? new Set<string>()
+          let unseen = 0
+          for (const line of lines) {
+            const h = createHash("sha256").update(line).digest("hex")
+            if (!seen.has(h)) unseen++
+          }
+          for (const line of lines) {
+            const h = createHash("sha256").update(line).digest("hex")
+            seen.add(h)
+          }
+          s.seenLines.set(path, seen)
+          const seenRatio = (lines.length - unseen) / lines.length
+          if (seenRatio < 0.9) s.newLines += unseen
+        }
+      }
+    }
+    if (ACTS.has(tool) || tool === "shell" || tool === "bash" || tool === "execute") {
+      const inp = input as { command?: unknown; code?: unknown } | undefined
+      const cmd = typeof inp?.command === "string" ? inp.command : (typeof inp?.code === "string" ? inp.code : undefined)
+      if (cmd) s.lastCommand = cmd
+    }
+
+    // --- repeat tracking (ring buffer of last ~12 signatures with identical result) ---
+    const resultHash = createHash("sha256").update(resultTextStr).digest("hex").slice(0, 16)
+    const combined = `${key}#${resultHash}`
+    s.ring.push(combined)
+    if (s.ring.length > 12) s.ring.shift()
+    // Track the most repeated combined signature for a concrete nudge message.
+    const counts = new Map<string, number>()
+    for (const e of s.ring) counts.set(e, (counts.get(e) ?? 0) + 1)
+    let maxCount = 0
+    let maxKey = ""
+    for (const [kk, v] of counts) if (v > maxCount) { maxCount = v; maxKey = kk }
+    const repeatCount = Math.max(maxCount, same)
+    if (repeatCount >= 2) {
+      s.lastRepeatedKey = maxKey ? maxKey.split("#")[0] : key
+      s.lastRepeatedInput = { tool, input }
+      s.lastRepeatedCount = repeatCount
+    }
+
     return undefined
   }
 
@@ -253,12 +420,37 @@ export class Watchdog {
     const s = this.#sessions.get(sessionID)
     if (!s) return undefined
     const tail = s.calls.slice(-12)
+    // newFiles: distinct paths first touched since the last checkpoint.
+    let newFiles = 0
+    for (const p of s.readPaths) if (!s.checkpointReadPaths.has(p)) newFiles++
+    // repeats: max occurrences of one combined signature in the ring buffer.
+    const counts = new Map<string, number>()
+    for (const e of s.ring) counts.set(e, (counts.get(e) ?? 0) + 1)
+    let repeats = 0
+    for (const v of counts.values()) if (v > repeats) repeats = v
+    // cycle over <=3 signatures?
+    const cycle = detectCycle(s.ring)
+    const filesTouched = [...new Set([...s.readPaths, ...s.writtenPaths])]
+    const repeatDetail = (repeats >= 2 || cycle)
+      ? (s.lastRepeatedCount && s.lastRepeatedInput
+          ? formatRepeat(s.lastRepeatedInput.tool, s.lastRepeatedInput.input, s.lastRepeatedCount)
+          : (s.lastRepeatedKey ? `${s.lastRepeatedKey} ${repeats}x` : undefined))
+      : undefined
     return {
       steps: s.steps,
       calls: s.calls.length,
       writes: s.writes,
       callsSinceWrite: s.calls.length - 1 - s.lastWrite,
       filesRead: s.readPaths.size,
+      newLines: s.newLines,
+      newFiles,
+      repeats,
+      cycle,
+      filesTouched,
+      repeatDetail,
+      lastCommand: s.lastCommand,
+      seenLines: s.seenLines,
+      seenLineHashes: s.seenLines,
       recent: tail.map((c) => c.slice(0, 120)),
       recentFailures: s.failed.slice(-12).filter(Boolean).length,
     }
@@ -289,11 +481,18 @@ export class Watchdog {
 }
 
 // What a fresh session is told after the watchdog stopped (or nudged) the previous one.
-export function handoffNote(signal: Signal, changed: readonly string[]): string {
+export function handoffNote(signal: Signal, changed: readonly string[], progress?: Progress): string {
   const what = signal.severity === "nudge" ? "drew a nudge from the loop watchdog, not a stop" : "was stopped by the loop watchdog"
+  const digest = [
+    "Digest:",
+    `Files touched: ${changed.join(", ") || (progress?.filesTouched?.join(", ") ?? "none")}`,
+    `Learned: ${progress?.newLines ?? 0} new lines, ${progress?.newFiles ?? 0} new files`,
+    `Last command: ${progress?.lastCommand ?? "none"}`,
+  ].join("\n")
   return [
     `A previous attempt at this task ${what}: ${signal.detail}.`,
     changed.length ? `Files already changed in this directory: ${changed.join(", ")}. Check them instead of starting over.` : "No file was changed yet.",
+    digest,
     "Do not read the same file again and again: once you have read a file, use what you know. If something is missing, say so in your report.",
   ].join("\n")
 }

@@ -44,8 +44,22 @@ export interface Answered {
   readonly ask?: PendingAsk
 }
 
+// How a paused request ended, as a worker that waits for it wants to hear it.
+export interface Settled {
+  readonly id: string
+  readonly decision: AskDecision
+  readonly by: AskedBy
+  readonly note: string
+}
+
 export function askKey(action: string, resources: readonly string[]): string {
   return `${action}\0${resources.map((r) => r.trim().replace(/\s+/g, " ")).join("\0")}`
+}
+
+export function commandPrefix(resources: readonly string[]): string {
+  const first = resources[0] ?? ""
+  const parts = first.trim().split(/\s+/).filter(Boolean)
+  return parts.slice(0, 3).join(" ")
 }
 
 // The user's answer, in English or German, as short as people answer. Anything else is not an answer.
@@ -58,16 +72,36 @@ export function askAnswer(text: string): AskDecision | undefined {
 }
 
 export class Asks {
-  readonly #pending = new Map<string, PendingAsk & { reply: Reply; timer?: ReturnType<typeof setTimeout> }>()
+  readonly #pending = new Map<string, PendingAsk & { reply: Reply; timer?: ReturnType<typeof setTimeout>; settled: Promise<Settled>; resolve: (s: Settled) => void }>()
   readonly #granted = new Map<string, Set<string>>() // micromanager session -> keys allowed for the job
   readonly #refused = new Map<string, Set<string>>() // micromanager session -> keys the user or micromanager refused
   readonly #journal: (entry: Record<string, unknown>) => void
   readonly #timeoutMs: number
   #n = 0
+  readonly #persistedGrants = new Map<string, Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }>>()
 
   constructor(journal: (entry: Record<string, unknown>) => void = () => {}, timeoutMs = ASK_TIMEOUT_MS) {
     this.#journal = journal
     this.#timeoutMs = timeoutMs
+  }
+
+  loadPersistedGrants(jobId: string, grants: Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }> = []): void {
+    this.#persistedGrants.set(jobId, grants)
+    const set = new Set(grants.map((g) => g.key))
+    if (set.size) this.#granted.set(jobId, set)
+  }
+
+  persistedGrants(jobId: string): Array<{ key: string; action: string; prefix: string; directory?: string; taskSession?: string }> {
+    return this.#persistedGrants.get(jobId) ?? []
+  }
+
+  persistGrant(jobId: string, action: string, resources: readonly string[], directory?: string, taskSession?: string): void {
+    const key = askKey(action, resources)
+    const prefix = resources[0]?.split(/\s+/).slice(0, 3).join(" ") ?? action
+    const list = this.#persistedGrants.get(jobId) ?? []
+    if (list.some((g) => g.key === key)) return
+    list.push({ key, action, prefix, directory, taskSession })
+    this.#persistedGrants.set(jobId, list)
   }
 
   // What was decided before about exactly this request in this micromanager's job: asked once, never asked again.
@@ -79,17 +113,44 @@ export class Asks {
   }
 
   open(request: AskRequest, reply: Reply): PendingAsk {
-    const ask: PendingAsk & { reply: Reply; timer?: ReturnType<typeof setTimeout> } = { ...request, id: `A${++this.#n}`, at: Date.now(), reply }
+    let resolve!: (s: Settled) => void
+    const settled = new Promise<Settled>((r) => (resolve = r))
+    const ask: PendingAsk & { reply: Reply; timer?: ReturnType<typeof setTimeout>; settled: Promise<Settled>; resolve: (s: Settled) => void } = { ...request, id: `A${++this.#n}`, at: Date.now(), reply, settled, resolve }
     this.#pending.set(ask.id, ask)
     ask.timer = setTimeout(() => void this.answer(ask.id, "refuse", "timeout"), this.#timeoutMs)
     ask.timer.unref?.()
     this.#journal({ kind: "ask", event: "opened", id: ask.id, sessionID: ask.sessionID, parent: ask.parent, agent: ask.agent, action: ask.action, resources: ask.resources, reason: ask.reason, hard: ask.hard })
-    const { reply: _reply, timer: _timer, ...shown } = ask
-    return shown
+    return strip(ask)
   }
 
   get(id: string): PendingAsk | undefined {
-    return this.#pending.get(id)
+    const ask = this.#pending.get(id)
+    return ask && strip(ask)
+  }
+
+  // The paused request of a worker, by its id ("A1") or by a short label that is part of what was asked. A worker that
+  // waits for its own request finds it by its session: it does not know the A-number.
+  find(id: string, sessionID?: string): PendingAsk | undefined {
+    const byId = this.#pending.get(id)
+    if (byId) return strip(byId)
+    const wanted = id.trim().toLowerCase()
+    if (!wanted) return undefined
+    const mine = [...this.#pending.values()].filter((a) => !sessionID || a.sessionID === sessionID)
+    const labelled = mine.find((a) => `${a.action} ${a.resources.join(" ")}`.toLowerCase().includes(wanted))
+    return labelled && strip(labelled)
+  }
+
+  // The promise a worker waits on: it settles when the request is answered, refused or dropped.
+  settled(id: string, sessionID?: string): Promise<Settled> | undefined {
+    const ask = this.find(id, sessionID)
+    if (!ask) return undefined
+    const pending = this.#pending.get(ask.id)
+    return pending?.settled
+  }
+
+  // The requests of this worker that wait: what it can wait for.
+  mine(sessionID: string): PendingAsk[] {
+    return [...this.#pending.values()].filter((a) => a.sessionID === sessionID).sort((a, b) => a.at - b.at).map(strip)
   }
 
   // The oldest request still waiting for this micromanager's answer: the one the user's next "yes" or "no" is about.
@@ -105,7 +166,7 @@ export class Asks {
     const ask = this.#pending.get(id)
     if (!ask) return { text: `There is no request ${id} waiting: it was answered already, or it timed out.` }
     if (ask.hard && by === "micromanager" && decision !== "refuse") {
-      return { text: `${id} is a hard rule (${ask.reason}): only the user can allow it. Show them the request as it is and end your turn; their answer reaches the plugin by itself.`, ask }
+      return { text: `${id} is a hard rule (${ask.reason}): only the user can allow it. Show them the request as it is and end your turn; their answer reaches the plugin by itself.`, ask: strip(ask) }
     }
     this.#pending.delete(id)
     clearTimeout(ask.timer)
@@ -114,7 +175,11 @@ export class Asks {
     if (decision === "refuse") {
       if (by !== "timeout") this.#set(this.#refused, ask.parent, key)
       // OpenCode fails every other paused request of the same session with a reject, so they leave the list too.
-      for (const [other, a] of this.#pending) if (a.sessionID === ask.sessionID) { clearTimeout(a.timer); this.#pending.delete(other) }
+      for (const [other, a] of this.#pending) if (a.sessionID === ask.sessionID) {
+        clearTimeout(a.timer)
+        this.#pending.delete(other)
+        a.resolve?.({ id: other, decision: "refuse", by, note: `This request is void: ${id} was answered and OpenCode fails the other requests of a session with it.` })
+      }
       const message = by === "timeout"
         ? `This is refused, not queued: nobody answered in time (${ask.reason}). It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it.`
         : `Refused by the ${by}${note ? `: ${note}` : ""}. Do not try it another way; carry on without it, and say in your report what you wanted it for. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it.`
@@ -124,8 +189,10 @@ export class Asks {
       await ask.reply("once").catch(() => undefined)
     }
     this.#journal({ kind: "ask", event: "answered", id, sessionID: ask.sessionID, parent: ask.parent, action: ask.action, resources: ask.resources, decision, by, note: note.slice(0, 300), waitedMs: Date.now() - ask.at })
+    // A worker that waits for this request hears how it ended, whether the answer was the micromanager's or the user's.
+    ask.resolve?.({ id, decision, by, note })
     const verdict = decision === "refuse" ? "refused" : decision === "job" ? "allowed for the rest of the job" : "allowed once"
-    return { text: `${id} ${verdict} (${who}); the worker ${decision === "refuse" ? "gets the refusal with the reason" : "goes on"}.`, ask }
+    return { text: `${id} ${verdict} (${who}); the worker ${decision === "refuse" ? "gets the refusal with the reason" : "goes on"}.`, ask: strip(ask) }
   }
 
   // The paused requests of sessions that ended or were stopped: nobody needs their answer any more, so they are failed
@@ -138,8 +205,9 @@ export class Asks {
       clearTimeout(ask.timer)
       await ask.reply("reject", `This request is void: ${why}.`).catch(() => undefined)
       this.#journal({ kind: "ask", event: "dropped", id, sessionID: ask.sessionID, parent: ask.parent, why, waitedMs: Date.now() - ask.at })
-      const { reply: _reply, timer: _timer, ...shown } = ask
-      dropped.push(shown)
+      // A worker that was waiting for this request hears that it is void, not that it was answered.
+      ask.resolve?.({ id, decision: "refuse", by: "timeout", note: `This request is void: ${why}.` })
+      dropped.push(strip(ask))
     }
     return dropped
   }
@@ -149,6 +217,16 @@ export class Asks {
     set.add(key)
     map.set(parent, set)
   }
+
+  grantKey(action: string, resources: readonly string[]): string {
+    return askKey(action, resources)
+  }
+}
+
+// The pending ask as the outside sees it: without the reply it carries and the promise it settles.
+function strip(ask: PendingAsk & { reply: Reply; timer?: ReturnType<typeof setTimeout>; settled: Promise<Settled>; resolve: (s: Settled) => void }): PendingAsk {
+  const { reply: _reply, timer: _timer, settled: _settled, resolve: _resolve, ...shown } = ask
+  return shown
 }
 
 // The note that wakes the micromanager. Everything needed to decide is in it.

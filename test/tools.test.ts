@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { existsSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
+import { tempDir } from "./harness.ts"
 
-import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, planText, TOOL_IDS, type ToolDraft } from "../src/tools.ts"
+import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, installWaitTool, planText, TOOL_IDS, WAIT_ID, type ToolDraft } from "../src/tools.ts"
 import { newJob } from "../src/state.ts"
 import type { Signal } from "../src/watchdog.ts"
 
@@ -109,6 +109,18 @@ test("explore and research are for the micromanager's writers only", async () =>
   assert.deepEqual(asked, ["ses_writer:explore:who calls x?", "ses_writer:research:zod v4 api?"])
 })
 
+test("the wait tool is for the workers of the micromanager, and for nobody else", async () => {
+  const { draft, added, str } = fakeDraft()
+  const waits: string[] = []
+  installWaitTool(draft, async (args, ctx) => { waits.push(`${ctx.sessionID}:${args.pid}`); return "waited" }, (id) => id === "ses_worker")
+  assert.deepEqual(byId(added, WAIT_ID).input, { mapped: { id: str, pid: str, file: str, match: str, line: str, timeout: str } })
+  assert.ok(!(TOOL_IDS as readonly string[]).includes(WAIT_ID), "the micromanager's tool list does not carry it")
+  const run = byId(added, WAIT_ID).run
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "coder", sessionID: "ses_worker" }), { content: "waited" })
+  assert.deepEqual(await run({ pid: "1234" }, { agent: "micromanager", sessionID: "ses_user" }), { content: "Only a worker of the micromanager may use this tool." })
+  assert.deepEqual(waits, ["ses_worker:1234"])
+})
+
 test("a session the runner started is refused even as the micromanager agent", async () => {
   const { draft, added } = fakeDraft()
   const ran: string[] = []
@@ -190,7 +202,7 @@ const job = (over: Partial<import("../src/state.ts").Job> = {}): import("../src/
 // is kept out of git through the repository's local exclude file (src/store.ts excludeFromGit), so it does not show up
 // as uncommitted work in the user's checkout.
 function repo(): { project: string; branch: string } {
-  const project = mkdtempSync(join(tmpdir(), "jd-merge-"))
+  const project = tempDir("jd-merge-")
   const git = (...args: string[]) => execFileSync("git", ["-C", project, ...args], { encoding: "utf8" })
   git("init", "-q")
   git("config", "user.name", "t")
@@ -198,7 +210,7 @@ function repo(): { project: string; branch: string } {
   writeFileSync(join(project, "a.txt"), "a\n")
   git("add", "-A")
   git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init")
-  const branch = "jev/job-1"
+  const branch = "micromanager/job-1"
   const wt = join(project, ".jev-micromanager", "worktrees", "job-1")
   git("worktree", "add", "-q", "-b", branch, wt, "HEAD")
   writeFileSync(join(wt, "b.txt"), "b\n")
@@ -229,10 +241,10 @@ test("steer_task on a running worker notes it; on a finished one it says how to 
 
 test("stop_task keeps the worktree and says where the work is", async () => {
   const { stopTaskAnswer } = await import("../src/plugin.ts")
-  const text = stopTaskAnswer(task({ worktree: "/wt/T1", branch: "jev/job-1--T1", session: "ses_live" }), "job-1", "ses_live", ["T2 add docs"])
+  const text = stopTaskAnswer(task({ worktree: "/wt/T1", branch: "micromanager/job-1--T1", session: "ses_live" }), "job-1", "ses_live", ["T2 add docs"])
   assert.match(text, /cancelled/)
   assert.match(text, /\/wt\/T1/, "the worktree's path is named")
-  assert.match(text, /jev\/job-1--T1/)
+  assert.match(text, /micromanager\/job-1--T1/)
   assert.match(text, /T2 add docs/, "the rest of the job is named")
   assert.doesNotMatch(text, /\b(deleted|removed|discarded)\b/i, "stopping a task never removes what it wrote")
   assert.match(stopTaskAnswer(task({ worktree: undefined, branch: undefined }), "job-1", undefined, []), /no worktree of its own/)
@@ -284,7 +296,7 @@ test("merge_job shows what would land, refuses unfinished work without the user'
   assert.equal(head(project), before, "nothing was written without the acknowledgement")
   const merged = await mergeJobInto(project, j, "the user said: the rest is not needed")
   assert.equal(merged.wrote, true)
-  assert.match(merged.text, /Merged jev\/job-1 into the checkout \(fast-forward\)/)
+  assert.match(merged.text, /Merged micromanager\/job-1 into the checkout \(fast-forward\)/)
   assert.equal(existsSync(join(project, "b.txt")), true, "the job's file is in the checkout")
   assert.match(merged.text, /discard_job gives them back to git/)
   // A branch the checkout already has: nothing to do, and still nothing written.
@@ -329,7 +341,7 @@ test("discard_job removes the worktree and the branch, and never the checkout", 
 test("a job load sweeps a stale task to a terminal state and reports the leftovers, once", async () => {
   const { reconcileJob } = await import("../src/store.ts")
   const live = new Set(["ses_live"])
-  const j = job({ tasks: [task({ id: "T1", session: "ses_dead" }), task({ id: "T2", session: "ses_live" }), task({ id: "T3", status: "merged", worktree: "/wt/T3", branch: "jev/job-1--T3" })] })
+  const j = job({ tasks: [task({ id: "T1", session: "ses_dead" }), task({ id: "T2", session: "ses_live" }), task({ id: "T3", status: "merged", worktree: "/wt/T3", branch: "micromanager/job-1--T3" })] })
   const { job: next, result } = reconcileJob(j, { aliveSessions: live })
   assert.deepEqual(result.changes.map((c) => [c.taskId, c.from, c.to]), [["T1", "running", "cancelled"]])
   assert.equal(next.tasks.find((t) => t.id === "T2")?.status, "running", "a live worker is never touched")
@@ -380,8 +392,6 @@ test("request_access asks the user about a refused path rather than answering fo
 // after setup has returned, and a test that let those records land in the operator's real journal would be worse than
 // no test at all.
 async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record<string, Record<string, unknown>>) {
-  const { mkdtempSync } = await import("node:fs")
-  const { tmpdir } = await import("node:os")
   const { readJournal } = await import("../src/journal.ts")
   const plugin = (await import("../src/plugin.ts")).default
   const hooks: Record<string, ((arg: never) => Promise<void>)[]> = {}
@@ -401,7 +411,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
     },
   }
   const before = process.env.XDG_STATE_HOME
-  process.env.XDG_STATE_HOME = mkdtempSync(`${tmpdir()}/jev-setup-`)
+  process.env.XDG_STATE_HOME = tempDir("jev-setup-")
   // The stand-in host has no built-in read tool, so setup reports that it installed nothing. That is the expected
   // answer here, and it proves the logger's stderr fallback is live, but it is noise in a test run: the journal is
   // what these tests read.
@@ -498,14 +508,14 @@ function rewindRepo() {
   const t2 = commit("c.txt", "T2: add c")
   const t3 = commit("d.txt", "T3: add d")
   const t4wt = join(project, ".jev-micromanager", "worktrees", "job-1--T4")
-  execFileSync("git", ["-C", project, "worktree", "add", "-q", "-b", "jev/job-1--T4", t4wt, branch])
+  execFileSync("git", ["-C", project, "worktree", "add", "-q", "-b", "micromanager/job-1--T4", t4wt, branch])
   const base = execFileSync("git", ["-C", project, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
   const j = job({ integrationBranch: branch, integrationWorktree: wt, integrationBase: base })
   j.tasks = [
     task({ id: "T1", status: "merged" }),
     task({ id: "T2", title: "add c", status: "merged" }),
     task({ id: "T3", title: "add d", status: "merged" }),
-    task({ id: "T4", title: "add e", status: "running", worktree: t4wt, branch: "jev/job-1--T4" }),
+    task({ id: "T4", title: "add e", status: "running", worktree: t4wt, branch: "micromanager/job-1--T4" }),
   ]
   const tip = () => execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim()
   return { project, branch, wt, j, t1, t2, t3, tip }
