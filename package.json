@@ -47,6 +47,7 @@
   "dependencies": {
     "@omacode/core": "0.1.1",
     "@omacode/guard": "0.1.1",
+    "@omacode/sandbox": "0.1.1",
     "@anthropic-ai/sandbox-runtime": "0.0.81",
     "playwright-core": "^1.64.1"
   },

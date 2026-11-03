@@ -6,6 +6,7 @@
   "description": "Shared paths, journal and configuration primitives for the Omacode plugins",
   "exports": {
     "./journal": "./src/journal.ts",
+    "./heldout": "./src/heldout.ts",
     "./secrets": "./src/secrets.ts",
     "./jsonc": "./src/jsonc.ts",
     "./redact-config": "./src/redact-config.ts"

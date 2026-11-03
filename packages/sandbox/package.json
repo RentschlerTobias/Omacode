@@ -1,0 +1,22 @@
+{
+  "name": "@omacode/sandbox",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Run delegated child sessions' shell commands in a sandbox",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./wire": "./src/wire.ts",
+    "./decide": "./src/decide.ts",
+    "./sandbox": "./src/sandbox.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@omacode/core": "0.1.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

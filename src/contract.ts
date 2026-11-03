@@ -11,10 +11,10 @@
 
 import { createHash } from "node:crypto"
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
-import { dirname, isAbsolute, join, relative, resolve } from "node:path"
+import { isAbsolute, join, relative, resolve } from "node:path"
 
-import { journalPath } from "./journal.ts"
 import { checkProblem, checkSafetyProblem } from "./plan.ts"
+import { heldOutRoot } from "@omacode/core/heldout"
 import type { Run } from "./integration.ts"
 
 // The contract travels with the job's JSON; state.ts owns the interfaces, the fields are declared here (as
@@ -219,9 +219,7 @@ function fmt(n: number): string {
 // The held-out cases of a contract (design.md §25, P4): outside the project and every worktree, in the plugin's state
 // directory, which the sandbox keeps from every worker. Only the evaluator sees them, through MM_CORPUS_DIR, and a
 // worker only hears how many passed.
-export function heldOutRoot(): string {
-  return join(dirname(journalPath()), "heldout")
-}
+export { heldOutRoot } from "@omacode/core/heldout"
 
 export function heldOutDir(project: string, jobId: string, contractId: string): string {
   return join(heldOutRoot(), createHash("sha256").update(resolve(project)).digest("hex").slice(0, 12), jobId, contractId)
