@@ -507,6 +507,11 @@ npm test          # node's test runner, TypeScript runs as is
 npm run typecheck
 ```
 
+`npm run build:tui` compiles `src/tui.tsx` into the committed `src/tui.js`, and the package's `./tui` export points at
+that file: OpenCode's Solid transform skips every path containing `node_modules`, so a package install of the raw
+`.tsx` dies with `Cannot find package 'react'` (opencode#39986, opentui#1741). Change the TUI in `tui.tsx` and run it
+before committing; `npm test` fails when `src/tui.js` is stale.
+
 Two things to know when changing the delegation path. A delegation is recognised by its **target** — a `subagent`
 call aimed at one of this plugin's role agents — not by which agent made it, because the agent is a property of the
 session and switching it silently skipped every later delegation (live test, 2026-10-06: ten workers wrote into the

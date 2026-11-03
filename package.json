@@ -1,12 +1,12 @@
 {
   "name": "micromanager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "An OpenCode v2 plugin that orchestrates sub-agents, with TypeSafe Jev making the decisions",
   "exports": {
     ".": "./src/plugin.ts",
-    "./tui": "./src/tui.tsx",
+    "./tui": "./src/tui.js",
     "./guard": "./src/guard/index.ts",
     "./shell": "./src/shell/index.ts",
     "./worktree": "./src/worktree/index.ts",
@@ -27,6 +27,7 @@
   ],
   "scripts": {
     "test": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
+    "build:tui": "node scripts/build-tui.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "eval": "node src/cli.ts eval",
     "export-dataset": "node src/cli.ts export-dataset",
@@ -34,7 +35,10 @@
     "bench-n7": "node src/cli.ts bench-n7"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/preset-typescript": "^7.29.0",
     "@types/node": "^24.19.0",
+    "babel-preset-solid": "^1.9.16",
     "typescript": "^5.9.3"
   },
   "dependencies": {

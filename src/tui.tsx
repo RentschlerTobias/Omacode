@@ -1,3 +1,4 @@
+/** @jsxImportSource @opentui/solid */
 // The micromanager in OpenCode's terminal UI: a CLI plugin. opencode 2.0.18 loads it from cli.json "plugins" as a
 // package directory whose package.json exports "./tui" (install.sh writes one that imports this file).
 //
