@@ -11,7 +11,6 @@
     ".": "./src/plugin.ts",
     "./guard": "./src/guard/index.ts",
     "./shell": "./src/shell/index.ts",
-    "./worktree": "./src/worktree/index.ts",
     "./context": "./src/context/index.ts"
   },
   "files": [
@@ -28,14 +27,16 @@
     "orchestration"
   ],
   "scripts": {
-    "test": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
+    "test": "npm run test:core",
     "test:min": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 test/guard-http.test.ts test/guard-config.test.ts test/sandbox-plugin.test.ts test/context-plugin.test.ts test/full-plugin.test.ts test/plugin-family.test.ts test/context.test.ts",
     "build:tui": "node scripts/build-tui.mjs packages/tui/src/tui.tsx packages/tui/src/tui.js",
     "typecheck": "tsc -p tsconfig.json",
     "eval": "node src/cli.ts eval",
     "export-dataset": "node src/cli.ts export-dataset",
     "bench-guards": "node src/cli.ts bench-guards",
-    "bench-n7": "node src/cli.ts bench-n7"
+    "bench-n7": "node src/cli.ts bench-n7",
+    "test:all": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
+    "test:core": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 test/runner.test.ts test/native.test.ts test/decide.test.ts test/tools.test.ts test/integration.test.ts test/store.test.ts test/state.test.ts test/context.test.ts test/redact.test.ts test/sandbox.test.ts test/grants.test.ts test/guard.test.ts test/guard-http.test.ts test/guard-config.test.ts test/sandbox-plugin.test.ts test/context-plugin.test.ts test/plugin-family.test.ts test/full-plugin.test.ts test/watchdog.test.ts test/wait.test.ts test/trials.test.ts"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

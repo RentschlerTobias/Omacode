@@ -10,7 +10,6 @@ The plugin is split into independently installable packages. `micromanager` stay
 | `@omacode/state` | Job/task schema, store, control files, roles, routing and picks. Library, no hooks. | library |
 | `@omacode/tui` | Job progress, tasks, clickable workers and the context panel. | yes, tasks need job state |
 | `@omacode/micromanager` | The orchestrator: roles, plans, delegation, tools, permissions, jobs and merge. | the product |
-| `@omacode/worktree` | Git worktree service. Planned; currently a module in the orchestrator. | library |
 | `@omacode/full` | Guard + sandbox + context in one install. | composition |
 
 ## Install
@@ -34,6 +33,7 @@ Each package claims its id in a process-wide registry. Installing `@omacode/full
 ```bash
 npm install
 npm run typecheck
-npm run test:min       # package boundaries, ~0.3 s
-npm test               # the full product suite
+npm run test:min       # package boundaries, ~0.3 s, 29 tests
+npm test               # core behaviour, ~8 s, 317 tests
+npm run test:all       # everything including browser, UI, evals, 535 tests
 ```
