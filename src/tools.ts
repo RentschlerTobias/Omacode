@@ -8,6 +8,8 @@
 // (when to use it, what it refuses, what it leaves behind) in the line the model always sees.
 
 import type { Job } from "./state.ts"
+import type { ToolContext, ToolDraft } from "@omacode/core/tools"
+export type { ToolContext, ToolDraft }
 
 export const TOOL_IDS = [
   "list_tasks", "plan_job", "plan_questions", "run_job", "job_status", "stop_job",
@@ -34,16 +36,6 @@ export const TOOL_IDS = [
 ] as const
 
 // The tool draft of ctx.tool.transform, as far as this file uses it.
-export interface ToolDraft {
-  get(id: string): { input?: { fields?: Record<string, unknown>; mapFields?: (f: () => Record<string, unknown>) => unknown } } | undefined
-  add(tool: Record<string, unknown>): void
-}
-
-export interface ToolContext {
-  readonly sessionID?: string
-  readonly agent?: string
-}
-
 export interface Handlers {
   tasks(id: string, ctx: ToolContext): Promise<string>
   plan(goal: string, ctx: ToolContext): Promise<string>
