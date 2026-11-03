@@ -11,6 +11,10 @@ import { DEFAULT_ROUTING, type Routing } from "./routing.ts"
 import { roleById, ROLES, type RoleId } from "./roles.ts"
 import { DEFAULT_GRACE, DEFAULT_PICK, DEFAULT_TRIALS, MAX_TRIALS, type Grace, type Pick as TrialPick } from "./trials.ts"
 import type { NotifyMode } from "./scheduler.ts"
+import { DEFAULT_REDACT, parseRedact, type RedactSettings } from "@omacode/core/redact-config"
+import { stripComments } from "@omacode/core/jsonc"
+
+export { DEFAULT_REDACT, parseRedact, stripComments, type RedactSettings }
 
 // The name before 2026-10-19 (jev-micromanager.jsonc) is still read while the new one does not exist.
 export function configPath(): string {
@@ -18,29 +22,6 @@ export function configPath(): string {
   const path = join(base, "opencode", "micromanager.jsonc")
   const old = join(base, "opencode", "jev-micromanager.jsonc")
   return !existsSync(path) && existsSync(old) ? old : path
-}
-
-export function stripComments(text: string): string {
-  // Drops // comments outside strings, enough for a hand-written config file.
-  let out = ""
-  let inString = false
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i]
-    if (inString) {
-      out += ch
-      if (ch === "\\") out += text[++i] ?? ""
-      else if (ch === '"') inString = false
-    } else if (ch === '"') {
-      inString = true
-      out += ch
-    } else if (ch === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i++
-      out += "\n"
-    } else {
-      out += ch
-    }
-  }
-  return out
 }
 
 // "models": a pool per role id, each a non-empty list of "provider/model" strings.
@@ -346,43 +327,6 @@ export function parseMemory(text: string): MemorySettings {
     embedding = { url: String(e.url ?? (DEFAULT_MEMORY.embedding as { url: string }).url), model: String(e.model ?? (DEFAULT_MEMORY.embedding as { model: string }).model) }
   }
   return { enabled: m.enabled ?? true, embedding }
-}
-
-// Private data in requests to cloud models (src/redact.ts): secrets and structured personal data (e-mail, phone, IBAN,
-// card) on by default; names and addresses through the local GLiNER server only when asked for, since that detector is
-// not calibrated yet. "allow" lists values that are never replaced; the git author is added to it at start.
-export interface RedactSettings {
-  readonly secrets: boolean
-  readonly pii: boolean
-  readonly names: boolean
-  // A project's opt-out of the name/address detector only: secrets, paths and structured data stay redacted when it is
-  // off. Name detection still needs "names": true, so the default (true) changes nothing on its own.
-  readonly nameAddress: boolean
-  readonly threshold: number
-  readonly allow: readonly string[]
-}
-
-export const DEFAULT_REDACT: RedactSettings = { secrets: true, pii: true, names: false, nameAddress: true, threshold: 0.5, allow: [] }
-
-export function parseRedact(text: string): RedactSettings {
-  const raw = (JSON.parse(stripComments(text)) as { redact?: unknown }).redact
-  if (raw === undefined) return DEFAULT_REDACT
-  if (raw === false) return { ...DEFAULT_REDACT, secrets: false, pii: false, names: false }
-  if (raw === true) return DEFAULT_REDACT
-  const shape = 'redact must be true, false or { "secrets": bool, "pii": bool, "names": bool, "nameAddress": bool, "threshold": 0..1, "allow": ["…"] }'
-  if (typeof raw !== "object" || raw === null) throw new Error(shape)
-  const r = raw as Record<string, unknown>
-  for (const k of ["secrets", "pii", "names", "nameAddress"]) if (r[k] !== undefined && typeof r[k] !== "boolean") throw new Error(shape)
-  if (r.threshold !== undefined && (typeof r.threshold !== "number" || r.threshold <= 0 || r.threshold >= 1)) throw new Error(shape)
-  if (r.allow !== undefined && !(Array.isArray(r.allow) && r.allow.every((a) => typeof a === "string"))) throw new Error(shape)
-  return {
-    secrets: (r.secrets as boolean | undefined) ?? DEFAULT_REDACT.secrets,
-    pii: (r.pii as boolean | undefined) ?? DEFAULT_REDACT.pii,
-    names: (r.names as boolean | undefined) ?? DEFAULT_REDACT.names,
-    nameAddress: (r.nameAddress as boolean | undefined) ?? DEFAULT_REDACT.nameAddress,
-    threshold: (r.threshold as number | undefined) ?? DEFAULT_REDACT.threshold,
-    allow: (r.allow as string[] | undefined) ?? [],
-  }
 }
 
 // With cloudOnly, local models stay in the registry (they show up in the journal's ranking) but are never routed to.

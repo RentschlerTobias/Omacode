@@ -1,0 +1,22 @@
+{
+  "name": "@omacode/guard",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Redacts private data from every outgoing OpenCode request and restores it in responses",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./redact": "./src/redact.ts",
+    "./wire": "./src/wire.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "dependencies": {
+    "@omacode/core": "0.1.1"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

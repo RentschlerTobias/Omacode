@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
@@ -436,7 +436,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
 test("the plugin says it is loaded, and what it thinks it is doing", async (t) => {
   const { journal } = await loadedPlugin(t, {})
   const setup = journal().find((e) => e.kind === "plugin")!
-  assert.equal(setup.version, "0.1.0", "the version comes from package.json, so it cannot drift from the manifest")
+  assert.equal(setup.version, JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version, "the version comes from package.json, so it cannot drift from the manifest")
   assert.equal(setup.directory, PROJECT)
   assert.equal(setup.repository, PROJECT, "the repository root this project sits in")
   assert.equal(setup.rel, "", "the project's offset inside it")

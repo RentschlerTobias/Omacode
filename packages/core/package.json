@@ -1,0 +1,19 @@
+{
+  "name": "@omacode/core",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Shared paths, journal and configuration primitives for the Omacode plugins",
+  "exports": {
+    "./journal": "./src/journal.ts",
+    "./secrets": "./src/secrets.ts",
+    "./jsonc": "./src/jsonc.ts",
+    "./redact-config": "./src/redact-config.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

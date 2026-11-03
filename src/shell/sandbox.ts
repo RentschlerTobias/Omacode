@@ -22,6 +22,7 @@ import { join } from "node:path"
 
 import type { RoleId } from "../roles.ts"
 import { heldOutRoot } from "../contract.ts"
+import { looksSecret } from "@omacode/core/secrets"
 
 // The registries a build or a test run reaches for its dependencies.
 export const REGISTRIES: readonly string[] = [
@@ -57,14 +58,10 @@ const NEVER: readonly RegExp[] = [
 ]
 
 // A name that looks like it holds a secret: such a variable is granted by the user only, never by Jev.
-const SECRET = /(TOKEN|SECRET|PASSW(OR)?D|PASS$|KEY$|_KEY_|CREDENTIAL|AUTH|COOKIE|SESSION|PRIVATE|CERT)/i
+export { looksSecret }
 
 export function neverHanded(name: string): boolean {
   return NEVER.some((re) => re.test(name))
-}
-
-export function looksSecret(name: string, value?: string): boolean {
-  return SECRET.test(name) || (value !== undefined && /^[a-z][\w+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i.test(value))
 }
 
 const matches = (name: string, pattern: string) => (pattern.endsWith("*") ? name.startsWith(pattern.slice(0, -1)) : name === pattern)
