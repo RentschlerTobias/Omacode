@@ -40,6 +40,7 @@ export default {
     const project = (): string | undefined => ctx.location?.directory
 
     const context = async (input: any): Promise<void> => {
+      if ((globalThis as { __omacodeContextOwner?: string }).__omacodeContextOwner) return
       const sessionID = input?.sessionID
       if (!sessionID || !Array.isArray(input.messages)) return
 
@@ -72,6 +73,7 @@ export default {
     }
 
     const prompt = async (input: any): Promise<void> => {
+      if ((globalThis as { __omacodeContextOwner?: string }).__omacodeContextOwner) return
       if (!memory) return
       const sessionID = input?.sessionID
       const text = String(input?.prompt?.text ?? "")
