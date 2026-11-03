@@ -42,7 +42,8 @@ import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
 import { board } from "./board.ts"
 import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
 import { looksSecret, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
-import { installShell, type SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
+import sandboxPlugin from "./shell/index.ts"
+import type { SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
 import { badName, GRANT_FLOOR, grantBatchNote, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
 import { accessForm, answersOf, formInput, gitForm, readForm, type Question } from "./forms.ts"
@@ -1324,66 +1325,6 @@ const plugin = {
     // with the rules of its role. A shell that is no child's (the user's own, the micromanager's own) is left as it
     // is: the shell tool's execute.before notes a child's command first, and the shell hook wraps only what it takes.
     // The wiring is the shell plugin's (src/shell/); this is what the micromanager knows about its own workers.
-    const shell = await installShell(ctx, {
-      sandbox: () => sandbox,
-      session: async (sessionID) => (await ctx.session.get({ sessionID }).catch(() => undefined)) as SessionRecord | undefined,
-      shells: SHARED.workerShells,
-      unwrapped: (SHARED.unwrapped ??= new Map()),
-      env: settings.env,
-      domains: settings.network,
-      // A session of the plugin's own: a native worker or one of the older runner's.
-      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID),
-      // The private temp directory of a command that runs in a directory the plugin knows nothing about: one per
-      // directory, so two children in different directories do not share one.
-      temp: (key) => tempDirFor(key),
-      extra: (sessionID, cwd) => {
-        // The micromanager's own worker: the one whose directory the command runs in, exactly as before the shell
-        // plugin took the wiring over. Its role, its worktree, its frozen files and its job's grants.
-        const found = native.workerAt(String(cwd ?? ""))
-        if (found) {
-          const grants = jobGrants(found.project, found.jobId)
-          return {
-            known: true,
-            worker: true,
-            role: found.role,
-            writer: found.writer,
-            dir: found.dir,
-            worktree: found.worktree,
-            frozen: found.frozen,
-            domains: grants.network,
-            env: grants.env,
-            temp: tempDirFor(`${found.jobId}\0${found.writer ? found.worktree : found.dir}`),
-            project: found.project,
-            jobId: found.jobId,
-          }
-        }
-        // A worker of the older runner path: known only by its directory, and it writes there.
-        const dir = [...workerDirs.values()].filter((d) => cwd === d || cwd!.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
-        if (runnerSessions.has(sessionID) && dir) {
-          return { known: true, worker: true, role: "code", writer: true, dir, worktree: dir, temp: tempDirFor(dir) }
-        }
-        // A session of the plugin's own whose command runs in a directory the plugin does not know: the plugin's own
-        // rule held before the shell plugin took the wiring over, and it holds now: such a command is not wrapped.
-        if (runnerSessions.has(sessionID) || native.isWorker(sessionID)) return { known: true }
-        return undefined
-      },
-      rules: (facts, input) => {
-        const dir = facts.dir ?? input.cwd ?? process.cwd()
-        return rulesFor({
-          role: facts.role ?? "code",
-          writer: facts.writer ?? true,
-          dir,
-          worktree: facts.worktree ?? dir,
-          domains: [...settings.network, ...(facts.domains ?? [])],
-          frozen: facts.frozen ?? [],
-          temp: facts.temp,
-        })
-      },
-      // A wrapped command means the job's worker runs in the sandbox; the job's control file says so.
-      onWrap: async (facts) => {
-        if (facts.project && facts.jobId) await markSandbox(facts.project, facts.jobId)
-      },
-    })
     // The job a worker session works for: what the runner recorded when it dispatched the worker, so a vouch of
     // request_access and a reconciliation both know which job they are about. undefined for a session that is none of
     // the plugin's (the micromanager itself, the user, a build agent).
@@ -1399,7 +1340,6 @@ const plugin = {
       if (vault) mapStrings(call.input, (s) => (scope ? vault.restore(vault.redact(s), scope) : vault.redact(s)))
       // A worker's shell is noted by the shell plugin (src/shell/wire.ts), which wraps this one and no other agent's.
       // The note comes after the redaction, so the command the shell hook wraps is the one the tool will run.
-      await shell.note(call)
       // A delegation the plugin cannot isolate. From the micromanager this is still a refusal that names the name it
       // could not find (a live run asked for OpenCode's own `explore` and then looked for an `explore` role agent
       // that does not exist); from any other agent the call is deliberately left exactly as its caller wrote it,
@@ -1516,6 +1456,67 @@ const plugin = {
         prompt: String(call.input.prompt ?? "").slice(0, 300),
       })
       log("info", `${d.task.id} ${routed.role} -> ${routed.model} (${routed.reason})${d.task.worktree ? ` in ${d.task.worktree}` : ""}`)
+    })
+
+    await sandboxPlugin.setup(ctx, {
+      sandbox: () => sandbox,
+      session: async (sessionID) => (await ctx.session.get({ sessionID }).catch(() => undefined)) as SessionRecord | undefined,
+      shells: SHARED.workerShells,
+      unwrapped: (SHARED.unwrapped ??= new Map()),
+      env: settings.env,
+      domains: settings.network,
+      // A session of the plugin's own: a native worker or one of the older runner's.
+      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID),
+      // The private temp directory of a command that runs in a directory the plugin knows nothing about: one per
+      // directory, so two children in different directories do not share one.
+      temp: (key) => tempDirFor(key),
+      extra: (sessionID, cwd) => {
+        // The micromanager's own worker: the one whose directory the command runs in, exactly as before the shell
+        // plugin took the wiring over. Its role, its worktree, its frozen files and its job's grants.
+        const found = native.workerAt(String(cwd ?? ""))
+        if (found) {
+          const grants = jobGrants(found.project, found.jobId)
+          return {
+            known: true,
+            worker: true,
+            role: found.role,
+            writer: found.writer,
+            dir: found.dir,
+            worktree: found.worktree,
+            frozen: found.frozen,
+            domains: grants.network,
+            env: grants.env,
+            temp: tempDirFor(`${found.jobId}\0${found.writer ? found.worktree : found.dir}`),
+            project: found.project,
+            jobId: found.jobId,
+          }
+        }
+        // A worker of the older runner path: known only by its directory, and it writes there.
+        const dir = [...workerDirs.values()].filter((d) => cwd === d || cwd!.startsWith(`${d}/`)).sort((a, b) => b.length - a.length)[0]
+        if (runnerSessions.has(sessionID) && dir) {
+          return { known: true, worker: true, role: "code", writer: true, dir, worktree: dir, temp: tempDirFor(dir) }
+        }
+        // A session of the plugin's own whose command runs in a directory the plugin does not know: the plugin's own
+        // rule held before the shell plugin took the wiring over, and it holds now: such a command is not wrapped.
+        if (runnerSessions.has(sessionID) || native.isWorker(sessionID)) return { known: true }
+        return undefined
+      },
+      rules: (facts, input) => {
+        const dir = facts.dir ?? input.cwd ?? process.cwd()
+        return rulesFor({
+          role: facts.role ?? "code",
+          writer: facts.writer ?? true,
+          dir,
+          worktree: facts.worktree ?? dir,
+          domains: [...settings.network, ...(facts.domains ?? [])],
+          frozen: facts.frozen ?? [],
+          temp: facts.temp,
+        })
+      },
+      // A wrapped command means the job's worker runs in the sandbox; the job's control file says so.
+      onWrap: async (facts) => {
+        if (facts.project && facts.jobId) await markSandbox(facts.project, facts.jobId)
+      },
     })
 
     // The micromanager's own agents only: build, plan and every other agent are never touched.
