@@ -7,6 +7,7 @@
 //   import sandbox from "@omacode/sandbox"
 //   export default sandbox
 
+import { claim } from "@omacode/core/registry"
 import { installShell, type ShellDeps } from "./wire.ts"
 import { startSandbox, WorkerShells, type Wrapper } from "./sandbox.ts"
 
@@ -46,6 +47,7 @@ export const defaultShellDeps = (deps: ShellPluginDeps = {}, session?: ShellDeps
 export default {
   id: "omacode-sandbox",
   setup: async (ctx: unknown, deps: ShellPluginDeps = {}): Promise<void> => {
+    if (!claim("sandbox")) return
     const anyCtx = ctx as {
       tool?: { hook(name: string, cb: (call: any) => Promise<void> | void): Promise<unknown> }
       session?: { get?(args: { sessionID: string }): Promise<unknown> }

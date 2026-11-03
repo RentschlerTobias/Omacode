@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { beforeEach, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
 
@@ -8,6 +8,9 @@ import shell, { isChildShell } from "../src/shell/index.ts"
 import worktree, { worktreeApi } from "../src/worktree/index.ts"
 import context from "../src/context/index.ts"
 import plugin from "../src/plugin.ts"
+import { resetClaims } from "@omacode/core/registry"
+
+beforeEach(() => resetClaims())
 
 const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
 

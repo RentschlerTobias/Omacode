@@ -10,7 +10,8 @@
     "./secrets": "./src/secrets.ts",
     "./jsonc": "./src/jsonc.ts",
     "./redact-config": "./src/redact-config.ts",
-    "./tools": "./src/tools.ts"
+    "./tools": "./src/tools.ts",
+    "./registry": "./src/registry.ts"
   },
   "files": [
     "src"

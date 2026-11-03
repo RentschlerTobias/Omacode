@@ -1,4 +1,5 @@
 import { record } from "@omacode/core/journal"
+import { claim } from "@omacode/core/registry"
 
 import { ledger } from "./ledger.ts"
 import { ContextManager } from "./manager.ts"
@@ -29,6 +30,7 @@ const ceilingFor = (deps: ContextPluginDeps, agent?: string): number => {
 export default {
   id: "omacode-context",
   setup: (ctx: any, deps: ContextPluginDeps = {}) => {
+    if (!claim("context")) return
     const journal = deps.journal ?? record
     const manager = new ContextManager({ journal })
     const reported = new ReportedUsage()

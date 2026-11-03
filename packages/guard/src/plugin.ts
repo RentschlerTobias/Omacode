@@ -1,4 +1,5 @@
 import { record } from "@omacode/core/journal"
+import { claim } from "@omacode/core/registry"
 import { DEFAULT_LABELS, gitAuthor, useVault, Vault, type NameSettings } from "./redact.ts"
 import { defaultDeps, installGuard, type GuardDeps } from "./wire.ts"
 import { loadGuardSettings } from "./config.ts"
@@ -31,6 +32,7 @@ function fromConfig(projectDir?: string): Partial<GuardDeps> {
 export default {
   id: "omacode-guard",
   setup: (ctx: any, deps: Partial<GuardDeps> = {}) => {
+    if (!claim("guard")) return
     const configured = deps.getVault ? {} : fromConfig(ctx?.location?.directory)
     installGuard(ctx, { ...defaultDeps(), ...configured, ...deps })
   },
