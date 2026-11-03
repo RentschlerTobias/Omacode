@@ -3171,13 +3171,11 @@ const plugin = {
         }
       }
     }
-    const { installGuard } = await import("./guard/wire.ts")
-    installGuard(ctx, {
-      getVault: () => vault,
-      getNames: () => names,
-      shapeContext,
-      log,
-    })
+    // Context shaping belongs to the orchestrator; the guard only redacts. The order matters: shape first, then redact,
+    // so notes and memory blocks the orchestrator adds are covered by the same request.
+    ctx.session.hook("context", shapeContext)
+    const { default: guard } = await import("./guard/index.ts")
+    await guard.setup(ctx, { getVault: () => vault, getNames: () => names, log })
   },
 }
 

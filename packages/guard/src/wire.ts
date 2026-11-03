@@ -25,7 +25,6 @@ export interface HttpRequestEvent {
 export interface GuardDeps {
   getVault: () => Vault | undefined
   getNames: () => NameSettings | undefined
-  shapeContext?: (input: GuardContextHookInput) => Promise<void>
   log?: (level: "info" | "warn" | "error", message: string) => void
 }
 
@@ -180,7 +179,6 @@ export async function redactHttpRequest(
 export function installGuard(ctx: any, deps: GuardDeps): void {
   const warned = new Set<string>()
   ctx.session.hook("context", async (input: GuardContextHookInput) => {
-    if (deps.shapeContext) await deps.shapeContext(input)
     const vault = deps.getVault()
     if (vault) await redactRequest(input, vault, deps.getNames(), deps.log)
   })
