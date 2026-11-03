@@ -34,7 +34,7 @@ and research [docs/plan.md](docs/plan.md). Development happens on the branch `om
 - For the sandbox: on Linux `bubblewrap`, `socat` and `ripgrep`; on macOS nothing extra (Seatbelt). Without them
   commands run unwrapped, and the plugin says so.
 - Optional: the local embedding service for the memory (`./install.sh --embedding`, a systemd user unit), and `uv`
-  for the GLiNER decision server in `decider/` and for the evolver in `evolver/` (`evolve_task`; `uv` sets up its
+  for the GLiNER decision server in `decider/` and for the evolver in `packages/micromanager/evolver/` (`evolve_task`; `uv` sets up its
   environment, OpenEvolve pinned, on the first run).
 
 ## Install
@@ -304,7 +304,7 @@ waits for and what it cost so far (its worker and helpers, or the evolver's mode
 requests and cost. The sidebar puts each task's cost after its line too. In a terminal, in the project:
 
 ```bash
-node ~/Fun/Projects/Repos/micromanager/src/cli.ts status --watch   # redraws every 2 s; --all for every job
+node ~/Fun/Projects/Repos/micromanager/packages/micromanager/src/cli.ts status --watch   # redraws every 2 s; --all for every job
 ```
 
 **Memory.** In planned jobs (`plan_job`), workers report what they learned about the project (`LEARNED:`); Jev keeps the lasting, new facts in
@@ -395,7 +395,7 @@ Optional settings in `~/.config/opencode/micromanager.jsonc`:
 Hard rules (pushes, `sudo`, system installs, deleting tracked files, …) always go to you, whatever a preset says.
 
 The plugin registers its skills into OpenCode at startup: `deliberate` (the facilitator's rules) and six leaf skills
-for workers, adapted from mattpocock/skills and obra/superpowers (`skills/THIRD_PARTY.md`). They come from the
+for workers, adapted from mattpocock/skills and obra/superpowers (`packages/micromanager/skills/THIRD_PARTY.md`). They come from the
 package, so a git install has them without a step; a skill of your own with the same name wins, and the plugin then
 never names that skill in a brief. The local GLiNER
 decision server (`decider/`, see its README) answers guard questions on the CPU, and `npm run bench-guards`
