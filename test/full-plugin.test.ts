@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
+import guard from "../packages/guard/src/plugin.ts"
 import full from "../packages/full/src/plugin.ts"
 
 function fakeCtx() {
@@ -25,12 +26,13 @@ test("the full package composes guard, sandbox and context once", async () => {
   process.env.XDG_STATE_HOME = mkdtempSync(join(tmpdir(), "mm-full-state-"))
   process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), "mm-full-config-"))
   const { ctx, hooks } = fakeCtx()
+  await guard.setup(ctx, {})
   await full.setup(ctx, { context: { memory: false } })
   const first = Object.fromEntries(Object.entries(hooks).map(([k, v]) => [k, v.length]))
   await full.setup(ctx, { context: { memory: false } })
   const second = Object.fromEntries(Object.entries(hooks).map(([k, v]) => [k, v.length]))
   assert.deepEqual(second, first, "a second setup must not register the same hooks again")
   assert.equal(hooks["context"]?.length, 2, "guard and context each own one context hook")
-  assert.equal(hooks["http.request"]?.length, 1)
+  assert.equal(hooks["http.request"]?.length, 1, "the guard installed before full is not installed twice")
   assert.equal(hooks["shell:create.before"]?.length, 1)
 })
