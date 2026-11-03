@@ -4,30 +4,8 @@
 // keeps the frontier, applies the user's shortcuts and answers, and tells the facilitator what to do next. There
 // are no suggested answers: options or explanations come only when the user is stuck or asks for them.
 
-export type Impact = "low" | "medium" | "high"
-export type NodeKind = "decision" | "fact" | "assumption"
-export type NodeStatus = "open" | "settled" | "assumed" | "out_of_scope" | "researching"
-export type Depth = "light" | "normal" | "frequent"
-
-export interface DesignNode {
-  readonly id: string
-  readonly question: string
-  readonly kind: NodeKind
-  readonly dependsOn: readonly string[]
-  readonly impact: Impact
-  status: NodeStatus
-  answer?: string
-  origin?: "user" | "proposed_and_confirmed" | "fact" | "assumed"
-  settledAt?: number // the turn
-}
-
-export interface DesignTree {
-  nodes: DesignNode[]
-  current?: string // the question asked last
-  depth: Depth
-  asked: number
-  turn: number
-}
+import type { Depth, DesignNode, DesignTree, Impact, NodeKind, NodeStatus } from "@omacode/state/schema"
+export type { Depth, DesignNode, DesignTree, Impact, NodeKind, NodeStatus }
 
 const IMPACT_RANK: Record<Impact, number> = { low: 0, medium: 1, high: 2 }
 const CAP: Record<Depth, number> = { light: 5, normal: 12, frequent: Infinity }

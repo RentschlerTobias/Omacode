@@ -16,13 +16,8 @@ export interface Question {
   readonly multiple?: boolean
 }
 
-export interface JobOptions {
-  readonly auto: boolean // auto-continue: work the todo list without stopping
-  readonly parallel: boolean // start every startable todo at once
-  readonly review: boolean // a reviewer checks each writer's change before it counts as done
-}
-
-export const DEFAULT_OPTIONS: JobOptions = { auto: true, parallel: true, review: false }
+import { DEFAULT_OPTIONS, type JobOptions } from "@omacode/state/options"
+export { DEFAULT_OPTIONS, type JobOptions }
 
 const H = { options: "Job options", start: "Start job", access: "Open a path", git: "No git repository" } as const
 const OPTION = { auto: "Auto-continue", parallel: "Parallel", review: "Review per task" } as const

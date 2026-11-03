@@ -106,15 +106,8 @@ export function nextQuestionChoice(options: Record<string, string>): Question {
 // --- N5 + N5b: classification and profile of one task, one request (design.md §8.1) ------------------------
 // Every question is answered in isolation against the same state, so none of them may depend on another's
 // answer; code combines them (src/profile.ts). Multi-select is one noul per option.
-export const RISKS = {
-  cosmetic: "only looks or wording change; nothing can break",
-  internal: "internal code; callers inside the project may break",
-  public_api: "an interface others use: exported functions, CLI flags, file formats, HTTP endpoints",
-  data_security: "touches user data, credentials, permissions or anything security relevant",
-  destructive: "deletes or overwrites data, or has effects outside the project (deploys, sends, publishes)",
-} as const
-
-export type Risk = keyof typeof RISKS
+import { RISKS, type Risk } from "@omacode/state/schema"
+export { RISKS, type Risk }
 
 export const CLASSIFY: Record<string, Question> = {
   difficulty: {

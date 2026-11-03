@@ -20,15 +20,15 @@
 import { Plugin } from "@opencode/plugin/tui"
 import { createSignal, For, onCleanup, Show } from "solid-js"
 
-import { loadPicks, loadSettings, savePicks } from "./config.ts"
-import { lastOptions, loadControl, optionsOf, updateControl, type Control } from "./control.ts"
+import { loadPicks, loadRouting, savePicks } from "@omacode/state/picks"
+import { lastOptions, loadControl, optionsOf, updateControl, type Control } from "@omacode/state/control"
 import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION, type CatalogModel, type PoolRow } from "./pools.ts"
 import { BOX, foldedLine, jobsFor, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view, type JobView, type Mark, type SidebarGroup } from "./progress.ts"
-import { listJobs } from "./store.ts"
+import { listJobs } from "@omacode/state/store"
 import { agentRows, agentSummary, taskSessions, type AgentRow, type Live, type SessionFacts, type Tag, type TaskSessionRow } from "./switcher.ts"
-import type { Job } from "./state.ts"
+import type { Job } from "@omacode/state"
 import { seedFromJournal } from "./usage.ts"
-import { bar, foldedContext, kTokens, readMemoryStats, readStatus, type ContextStatus, type MemoryStats } from "./context/status.ts"
+import { bar, foldedContext, kTokens, readMemoryStats, readStatus, type ContextStatus, type MemoryStats } from "@omacode/context/status"
 
 const POLL_MS = 2_000
 const PANEL = "micromanager.agents"
@@ -441,7 +441,7 @@ function sessionModel(context: Context): string | undefined {
 }
 
 function rows(): PoolRow[] {
-  return poolRows(loadSettings().routing, loadPicks())
+  return poolRows(loadRouting(), loadPicks())
 }
 
 // The MODELS section: folded to one line, unfolded a line per role with its pool; a click on a role opens its popup.
@@ -487,14 +487,14 @@ async function pickModels(context: Context, key?: PoolRow["key"]): Promise<void>
     key = chosen as PoolRow["key"]
   }
   const catalog = items(await context.client.model.list({}).catch(() => undefined)) as CatalogModel[]
-  const settings = loadSettings()
+  const routing = loadRouting()
   const weekly = new Map<string, number>()
   for (const pick of seedFromJournal()) weekly.set(pick.model, (weekly.get(pick.model) ?? 0) + 1)
-  const budget = (model: string) => settings.registry.find((m) => m.id === model)?.budget
+  const budget = (_model: string) => undefined
   let current: string | undefined
   let cleared = false
   for (;;) {
-    const saved = poolRows(settings.routing, loadPicks()).find((r) => r.key === key)
+    const saved = poolRows(routing, loadPicks()).find((r) => r.key === key)
     if (!saved) return
     const row = cleared ? { ...saved, models: [] } : saved
     const title = key === VISION ? "vision · ↵ picks the image model" : `${row.agent} · ↵ check · esc done`
@@ -514,9 +514,9 @@ async function pickModels(context: Context, key?: PoolRow["key"]): Promise<void>
       context.ui.toast.show({ message: `${row.agent} needs at least one model.` })
       continue
     }
-    savePicks(updatePicks(loadPicks(), settings.routing, key, models))
+    savePicks(updatePicks(loadPicks(), routing, key, models))
     if (key === VISION || chosen === RESET) {
-      context.ui.toast.show({ message: `${row.agent}: ${shortNames(poolRows(settings.routing, loadPicks()).find((r) => r.key === key)!.models).join(" ")}`, variant: "success" })
+      context.ui.toast.show({ message: `${row.agent}: ${shortNames(poolRows(routing, loadPicks()).find((r) => r.key === key)!.models).join(" ")}`, variant: "success" })
       return
     }
   }

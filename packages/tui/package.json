@@ -1,0 +1,46 @@
+{
+  "name": "@omacode/tui",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "The OpenCode TUI plugin: jobs, tasks, workers and the context panel",
+  "exports": {
+    ".": "./src/tui.tsx",
+    "./tui": "./src/tui.js",
+    "./progress": "./src/progress.ts",
+    "./switcher": "./src/switcher.ts",
+    "./pools": "./src/pools.ts",
+    "./usage": "./src/usage.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omacode/context": "0.1.1",
+    "@omacode/core": "0.1.1",
+    "@omacode/state": "0.1.1"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "*",
+    "@opentui/core": "*",
+    "@opentui/solid": "*",
+    "solid-js": "*"
+  },
+  "peerDependenciesMeta": {
+    "@opencode/plugin": {
+      "optional": true
+    },
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  }
+}

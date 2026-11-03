@@ -1,4 +1,4 @@
-// @generated from src/tui.tsx by `npm run build:tui` — do not edit.
+// @generated from packages/tui/src/tui.tsx by `npm run build:tui` — do not edit.
 import { memo as _$memo } from "@opentui/solid";
 import { setProp as _$setProp } from "@opentui/solid";
 import { effect as _$effect } from "@opentui/solid";
@@ -28,14 +28,14 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 
 import { Plugin } from "@opencode/plugin/tui";
 import { createSignal, For, onCleanup, Show } from "solid-js";
-import { loadPicks, loadSettings, savePicks } from "./config.ts";
-import { lastOptions, loadControl, optionsOf, updateControl } from "./control.ts";
+import { loadPicks, loadRouting, savePicks } from "@omacode/state/picks";
+import { lastOptions, loadControl, optionsOf, updateControl } from "@omacode/state/control";
 import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION } from "./pools.ts";
 import { BOX, foldedLine, jobsFor, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "./progress.ts";
-import { listJobs } from "./store.ts";
+import { listJobs } from "@omacode/state/store";
 import { agentRows, agentSummary, taskSessions } from "./switcher.ts";
 import { seedFromJournal } from "./usage.ts";
-import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "./context/status.ts";
+import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "@omacode/context/status";
 const POLL_MS = 2_000;
 const PANEL = "micromanager.agents";
 
@@ -916,7 +916,7 @@ function sessionModel(context) {
   return m ? `${m.providerID}/${m.modelID}` : undefined;
 }
 function rows() {
-  return poolRows(loadSettings().routing, loadPicks());
+  return poolRows(loadRouting(), loadPicks());
 }
 
 // The MODELS section: folded to one line, unfolded a line per role with its pool; a click on a role opens its popup.
@@ -1024,14 +1024,14 @@ async function pickModels(context, key) {
     key = chosen;
   }
   const catalog = items(await context.client.model.list({}).catch(() => undefined));
-  const settings = loadSettings();
+  const routing = loadRouting();
   const weekly = new Map();
   for (const pick of seedFromJournal()) weekly.set(pick.model, (weekly.get(pick.model) ?? 0) + 1);
-  const budget = model => settings.registry.find(m => m.id === model)?.budget;
+  const budget = _model => undefined;
   let current;
   let cleared = false;
   for (;;) {
-    const saved = poolRows(settings.routing, loadPicks()).find(r => r.key === key);
+    const saved = poolRows(routing, loadPicks()).find(r => r.key === key);
     if (!saved) return;
     const row = cleared ? {
       ...saved,
@@ -1063,10 +1063,10 @@ async function pickModels(context, key) {
       });
       continue;
     }
-    savePicks(updatePicks(loadPicks(), settings.routing, key, models));
+    savePicks(updatePicks(loadPicks(), routing, key, models));
     if (key === VISION || chosen === RESET) {
       context.ui.toast.show({
-        message: `${row.agent}: ${shortNames(poolRows(settings.routing, loadPicks()).find(r => r.key === key).models).join(" ")}`,
+        message: `${row.agent}: ${shortNames(poolRows(routing, loadPicks()).find(r => r.key === key).models).join(" ")}`,
         variant: "success"
       });
       return;

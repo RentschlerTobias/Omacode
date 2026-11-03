@@ -9,7 +9,7 @@
   ],
   "exports": {
     ".": "./src/plugin.ts",
-    "./tui": "./src/tui.js",
+    "./tui": "./packages/tui/src/tui.js",
     "./guard": "./src/guard/index.ts",
     "./shell": "./src/shell/index.ts",
     "./worktree": "./src/worktree/index.ts",
@@ -31,7 +31,7 @@
   "scripts": {
     "test": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 'test/**/*.test.ts'",
     "test:min": "XDG_STATE_HOME=$(mktemp -d) node --test --test-timeout=30000 test/guard-http.test.ts test/guard-config.test.ts test/sandbox-plugin.test.ts test/context-plugin.test.ts test/plugin-family.test.ts test/context.test.ts",
-    "build:tui": "node scripts/build-tui.mjs",
+    "build:tui": "node scripts/build-tui.mjs packages/tui/src/tui.tsx packages/tui/src/tui.js",
     "typecheck": "tsc -p tsconfig.json",
     "eval": "node src/cli.ts eval",
     "export-dataset": "node src/cli.ts export-dataset",
@@ -50,8 +50,10 @@
     "@omacode/guard": "0.1.1",
     "@omacode/sandbox": "0.1.1",
     "@omacode/context": "0.1.1",
+    "@omacode/state": "0.1.1",
     "@anthropic-ai/sandbox-runtime": "0.0.81",
-    "playwright-core": "^1.64.1"
+    "playwright-core": "^1.64.1",
+    "@omacode/tui": "0.1.1"
   },
   "peerDependencies": {
     "@opentui/core": ">=0.6.6",

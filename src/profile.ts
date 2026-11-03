@@ -10,9 +10,8 @@ import { resolvePolicy, type Policies } from "./policy.ts"
 import { ROLES, TEST_RUNNERS, roleById, type Role, type Rule } from "./roles.ts"
 import type { Acceptance, Task } from "./state.ts"
 
-export type PermProfile = "strict" | "normal" | "trusted"
-export type BudgetTier = "S" | "M" | "L"
-export type ToolGroup = "shell" | "web"
+import type { BudgetTier, PermProfile, Profile, ToolGroup } from "@omacode/state/schema"
+export type { BudgetTier, PermProfile, Profile, ToolGroup }
 
 // Profiles deny tool groups, never single tools: in Phase A a worker without read read the file through grep.
 export const TOOL_GROUPS: Record<ToolGroup, readonly string[]> = {
@@ -32,28 +31,6 @@ export interface Skill {
   readonly roles: readonly string[] // the roles that may load it
 }
 
-export interface Profile {
-  readonly role: string
-  readonly roleReason: string
-  readonly difficulty: number // 0..1, picks the model tier
-  readonly risk: Risk
-  readonly testOracle: boolean
-  readonly testFirst: boolean
-  readonly bugFix: boolean
-  readonly approachUncertain: boolean
-  readonly bugUnknownCause: boolean
-  readonly vision: boolean // routed to a model with image input
-  readonly tools: Readonly<Record<ToolGroup, number | undefined>> // the decision model's yes per group; undefined: not asked
-  readonly skills: readonly string[]
-  readonly perm: PermProfile
-  readonly budget: BudgetTier
-  readonly injection: boolean
-  readonly confidence: number // the weakest choice confidence, lowered by contradictions; 1 without a model
-  readonly source: "model" | "rules"
-  readonly decision?: string // journal id
-  readonly recall?: readonly string[] // the project memory entries N5 picked for this task's brief
-  confirmed?: boolean // the user saw it (policy "ask")
-}
 
 // The questions for one task: the fixed set, the role choice, and one noul per skill the planner's role may load.
 export function classifyQuestions(task: Task, skills: readonly Skill[], memory: readonly string[] = []): Record<string, Question> {

@@ -4,7 +4,7 @@
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
 #   ./install.sh            link src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts, and write the TUI
-#                           package ~/.config/opencode/micromanager-tui/ (job progress in the TUI, src/tui.tsx) into
+#                           package ~/.config/opencode/micromanager-tui/ (job progress in the TUI, packages/tui/src/tui.js) into
 #                           the "plugins" of ~/.config/opencode/cli.json
 #   ./install.sh --remove   remove both
 #   ./install.sh --skills   no-op: the plugin registers skills/<name> into OpenCode itself, a restart is enough
@@ -31,7 +31,7 @@ write_tui() {
   mkdir -p "$TUI"
   printf '%s\n' '{ "name": "micromanager-tui", "version": "0.1.0", "type": "module", "exports": { "./tui": "./tui.tsx" } }' >"$TUI/package.json"
   printf '%s\n' "// Written by $REPO/install.sh: the micromanager's TUI plugin lives in the repository." \
-    "export { default } from \"$REPO/src/tui.tsx\"" >"$TUI/tui.tsx"
+    "export { default } from \"$REPO/packages/tui/src/tui.js\"" >"$TUI/tui.tsx"
 }
 
 # Add (add) or remove (remove) the TUI package in cli.json's "plugins", keeping everything else in the file.

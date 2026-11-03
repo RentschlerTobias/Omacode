@@ -6,7 +6,8 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 const root = join(import.meta.dirname, "..")
-const built = join(root, "src", "tui.js")
+const input = join(root, "packages", "tui", "src", "tui.tsx")
+const built = join(root, "packages", "tui", "src", "tui.js")
 
 // opencode's Solid transform skips paths containing node_modules (opencode#39986), so a package install
 // loads exports["./tui"] raw. That entry has to be compiled JS: no JSX, no react jsx-runtime, only bare
@@ -15,11 +16,11 @@ test("the committed TUI entry is the compiled src/tui.tsx, without JSX or react"
   const dir = mkdtempSync(join(tmpdir(), "mm-tui-"))
   try {
     const out = join(dir, "tui.js")
-    execFileSync(process.execPath, [join(root, "scripts", "build-tui.mjs"), out], { cwd: root })
+    execFileSync(process.execPath, [join(root, "scripts", "build-tui.mjs"), input, out], { cwd: root })
     assert.equal(
       readFileSync(built, "utf8"),
       readFileSync(out, "utf8"),
-      "src/tui.js is stale: run `npm run build:tui` and commit it",
+      "packages/tui/src/tui.js is stale: run `npm run build:tui` and commit it",
     )
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -32,7 +33,7 @@ test("the committed TUI entry is the compiled src/tui.tsx, without JSX or react"
 })
 
 test("the package exports ./tui as that compiled file and ships it", () => {
-  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
+  const pkg = JSON.parse(readFileSync(join(root, "packages", "tui", "package.json"), "utf8"))
   assert.equal(pkg.exports["./tui"], "./src/tui.js")
   assert.ok(pkg.files.includes("src"), "files must ship src/tui.js")
 })

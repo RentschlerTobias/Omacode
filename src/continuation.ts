@@ -9,7 +9,8 @@
 import { HEADER } from "./hooks.ts"
 import { jobBranch } from "./integration.ts"
 import { roleById } from "./roles.ts"
-import { isDone, type Job, type Task } from "./state.ts"
+import { isDone, settled, startable, type Job, type Task } from "./state.ts"
+export { settled, startable }
 
 const LIVE = new Set<Task["status"]>(["running", "gating", "fixing", "reviewing"])
 const OPEN = new Set<Task["status"]>(["pending", "ready", "planned"])
@@ -25,21 +26,6 @@ export const plannedLine = (task: string, job: string) => `Task: ${task} · ${jo
 
 // Whether a task's work is in: it is merged, or the task that does it over is (in this job, or in another one the
 // caller can look up: "job-…/T17").
-export function settled(job: Job, task: Task, resolve: (id: string) => Task["status"] | undefined = () => undefined): boolean {
-  if (isDone(task)) return true
-  if (!task.replacedBy) return false
-  if (task.replacedBy.includes("/")) return ["merged", "passed"].includes(resolve(task.replacedBy) ?? "")
-  const by = job.tasks.find((t) => t.id === task.replacedBy)
-  return by !== undefined && by !== task && isDone(by)
-}
-
-// Open tasks whose dependencies are all merged (or done over), by priority, then in plan order.
-export function startable(job: Job, resolve?: (id: string) => Task["status"] | undefined): Task[] {
-  const byId = new Map(job.tasks.map((t) => [t.id, t]))
-  return job.tasks
-    .filter((t) => OPEN.has(t.status) && t.dependsOn.every((d) => { const dep = byId.get(d); return dep !== undefined && settled(job, dep, resolve) }))
-    .sort((a, b) => (a.priority ?? 3) - (b.priority ?? 3))
-}
 
 function call(job: Job, task: Task): string {
   const agent = roleById(task.role)?.agent ?? task.role

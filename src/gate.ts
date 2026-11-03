@@ -7,20 +7,8 @@
 import type { Decider } from "./backends.ts"
 import { GUARD_FLOOR, GUARDS } from "./catalog.ts"
 
-export type Guard = keyof typeof GUARDS
-
-export interface GateResult {
-  readonly flagged: readonly Guard[] // guards at or above their floor
-  readonly scores: Partial<Record<Guard, number>>
-  readonly checked: boolean // false: no local backend answered
-  readonly decision?: string // journal id
-}
-
-export interface JobFlags {
-  localOnly?: boolean // nothing of this job goes to the cloud
-  uncensored?: boolean // local uncensored models only (refusal_likely, confirmed by the user)
-  gate?: GateResult
-}
+import type { GateResult, Guard, JobFlags } from "@omacode/state/schema"
+export type { GateResult, Guard, JobFlags }
 
 // The same text scored 0.59 and 2e-8 for injection in two runs of Phase D, so every text is scored twice and the
 // higher score counts: a guard errs towards asking the user.

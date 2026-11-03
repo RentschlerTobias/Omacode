@@ -12,7 +12,8 @@ export type Policy =
 
 export const LEVELS = ["decision", "task", "job", "project", "global"] as const
 export type Level = (typeof LEVELS)[number]
-export type PolicySet = Readonly<Record<string, string>> // key -> "auto" | "ask" | "rule" | "fixed:<value>"
+import type { PolicySet } from "@omacode/state/schema"
+export type { PolicySet }
 export type Policies = Partial<Record<Level, PolicySet>>
 
 export interface Resolved {
