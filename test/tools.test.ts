@@ -274,7 +274,7 @@ test("merge_job refuses a non-fast-forward and leaves the checkout exactly as it
 test("merge_job shows what would land, refuses unfinished work without the user's words, and fast-forwards with them", async () => {
   const { mergeJobInto } = await import("../src/plugin.ts")
   const { project, branch } = repo()
-  const j = job({ integrationBranch: branch })
+  const j = job({ integrationBranch: branch, integrationWorktree: project, integrationBase: head(project) })
   const before = head(project)
   const shown = await mergeJobInto(project, j, "")
   assert.equal(shown.wrote, false)
@@ -294,14 +294,29 @@ test("merge_job shows what would land, refuses unfinished work without the user'
 test("merge_job on a job from before integrationCheckout uses the checkout's current branch", async () => {
   const { mergeJobInto } = await import("../src/plugin.ts")
   const { project, branch } = repo()
-  // The shape of a job file written before integrationCheckout was recorded: no branch the checkout was on, no base,
-  // no worktree. The fallback is what the checkout holds right now, so the merge must not be refused as other-branch.
-  const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
+  // The shape of a job file written before integrationCheckout was recorded: no branch the checkout was on, but the
+  // worktree and base are. The fallback is what the checkout holds right now, so the merge must not be refused as
+  // other-branch.
+  const j = job({ integrationBranch: branch, integrationWorktree: project, integrationBase: head(project), tasks: [task({ status: "merged" })] })
   assert.equal(j.integrationCheckout, undefined)
   const out = await mergeJobInto(project, j, "")
   assert.equal(out.wrote, true)
   assert.match(out.text, /Merged jev\/job-1 into the checkout \(fast-forward\)/)
   assert.equal(existsSync(join(project, "b.txt")), true, "the job's file is in the checkout")
+})
+
+test("merge_job refuses a job with no worktree or base and never touches the checkout", async () => {
+  const { mergeJobInto } = await import("../src/plugin.ts")
+  const { project, branch } = repo()
+  const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
+  assert.equal(j.integrationWorktree, undefined)
+  assert.equal(j.integrationBase, undefined)
+  const before = head(project)
+  const out = await mergeJobInto(project, j, "the user said go")
+  assert.equal(out.wrote, false)
+  assert.match(out.text, /^Not merged: no-branch:/)
+  assert.equal(head(project), before, "HEAD did not move")
+  assert.equal(existsSync(join(project, "b.txt")), false, "the job's work stays on its branch")
 })
 
 test("discard_job lists what it would delete, and deletes nothing without the user's words", async () => {
@@ -563,7 +578,7 @@ test("rewind_job lists, shows, and only with the user's words moves the branch b
 test("undo_merge takes back the last merge only while the checkout is where the merge left it", async () => {
   const { mergeJobInto, undoMerge } = await import("../src/plugin.ts")
   const { project, branch } = repo()
-  const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
+  const j = job({ integrationBranch: branch, integrationWorktree: project, integrationBase: head(project), tasks: [task({ status: "merged" })] })
   assert.match((await undoMerge(project, j, "")).text, /has not merged job job-1/)
   const before = head(project)
   const merged = await mergeJobInto(project, j, "")

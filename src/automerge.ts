@@ -73,6 +73,9 @@ export async function maybeAutoMerge(project: string, job: Job, opts: AutoMergeO
     const at = new Date().toISOString()
     const merge = { from: result.from, to: result.to, at }
     job.merges = [...(job.merges ?? []), merge]
+    // The merge stands: any undo_merge they did before it is superseded, so a later idle must not read the old flag
+    // as still holding the branch back.
+    job.mergeUndoneAt = undefined
     saveJob(project, job)
     opts.record?.({ kind: "merge", job: job.id, branch: job.integrationBranch, auto: true, from: result.from, to: result.to })
     return {

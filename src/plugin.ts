@@ -452,9 +452,17 @@ export async function mergeJobInto(project: string, job: Job, ack: string, run: 
   if (ancestor.code !== 0) {
     return said(`Not merged: ${branch} cannot be fast-forwarded into the checkout (the checkout's HEAD ${from.slice(0, 7)} is not an ancestor of ${branch}). Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
   }
+  // A job with no worktree or base recorded cannot be merged. Falling back to the user's checkout would let
+  // mergeIntoCheckout rebase or reset --hard there, so the refusal comes before the engine is called: a missing
+  // field must never put the user's tree in the engine's hands.
+  const worktree = job.integrationWorktree
+  const base = job.integrationBase
+  if (!worktree || !base) {
+    return said(`Not merged: no-branch: job ${job.id} has no integration worktree and base recorded; there is nothing to merge into the checkout. Nothing was written and the checkout is exactly as it was; a merge or a rebase is the user's call.`)
+  }
   const outcome = await mergeIntoCheckout(
     project,
-    { integrationBranch: branch, integrationWorktree: job.integrationWorktree ?? project, integrationBase: job.integrationBase ?? from, integrationRel: job.integrationRel },
+    { integrationBranch: branch, integrationWorktree: worktree, integrationBase: base, integrationRel: job.integrationRel },
     { checkout: job.integrationCheckout ?? current, allowDirty: false },
     run,
   )

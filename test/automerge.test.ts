@@ -199,6 +199,7 @@ autoTest("undo_merge keeps the next automatic merge from putting the branch back
   const again = await maybeAutoMerge(r.repo, saved)
   assert.ok(again.merged, "a branch moved past the undone tip merges again")
   assert.notEqual(r.git("rev-parse", "HEAD"), from)
+  assert.equal(saved.mergeUndoneAt, undefined, "the new merge clears the stale undo flag")
 })
 
 autoTest("a manual merge clears an earlier undo_merge flag", async (r) => {
@@ -216,7 +217,7 @@ autoTest("a manual merge clears an earlier undo_merge flag", async (r) => {
 })
 
 autoTest("a manual merge through the handler persists merges and clears mergeUndoneAt, then undo_merge works", async (r) => {
-  commitBranch(r, "work.txt", "done\\n")
+  commitBranch(r, "work.txt", "done\n")
   const job = autoJob(r)
   job.mergeUndoneAt = r.git("rev-parse", `jev/${JOB_ID}`) // as if an earlier merge was undone
   saveJob(r.repo, job)
@@ -343,6 +344,42 @@ autoTest("a rebase conflict skips the merge and leaves the branch tip and the ch
   assert.equal(execFileSync("git", ["diff", "--quiet"], { encoding: "utf8", cwd: r.wt }), "", "the job worktree is clean again")
   assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "checkout change\n", "the user's commit stands")
   assert.equal(job.merges, undefined, "nothing was recorded")
+})
+
+autoTest("a diverged checkout whose overlapping edit refuses the ff restores the branch tip and the checkout", async (r) => {
+  commitBranch(r, "base.txt", "job change\n")
+  commitCheckout(r, "main.txt", "checkout change\n") // the checkout diverged: the branch is rebased
+  writeFileSync(join(r.repo, "base.txt"), "uncommitted\n") // an edit overlapping the merged file
+  const head = r.git("rev-parse", "HEAD")
+  const tip = r.git("rev-parse", `jev/${JOB_ID}`)
+  const job = autoJob(r)
+  job.acceptance = [{ id: "A1", text: "the change is in", verify: "test -f base.txt" }] // passes after the rebase
+
+  const outcome = await maybeAutoMerge(r.repo, job)
+  assert.ok(!outcome.merged)
+  assert.equal(outcome.reason, "ff", "the rebase succeeded, but the ff into the dirty file was refused")
+  assert.match(outcome.note ?? "", /not merged into the checkout automatically \(ff/)
+  assert.equal(r.git("rev-parse", `jev/${JOB_ID}`), tip, "the branch tip was restored after the refused ff")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout did not move")
+  assert.equal(readFileSync(join(r.repo, "base.txt"), "utf8"), "uncommitted\n", "the user's edit stands")
+  assert.ok(!existsSync(join(r.repo, "work.txt")), "the branch's work did not land")
+})
+
+autoTest("a check that fails after the rebase restores the branch tip and lands nothing", async (r) => {
+  commitBranch(r, "work.txt", "done\n")
+  commitCheckout(r, "main.txt", "checkout change\n") // the checkout diverged: the branch is rebased
+  const head = r.git("rev-parse", "HEAD")
+  const tip = r.git("rev-parse", `jev/${JOB_ID}`)
+  const job = autoJob(r)
+  job.acceptance = [{ id: "A1", text: "work is in", verify: "test -f missing.txt" }] // fails even after the rebase
+
+  const outcome = await maybeAutoMerge(r.repo, job)
+  assert.ok(!outcome.merged)
+  assert.equal(outcome.reason, "checks")
+  assert.match(outcome.note ?? "", /not merged into the checkout automatically \(checks/)
+  assert.equal(r.git("rev-parse", `jev/${JOB_ID}`), tip, "the branch tip was restored")
+  assert.equal(r.git("rev-parse", "HEAD"), head, "the checkout did not move")
+  assert.ok(!existsSync(join(r.repo, "work.txt")), "the branch's work did not land")
 })
 
 autoTest("a checkout on another branch, or detached, is skipped", async (r) => {
