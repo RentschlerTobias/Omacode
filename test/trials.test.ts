@@ -4,11 +4,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { parseTrialDeadline, parseTrialGrace, parseTrialPick, parseTrials } from "../src/config.ts"
-import { parseDelegation } from "../src/native.ts"
-import { classOf, needsTrials, outcomeOf, readOutcomes, recordOutcome, routerRows, type Outcome } from "../src/outcomes.ts"
-import { newJob, stage, type Task } from "../src/state.ts"
-import { DEEP, DEFAULT_GRACE, DEFAULT_PICK, graceMs, idleAttempt, parseReview, pickFor, pickOf, rankQuality, ranked, reviewPrompt, standing, trialSize } from "../src/trials.ts"
+import { parseTrialDeadline, parseTrialGrace, parseTrialPick, parseTrials } from "../packages/micromanager/src/config.ts"
+import { parseDelegation } from "../packages/micromanager/src/native.ts"
+import { classOf, needsTrials, outcomeOf, readOutcomes, recordOutcome, routerRows, type Outcome } from "../packages/micromanager/src/outcomes.ts"
+import { newJob, stage, type Task } from "../packages/micromanager/src/state.ts"
+import { DEEP, DEFAULT_GRACE, DEFAULT_PICK, graceMs, idleAttempt, parseReview, pickFor, pickOf, rankQuality, ranked, reviewPrompt, standing, trialSize } from "../packages/micromanager/src/trials.ts"
 
 test("a writer task runs as a trial when it is hard, does failed work over, or its class mostly fails alone", () => {
   const base = { retry: false, setting: 3, parallel: 3 }

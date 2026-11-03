@@ -6,6 +6,7 @@
 
 import { execFile } from "node:child_process"
 
+import { claim } from "@omacode/core/registry"
 import { installAgents, SUMMARIZER_AGENT, type AgentDraft } from "./agents.ts"
 import { cloudRegistry, configPath, loadPicks, loadSettings } from "./config.ts"
 import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
@@ -864,6 +865,7 @@ export function grantAnswer(text: string): boolean | undefined {
 const plugin = {
   id: "micromanager",
   setup: async (ctx: Context): Promise<void> => {
+    if (!claim("micromanager")) return
     const log = logger(ctx)
     const settings = loadSettings()
     const { cloudOnly, parallel, perModel, trials, budget, notify, routing, floors, decisions, allowOutside, error } = settings

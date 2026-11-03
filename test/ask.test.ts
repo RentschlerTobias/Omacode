@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { askAnswer, askKey, askNote, Asks, type AskRequest } from "../src/ask.ts"
+import { askAnswer, askKey, askNote, Asks, type AskRequest } from "../packages/micromanager/src/ask.ts"
 
 const REQ: AskRequest = {
   sessionID: "ses_w",

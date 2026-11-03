@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { startable } from "../src/continuation.ts"
-import { elapsed, foldedLine, jobsFor, projectOf, resolver, sessionJobs, shortModel, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "../src/progress.ts"
-import { newJob, type Job, type Task } from "../src/state.ts"
+import { startable } from "../packages/micromanager/src/continuation.ts"
+import { elapsed, foldedLine, jobsFor, projectOf, resolver, sessionJobs, shortModel, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "../packages/micromanager/src/progress.ts"
+import { newJob, type Job, type Task } from "../packages/micromanager/src/state.ts"
 
 const task = (id: string, status: Task["status"], extra: Partial<Task> = {}): Task => ({
   id, title: `task ${id}`, description: "", role: "code", acceptance: [], dependsOn: [], files: [], wave: 0, status, attempts: 0, stages: [], signatures: [], ...extra,

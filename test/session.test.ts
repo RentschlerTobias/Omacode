@@ -1,13 +1,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
-import { checkGuards, flagsWithoutUser, gateAnswer, gateQuestion } from "../src/gate.ts"
-import type { Decision } from "../src/jev.ts"
+import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import { checkGuards, flagsWithoutUser, gateAnswer, gateQuestion } from "../packages/micromanager/src/gate.ts"
+import type { Decision } from "../packages/micromanager/src/jev.ts"
 import {
   addNodes, applyAnswer, applyShortcut, decisionsText, frontier, instruction, matchSessionShortcut, nextStep, parseTree,
   type DesignTree,
-} from "../src/session.ts"
+} from "../packages/micromanager/src/session.ts"
 
 const DRAFT = [
   { id: "D1", question: "Is the export a CLI flag or a separate command?", kind: "decision", dependsOn: [], impact: "high" },
@@ -128,7 +128,7 @@ test("the gate flags guards at the floor and asks the user; unchecked jobs stay 
 })
 
 test("the guard bench sweeps recall and false positives per guard", async () => {
-  const { sweep } = await import("../src/bench.ts")
+  const { sweep } = await import("../packages/micromanager/src/bench.ts")
   const rows = [
     { yes: ["harmful"], p: { harmful: 0.9, injection: 0.1, refusal_likely: 0.2, sensitive: 0.1 } },
     { yes: [], p: { harmful: 0.6, injection: 0.1, refusal_likely: 0.2, sensitive: 0.1 } },

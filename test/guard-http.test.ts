@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { installGuard, redactHttpRequest } from "../src/guard/wire.ts"
-import { PLACEHOLDER_NOTE, Vault } from "../src/redact.ts"
+import { installGuard, redactHttpRequest } from "../packages/micromanager/src/guard/wire.ts"
+import { PLACEHOLDER_NOTE, Vault } from "../packages/micromanager/src/redact.ts"
 
 const SECRET = "sk-test-0123456789abcdefghij"
 

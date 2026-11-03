@@ -5,8 +5,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { Graphs, queryGraph, updateGraph } from "../src/graph.ts"
-import type { Exec } from "../src/integration.ts"
+import { Graphs, queryGraph, updateGraph } from "../packages/micromanager/src/graph.ts"
+import type { Exec } from "../packages/micromanager/src/integration.ts"
 
 const ok = (stdout = "") => ({ code: 0, stdout, stderr: "", timedOut: false })
 

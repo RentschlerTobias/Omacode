@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
-import guard from "../src/guard/index.ts"
+import guard from "../packages/micromanager/src/guard/index.ts"
 import { loadGuardSettings } from "../packages/guard/src/config.ts"
 
 function withConfig(guardText: string | undefined, fallbackText: string | undefined): { config: string; state: string } {

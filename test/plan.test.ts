@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { applySplits, parsePlan, type Plan } from "../src/plan.ts"
+import { applySplits, parsePlan, type Plan } from "../packages/micromanager/src/plan.ts"
 
 const fence = (o: unknown) => "```json\n" + JSON.stringify(o) + "\n```"
 const base = parsePlan(fence({

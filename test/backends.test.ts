@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, label, type Asker, type BackendName } from "../src/backends.ts"
-import { glinerRows, openJevRows, renderState, splitOf } from "../src/dataset.ts"
-import { evaluate } from "../src/eval.ts"
-import type { Decision, Question } from "../src/jev.ts"
-import type { Entry } from "../src/journal.ts"
+import { DEFAULT_BACKENDS, Decider, label, type Asker, type BackendName } from "../packages/micromanager/src/backends.ts"
+import { glinerRows, openJevRows, renderState, splitOf } from "../packages/micromanager/src/dataset.ts"
+import { evaluate } from "../packages/micromanager/src/eval.ts"
+import type { Decision, Question } from "../packages/micromanager/src/jev.ts"
+import type { Entry } from "../packages/micromanager/src/journal.ts"
 
 const QUESTIONS: Record<string, Question> = {
   role: { type: "choice", instructions: "Which role fits?", criteria: { code: "writes code", explore: "reads only" } },

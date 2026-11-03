@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { board } from "../src/board.ts"
-import { newJob, type Task } from "../src/state.ts"
+import { board } from "../packages/micromanager/src/board.ts"
+import { newJob, type Task } from "../packages/micromanager/src/state.ts"
 
 const task = (id: string, status: Task["status"], extra: Partial<Task> = {}): Task => ({
   id, title: `task ${id}`, description: "", role: "code", acceptance: [], dependsOn: [], files: [], wave: 0, status, attempts: 0, stages: [], signatures: [], ...extra,

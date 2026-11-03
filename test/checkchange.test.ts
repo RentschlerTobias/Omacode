@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { ChangeRequests, changeForm, changeNote, changeResult, MAX_CHANGES, normalTarget, readChange, route, validateRequest, type ChangeRequest } from "../src/checkchange.ts"
+import { ChangeRequests, changeForm, changeNote, changeResult, MAX_CHANGES, normalTarget, readChange, route, validateRequest, type ChangeRequest } from "../packages/micromanager/src/checkchange.ts"
 
 const request = (extra: Partial<ChangeRequest> = {}): ChangeRequest => ({
   kind: "check_bug",

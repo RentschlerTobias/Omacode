@@ -10,12 +10,12 @@ The plugin is split into independently installable packages. `micromanager` stay
 | `@omacode/state` | Job/task schema, store, control files, roles, routing and picks. Library, no hooks. | library |
 | `@omacode/tui` | Job progress, tasks, clickable workers and the context panel. | yes, tasks need job state |
 | `@omacode/micromanager` | The orchestrator: roles, plans, delegation, tools, permissions, jobs and merge. | the product |
-| `@omacode/full` | Guard + sandbox + context in one install. | composition |
+| `@omacode/full` | Orchestrator + guard + sandbox + context in one install. | composition |
 
 ## Install
 
 ```bash
-opencode plugin add @omacode/full          # guard + sandbox + context
+opencode plugin add @omacode/full          # orchestrator + guard + sandbox + context
 opencode plugin add @omacode/guard         # only redaction
 opencode plugin add @omacode/sandbox       # only shell isolation
 opencode plugin add @omacode/context       # only context + memory

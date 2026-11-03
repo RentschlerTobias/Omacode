@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_REGISTRY, mergeRegistry, probe, route, tierFor } from "../src/registry.ts"
-import { family, MODELS } from "../src/roles.ts"
+import { DEFAULT_REGISTRY, mergeRegistry, probe, route, tierFor } from "../packages/micromanager/src/registry.ts"
+import { family, MODELS } from "../packages/micromanager/src/roles.ts"
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } })
 

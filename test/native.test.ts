@@ -4,15 +4,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { segments } from "../src/decide.ts"
-import { CHILD_PREFIX, DelegationError, Native, NoGitError, namedFiles, parseDelegation, parseTodo, replaceIds, similarity } from "../src/native.ts"
-import { nextStep, settled } from "../src/continuation.ts"
-import { outcomeOf } from "../src/outcomes.ts"
-import { roleByAgent } from "../src/roles.ts"
-import { moveJob, newJob, type Task } from "../src/state.ts"
-import { loadJob, saveJob } from "../src/store.ts"
-import { updateControl } from "../src/control.ts"
-import { FIX_ROUNDS } from "../src/watchdog.ts"
+import { segments } from "../packages/micromanager/src/decide.ts"
+import { CHILD_PREFIX, DelegationError, Native, NoGitError, namedFiles, parseDelegation, parseTodo, replaceIds, similarity } from "../packages/micromanager/src/native.ts"
+import { nextStep, settled } from "../packages/micromanager/src/continuation.ts"
+import { outcomeOf } from "../packages/micromanager/src/outcomes.ts"
+import { roleByAgent } from "../packages/micromanager/src/roles.ts"
+import { moveJob, newJob, type Task } from "../packages/micromanager/src/state.ts"
+import { loadJob, saveJob } from "../packages/micromanager/src/store.ts"
+import { updateControl } from "../packages/micromanager/src/control.ts"
+import { FIX_ROUNDS } from "../packages/micromanager/src/watchdog.ts"
 import { tempDir } from "./harness.ts"
 
 function repo(): string {
@@ -688,7 +688,7 @@ test("a new session sees the open job of an earlier one, and continuing it moves
 })
 
 test("the note on an earlier session's job says what was merged, whether the checkout has it, and what is unfinished", async () => {
-  const { openJobNote, openJobsNote } = await import("../src/plugin.ts")
+  const { openJobNote, openJobsNote } = await import("../packages/micromanager/src/plugin.ts")
   const project = repo()
   const native = new Native()
   const d = await native.delegate(project, "ses_old", { agent: "coder", description: "Add the persona", prompt: "Add the persona.\nFiles: add.js\nChecks: test -f add.js" }, MODEL)

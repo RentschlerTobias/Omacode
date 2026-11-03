@@ -3,10 +3,10 @@ import { beforeEach, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
 
-import guard from "../src/guard/index.ts"
-import shell, { isChildShell } from "../src/shell/index.ts"
-import context from "../src/context/index.ts"
-import plugin from "../src/plugin.ts"
+import guard from "../packages/micromanager/src/guard/index.ts"
+import shell, { isChildShell } from "../packages/micromanager/src/shell/index.ts"
+import context from "../packages/micromanager/src/context/index.ts"
+import plugin from "../packages/micromanager/src/plugin.ts"
 import { resetClaims } from "@omacode/core/registry"
 
 beforeEach(() => resetClaims())

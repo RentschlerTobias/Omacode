@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { NO_PICKS } from "../src/config.ts"
-import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION, type CatalogModel } from "../src/pools.ts"
-import { MODELS, roleById } from "../src/roles.ts"
-import { DEFAULT_ROUTING } from "../src/routing.ts"
+import { NO_PICKS } from "../packages/micromanager/src/config.ts"
+import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION, type CatalogModel } from "../packages/micromanager/src/pools.ts"
+import { MODELS, roleById } from "../packages/micromanager/src/roles.ts"
+import { DEFAULT_ROUTING } from "../packages/micromanager/src/routing.ts"
 
 const go = (id: string, extra: Partial<CatalogModel> = {}): CatalogModel => ({ id, providerID: "opencode-go", name: id, enabled: true, status: "active", capabilities: { input: ["text"] }, ...extra })
 const catalog = [

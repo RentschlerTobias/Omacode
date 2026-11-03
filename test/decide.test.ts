@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { decide, hardRule, judge, type PermissionRequest } from "../src/decide.ts"
-import { Jev, JevError, parseAnswers, redact, type Decision } from "../src/jev.ts"
+import { decide, hardRule, judge, type PermissionRequest } from "../packages/micromanager/src/decide.ts"
+import { Jev, JevError, parseAnswers, redact, type Decision } from "../packages/micromanager/src/jev.ts"
 
 const req = (
   action: string,
@@ -102,7 +102,7 @@ test("the client sends the wire format, retries a 429 once, and masks secrets", 
 })
 
 test("rm on a path inside the project is Jev's call; outside, home, parents or wildcards are the user's", async () => {
-  const { removesOutside } = await import("../src/decide.ts")
+  const { removesOutside } = await import("../packages/micromanager/src/decide.ts")
   assert.equal(removesOutside("rm -rf .pytest_cache __pycache__"), false)
   assert.equal(removesOutside("rm -rf build/ dist"), false)
   for (const c of ["rm -rf /", "rm -rf ~/x", "rm -rf ../other", "rm -rf *", "rm -rf .", "rm -fr $HOME/y", "rm -rf a/../../b", "rm -rf"]) {
@@ -116,7 +116,7 @@ test("the role and its job are in Jev's context; floors can be set in the config
   await decide(jev, req("shell", ["python -m pytest -q"], "tester"))
   assert.match(jev.calls[0] ?? "", /Its role is "test": Writes and runs tests/)
   assert.equal(judge(decision("allow", 0.86, 0.1, 0.6), req("shell", ["python -m pytest"])).verdict, "allow") // write floor 0.85
-  const { parseFloors } = await import("../src/config.ts")
+  const { parseFloors } = await import("../packages/micromanager/src/config.ts")
   assert.equal(parseFloors('{"floors": {"write": 0.95}}').write, 0.95)
   assert.throws(() => parseFloors('{"floors": {"write": 2}}'), /0 to 1/)
   assert.throws(() => parseFloors('{"floors": {"wrte": 0.9}}'), /unknown floor/)
@@ -138,7 +138,7 @@ test("before an rm inside the project: tracked files go to the user, ignored cac
 })
 
 test("installing software into the system is always the user's call; into a venv it is Jev's", async () => {
-  const { installsIntoSystem } = await import("../src/decide.ts")
+  const { installsIntoSystem } = await import("../packages/micromanager/src/decide.ts")
   for (const c of ["pip install pytest", "python3 -m pip install --user x", "sudo pacman -S x", "npm i -g pnpm", "cargo install ripgrep", "yay -S foo"]) {
     assert.equal(installsIntoSystem(c), true, c)
   }
@@ -148,7 +148,7 @@ test("installing software into the system is always the user's call; into a venv
 })
 
 test("the real inspector asks git about tracked and ignored paths", async () => {
-  const { inspectPaths } = await import("../src/decide.ts")
+  const { inspectPaths } = await import("../packages/micromanager/src/decide.ts")
   const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs")
   const { execFileSync } = await import("node:child_process")
   const { tmpdir } = await import("node:os")
@@ -167,7 +167,7 @@ test("the real inspector asks git about tracked and ignored paths", async () => 
 })
 
 test("reading shell commands use the read floor; anything that writes stays at the write floor", async () => {
-  const { readsOnly, riskClass } = await import("../src/decide.ts")
+  const { readsOnly, riskClass } = await import("../packages/micromanager/src/decide.ts")
   assert.equal(readsOnly(["find . -name __pycache__ -o -name .pytest_cache", "echo '--- listing ---'", "ls -la"]), true)
   assert.equal(readsOnly(["which python python3 pytest 2>/dev/null", "python3 --version 2>/dev/null"]), true)
   assert.equal(readsOnly(["git status --porcelain", "git diff --stat"]), true)
@@ -191,7 +191,7 @@ test("a user's preset replaces Jev but never the hard rules or the deleted-path 
 })
 
 test("a reading program with a writing form is a write", async () => {
-  const { readsOnly } = await import("../src/decide.ts")
+  const { readsOnly } = await import("../packages/micromanager/src/decide.ts")
   // a live run denied 67 read-only commands, sed among them: it was not a reading program at all
   assert.equal(readsOnly(["sed -n '1,40p' src/foo.py"]), true)
   assert.equal(readsOnly(["sed -i 's/a/b/' src/foo.py"]), false)
@@ -204,7 +204,7 @@ test("a reading program with a writing form is a write", async () => {
 })
 
 test("git is recognised behind its global flags, and a mutating subcommand still writes", async () => {
-  const { readsOnly } = await import("../src/decide.ts")
+  const { readsOnly } = await import("../packages/micromanager/src/decide.ts")
   for (const command of [
     "git -C /repo status --short",
     "git --no-pager diff",
@@ -230,7 +230,7 @@ test("git is recognised behind its global flags, and a mutating subcommand still
 })
 
 test("a wrapper and a leading VAR=value do not hide what they run", async () => {
-  const { readsOnly } = await import("../src/decide.ts")
+  const { readsOnly } = await import("../packages/micromanager/src/decide.ts")
   assert.equal(readsOnly(["timeout 120 pytest"]), false, "pytest reads nothing")
   assert.equal(readsOnly(["timeout 120 git status"]), true)
   assert.equal(readsOnly(["timeout -k 5 120 git status"]), true)
@@ -247,7 +247,7 @@ test("a wrapper and a leading VAR=value do not hide what they run", async () => 
 })
 
 test("a read that stays inside the worktree needs nobody", async () => {
-  const { readsOnlyInside } = await import("../src/decide.ts")
+  const { readsOnlyInside } = await import("../packages/micromanager/src/decide.ts")
   assert.equal(readsOnlyInside(req("shell", ["sed -n 1,60p /p/src/foo.py"]), "/p"), true)
   assert.equal(readsOnlyInside(req("shell", ["ls -la"]), "/p"), true, "a relative path is the worker's own")
   assert.equal(readsOnlyInside(req("shell", ["git -C /elsewhere status"]), "/p"), false)
@@ -272,7 +272,7 @@ test("the fast path answers a read-only command inside the root without asking J
 })
 
 test("a task names a path for reading, not for writing", async () => {
-  const { taskNamesPath } = await import("../src/decide.ts")
+  const { taskNamesPath } = await import("../packages/micromanager/src/decide.ts")
   const task = "map /home/u/Repos/oc-voice; its voice/run.ts decides the routing."
   assert.equal(taskNamesPath(task, "/home/u/Repos/oc-voice"), true, "the exact path")
   assert.equal(taskNamesPath(task, "/home/u/Repos/oc-voice/voice/run.ts"), true, "inside a named directory")
@@ -302,7 +302,7 @@ test("outside the project: the job's own area is allowed, an unvouched path is t
 // The rule that started this: ~/.config was refused whole, which blocked a worker from reading an ordinary application
 // config file (~/.config/omarchy/shell.json holds the bar widget's plugin id) while claiming to protect secrets.
 test("~/.config is no longer refused whole: application config reads, its secret files do not", async () => {
-  const { forbiddenOutside, forbiddenOutsideWhat } = await import("../src/decide.ts")
+  const { forbiddenOutside, forbiddenOutsideWhat } = await import("../packages/micromanager/src/decide.ts")
   const home = process.env.HOME ?? "/root"
   // The exact case that motivated the change, named as it appears in the report.
   assert.equal(forbiddenOutside(`${home}/.config/omarchy/shell.json`), false)
@@ -344,7 +344,7 @@ test("~/.config is no longer refused whole: application config reads, its secret
 })
 
 test("the user can open a path themselves, and only the paths they name", async () => {
-  const { allowedOutside, forbiddenOutside, externalVerdict, forbiddenOutsideWhat } = await import("../src/decide.ts")
+  const { allowedOutside, forbiddenOutside, externalVerdict, forbiddenOutsideWhat } = await import("../packages/micromanager/src/decide.ts")
   const home = process.env.HOME ?? "/root"
   const allowed = [`${home}/.config/omarchy`, "/data/shared"]
   assert.equal(allowedOutside(`${home}/.config/omarchy/shell.json`, allowed), true)
@@ -365,7 +365,7 @@ test("the user can open a path themselves, and only the paths they name", async 
 })
 
 test("allowOutside is journalled as the user's policy, and it applies to writers as well as readers", async () => {
-  const { ALLOW_OUTSIDE_REASON } = await import("../src/decide.ts")
+  const { ALLOW_OUTSIDE_REASON } = await import("../packages/micromanager/src/decide.ts")
   const home = process.env.HOME ?? "/root"
   const allowed = [`${home}/.config/omarchy`]
   const jev = fakeJev(decision("allow", 1, 0, 0))
@@ -390,7 +390,7 @@ test("allowOutside is journalled as the user's policy, and it applies to writers
 })
 
 test("allowOutside is validated like every other setting, and a bad value says what is wrong", async () => {
-  const { parseAllowOutside } = await import("../src/config.ts")
+  const { parseAllowOutside } = await import("../packages/micromanager/src/config.ts")
   assert.deepEqual(parseAllowOutside("{}"), [], "unset: no path is opened")
   assert.deepEqual(parseAllowOutside('{ "allowOutside": ["/home/u/.config/omarchy", "~/notes"] }'), ["/home/u/.config/omarchy", "~/notes"])
   assert.deepEqual(parseAllowOutside('{ "allowOutside": ["/a", "/a"] }'), ["/a"], "the same entry twice is one entry")
@@ -401,7 +401,7 @@ test("allowOutside is validated like every other setting, and a bad value says w
   assert.throws(() => parseAllowOutside('{ "allowOutside": [42] }'), /not one/)
   assert.throws(() => parseAllowOutside('{ "allowOutside": [""] }'), /not one/)
   // A broken setting falls back to the defaults and is reported, exactly as every other broken setting is.
-  const { loadSettings } = await import("../src/config.ts")
+  const { loadSettings } = await import("../packages/micromanager/src/config.ts")
   const { mkdtempSync, writeFileSync } = await import("node:fs")
   const { tmpdir } = await import("node:os")
   const { join } = await import("node:path")
@@ -427,7 +427,7 @@ test("allowOutside is validated like every other setting, and a bad value says w
 const job = (id: string) => ({ id }) as never // a job is only read for its id here
 
 test("request_access on a refused path asks the user instead of answering for them", async () => {
-  const { vouchAccess, grantQuestion } = await import("../src/plugin.ts")
+  const { vouchAccess, grantQuestion } = await import("../packages/micromanager/src/plugin.ts")
   const home = process.env.HOME ?? "/root"
   const out = vouchAccess("/p", job("job-a"), "~/.ssh/id_rsa", "the deploy test needs the key to sign the fixture")
   assert.equal(out.vouched, false, "a vouch cannot open a refused path; that is what the rules say")
@@ -448,7 +448,7 @@ test("request_access on a refused path asks the user instead of answering for th
 })
 
 test("a grant opens exactly the path the user was asked about, and nothing beside it", async () => {
-  const { grant, grantedPaths, grantFor, askedFor } = await import("../src/plugin.ts")
+  const { grant, grantedPaths, grantFor, askedFor } = await import("../packages/micromanager/src/plugin.ts")
   const j = job("job-scope")
   const asked = { path: "/home/u/notes", rule: "the user's keys in ~/.ssh", why: "the test reads it" }
   const out = grant(j, asked, true)
@@ -466,7 +466,7 @@ test("a grant opens exactly the path the user was asked about, and nothing besid
 })
 
 test("a refusal is final and quiet: it does not re-ask, and a second answer does not flip it", async () => {
-  const { grant, grantFor, vouchAccess } = await import("../src/plugin.ts")
+  const { grant, grantFor, vouchAccess } = await import("../packages/micromanager/src/plugin.ts")
   const home = process.env.HOME ?? "/root"
   const j = job("job-no")
   // A real path under the real home: the rules are built from homedir(), so a made-up /home/u would not be refused.
@@ -486,7 +486,7 @@ test("a refusal is final and quiet: it does not re-ask, and a second answer does
 })
 
 test("the user's answer is read from their own words, and anything else is not an answer", async () => {
-  const { grantAnswer } = await import("../src/plugin.ts")
+  const { grantAnswer } = await import("../packages/micromanager/src/plugin.ts")
   for (const yes of ["yes", "Yes", "yes.", '"yes"', "yeah", "ok", "sure", "allow it", "open it", "go ahead"]) {
     assert.equal(grantAnswer(yes), true, yes)
   }
@@ -500,7 +500,7 @@ test("the user's answer is read from their own words, and anything else is not a
 })
 
 test("the journal says the user decided, never that nothing was wrong", async () => {
-  const { grant } = await import("../src/plugin.ts")
+  const { grant } = await import("../packages/micromanager/src/plugin.ts")
   const entries: Record<string, unknown>[] = []
   const journal = (e: Record<string, unknown>) => void entries.push(e)
   const asked = { path: "/home/u/.ssh/id_rsa", rule: "the user's keys in ~/.ssh", why: "a worker asked" }
@@ -519,8 +519,8 @@ test("the journal says the user decided, never that nothing was wrong", async ()
 })
 
 test("a worker session cannot reach the question: the rules hold until a human answers", async () => {
-  const { grant, grantedPaths } = await import("../src/plugin.ts")
-  const { forbiddenOutside, allowedOutside } = await import("../src/decide.ts")
+  const { grant, grantedPaths } = await import("../packages/micromanager/src/plugin.ts")
+  const { forbiddenOutside, allowedOutside } = await import("../packages/micromanager/src/decide.ts")
   const home = process.env.HOME ?? "/root"
   const j = job("job-w")
   // Nothing is open for a worker of this job: the rule is the default, with no grant and no config entry.
@@ -540,7 +540,7 @@ test("a worker session cannot reach the question: the rules hold until a human a
 const WT = "/p/.jev-micromanager/worktrees/job-1--T2"
 
 test("a task worktree is told from the integration worktree and the user's checkout", async () => {
-  const { taskWorktree } = await import("../src/decide.ts")
+  const { taskWorktree } = await import("../packages/micromanager/src/decide.ts")
   assert.equal(taskWorktree(WT), WT)
   assert.equal(taskWorktree(`${WT}/sub/project`), WT, "a project below the repository root keeps the whole worktree")
   assert.equal(taskWorktree("/p/.jev-micromanager/worktrees/job-1"), undefined, "the integration worktree is the merge train's")
@@ -549,7 +549,7 @@ test("a task worktree is told from the integration worktree and the user's check
 })
 
 test("a command stays in the worktree when its paths, its programs and its git stay there", async () => {
-  const { staysInWorktree } = await import("../src/decide.ts")
+  const { staysInWorktree } = await import("../packages/micromanager/src/decide.ts")
   const stays = (...commands: string[]) => staysInWorktree(req("shell", commands), WT)
   // what live runs refused in a worktree nobody else uses
   assert.equal(stays("npm test", "tail -n 40"), true)

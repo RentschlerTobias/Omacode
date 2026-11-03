@@ -1,0 +1,38 @@
+{
+  "name": "@omacode/micromanager",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "An OpenCode v2 plugin that orchestrates sub-agents, with Jev making the decisions",
+  "exports": {
+    ".": "./src/plugin.ts",
+    "./guard": "./src/guard/index.ts",
+    "./shell": "./src/shell/index.ts",
+    "./context": "./src/context/index.ts"
+  },
+  "files": [
+    "src",
+    "skills",
+    "evolver/pyproject.toml",
+    "evolver/uv.lock",
+    "evolver/mm_evolve"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "subagents",
+    "orchestration"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omacode/context": "0.1.1",
+    "@omacode/core": "0.1.1",
+    "@omacode/guard": "0.1.1",
+    "@omacode/sandbox": "0.1.1",
+    "@omacode/state": "0.1.1",
+    "@anthropic-ai/sandbox-runtime": "0.0.81",
+    "playwright-core": "^1.64.1"
+  }
+}

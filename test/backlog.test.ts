@@ -4,11 +4,11 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { backlogTool, byTurn, draftFromLater, draftFromTrial, githubIssue, githubIssues, githubRepo, goalOf, localBackend, parseFrontMatter, parseItem, publishForm, publishIssue, readPublish, renderItem, slugOf, type BacklogBackend, type BacklogItem } from "../src/backlog.ts"
-import { parseGithubBacklog } from "../src/config.ts"
-import type { Exec } from "../src/integration.ts"
-import { useVault, Vault } from "../src/redact.ts"
-import { newJob, stage, type Task } from "../src/state.ts"
+import { backlogTool, byTurn, draftFromLater, draftFromTrial, githubIssue, githubIssues, githubRepo, goalOf, localBackend, parseFrontMatter, parseItem, publishForm, publishIssue, readPublish, renderItem, slugOf, type BacklogBackend, type BacklogItem } from "../packages/micromanager/src/backlog.ts"
+import { parseGithubBacklog } from "../packages/micromanager/src/config.ts"
+import type { Exec } from "../packages/micromanager/src/integration.ts"
+import { useVault, Vault } from "../packages/micromanager/src/redact.ts"
+import { newJob, stage, type Task } from "../packages/micromanager/src/state.ts"
 
 const item = (extra: Partial<BacklogItem> = {}): BacklogItem => ({
   slug: "faster-search",

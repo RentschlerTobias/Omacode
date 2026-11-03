@@ -17,6 +17,7 @@
     "@omacode/context": "0.1.1",
     "@omacode/core": "0.1.1",
     "@omacode/guard": "0.1.1",
-    "@omacode/sandbox": "0.1.1"
+    "@omacode/sandbox": "0.1.1",
+    "@omacode/micromanager": "0.1.1"
   }
 }

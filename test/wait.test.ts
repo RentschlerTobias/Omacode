@@ -11,10 +11,10 @@ import { appendFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { Asks, type AskRequest } from "../src/ask.ts"
+import { Asks, type AskRequest } from "../packages/micromanager/src/ask.ts"
 import { tempDir } from "./harness.ts"
-import { installWaitTool, WAIT_ID, type ToolDraft } from "../src/tools.ts"
-import { WAIT_DEFAULT_MS, waitFor, waitTimeoutMs, watchFile, watchPid } from "../src/wait.ts"
+import { installWaitTool, WAIT_ID, type ToolDraft } from "../packages/micromanager/src/tools.ts"
+import { WAIT_DEFAULT_MS, waitFor, waitTimeoutMs, watchFile, watchPid } from "../packages/micromanager/src/wait.ts"
 
 function fakeDraft() {
   const added: Record<string, unknown>[] = []

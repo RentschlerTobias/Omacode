@@ -2,6 +2,7 @@
 
 One install for the standalone plugins:
 
+- `@omacode/micromanager` (the orchestrator)
 - `@omacode/guard`
 - `@omacode/sandbox`
 - `@omacode/context`

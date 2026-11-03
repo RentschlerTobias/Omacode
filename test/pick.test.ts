@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { combineBase, comparisonPage, pickForm, pickNote, readPick, type Candidate } from "../src/pick.ts"
+import { combineBase, comparisonPage, pickForm, pickNote, readPick, type Candidate } from "../packages/micromanager/src/pick.ts"
 
 const cands: Candidate[] = [
   { id: "T1", model: "opencode-go/qwen3.8-flash", cost: 0.012, lines: { added: 40, removed: 2 }, files: ["index.html"], summary: "a bold <hero>", preview: { path: "index.html", png: Buffer.from("png") } },

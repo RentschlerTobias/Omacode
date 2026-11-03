@@ -4,9 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "../src/control.ts"
-import { accessForm, answersOf, askForm, formInput, readForm, startForm } from "../src/forms.ts"
-import { newJob, type Task } from "../src/state.ts"
+import { isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "../packages/micromanager/src/control.ts"
+import { accessForm, answersOf, askForm, formInput, readForm, startForm } from "../packages/micromanager/src/forms.ts"
+import { newJob, type Task } from "../packages/micromanager/src/state.ts"
 
 test("the start form asks the options and the go, and its answer is read on the plugin's labels", () => {
   const form = startForm("job-1", 5, 2, { auto: true, parallel: false, review: false })

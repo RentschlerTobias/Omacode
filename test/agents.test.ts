@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { installAgents, type AgentInfo } from "../src/agents.ts"
-import { ROLES } from "../src/roles.ts"
+import { installAgents, type AgentInfo } from "../packages/micromanager/src/agents.ts"
+import { ROLES } from "../packages/micromanager/src/roles.ts"
 
 function fakeDraft(base: AgentInfo) {
   const agents = new Map<string, AgentInfo>([["build", base]])

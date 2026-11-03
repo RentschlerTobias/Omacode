@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { signalFor, verdict } from "../src/checkpoint.ts"
-import { Watchdog, type Progress } from "../src/watchdog.ts"
+import { signalFor, verdict } from "../packages/micromanager/src/checkpoint.ts"
+import { Watchdog, type Progress } from "../packages/micromanager/src/watchdog.ts"
 
 const p = (over: Partial<Progress> = {}): Progress => ({ steps: 60, calls: 70, writes: 4, callsSinceWrite: 5, filesRead: 12, recent: [], recentFailures: 0, ...over })
 const n = (x: number) => ({ type: "noul" as const, noul: x })

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
-import { drift } from "../src/bench.ts"
-import { checkGuards, injected, injectionScore } from "../src/gate.ts"
-import { resultText, rewriteResult } from "../src/hooks.ts"
-import { redact } from "../src/jev.ts"
+import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import { drift } from "../packages/micromanager/src/bench.ts"
+import { checkGuards, injected, injectionScore } from "../packages/micromanager/src/gate.ts"
+import { resultText, rewriteResult } from "../packages/micromanager/src/hooks.ts"
+import { redact } from "../packages/micromanager/src/jev.ts"
 
 // A local guard backend whose answers come from a function of the asked text.
 function decider(score: (text: string, call: number) => Record<string, number>) {
@@ -62,7 +62,7 @@ test("drift reports the largest change and the floor flips between two bench run
 })
 
 test("N7 triage: planned first, then needed or in scope, the user's call only for what is not taken", async () => {
-  const { triage } = await import("../src/followups.ts")
+  const { triage } = await import("../packages/micromanager/src/followups.ts")
   const ctx = { goal: "", acceptance: [], task: "T1", otherTasks: [], openFiles: new Set(["README.md"]), doneFiles: new Set(["src/a.js"]) }
   const n = (x: number) => ({ type: "noul" as const, noul: x })
   const items = [

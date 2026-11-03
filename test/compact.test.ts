@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
-import { candidates, Compactor, prune } from "../src/compact.ts"
+import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import { candidates, Compactor, prune } from "../packages/micromanager/src/compact.ts"
 
 // A micromanager history: a user request, then turns that each call a tool and get a result back.
 function history(results: { tool: string; size: number }[]) {

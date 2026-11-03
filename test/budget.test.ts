@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { Accountant, chargeTask, limitsOf, overBudget, overNote, sessionUsage, wrapUpNote } from "../src/budget.ts"
-import { newJob } from "../src/state.ts"
+import { Accountant, chargeTask, limitsOf, overBudget, overNote, sessionUsage, wrapUpNote } from "../packages/micromanager/src/budget.ts"
+import { newJob } from "../packages/micromanager/src/state.ts"
 
 const assistant = (input: number, output: number, cost: number) => ({ type: "assistant", tokens: { input, output }, cost })
 
@@ -70,8 +70,8 @@ test("a task's usage adds up what its sessions were charged", () => {
 })
 
 test("the first checkpoint interval comes from the class's merged tasks, else the difficulty; the next from Jev's confidence", async () => {
-  const { firstInterval, nextInterval } = await import("../src/checkpoint.ts")
-  const { learnedSteps } = await import("../src/outcomes.ts")
+  const { firstInterval, nextInterval } = await import("../packages/micromanager/src/checkpoint.ts")
+  const { learnedSteps } = await import("../packages/micromanager/src/outcomes.ts")
   assert.equal(firstInterval(undefined), 60)
   assert.equal(firstInterval(0.2), 40)
   assert.equal(firstInterval(0.9), 90)

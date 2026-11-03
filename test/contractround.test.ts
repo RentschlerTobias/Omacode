@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import type { Contract } from "../src/contract.ts"
-import { applyPrefs, baselineForm, draftPrompt, loopholeForm, parseLoopholes, prefsForm, readBaseline, readLoopholes, readPrefs, redteamPrompt, roundFormOf } from "../src/contractround.ts"
+import type { Contract } from "../packages/micromanager/src/contract.ts"
+import { applyPrefs, baselineForm, draftPrompt, loopholeForm, parseLoopholes, prefsForm, readBaseline, readLoopholes, readPrefs, redteamPrompt, roundFormOf } from "../packages/micromanager/src/contractround.ts"
 
 const draft = (): Contract => ({
   id: "C1", version: 1, status: "draft", goal: "faster search", evaluator: "sh bench.sh", timeoutMs: 1000, repeats: 1,

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import type { Asked } from "../src/backends.ts"
-import type { Answer } from "../src/jev.ts"
-import { choosePipeline, citationCheck, parseReview, readerCount, researchPath, TEST_FILE } from "../src/pipelines.ts"
-import { classifyQuestions, combine, narrowing, profileText, type Skill } from "../src/profile.ts"
-import type { Acceptance, Task } from "../src/state.ts"
+import type { Asked } from "../packages/micromanager/src/backends.ts"
+import type { Answer } from "../packages/micromanager/src/jev.ts"
+import { choosePipeline, citationCheck, parseReview, readerCount, researchPath, TEST_FILE } from "../packages/micromanager/src/pipelines.ts"
+import { classifyQuestions, combine, narrowing, profileText, type Skill } from "../packages/micromanager/src/profile.ts"
+import type { Acceptance, Task } from "../packages/micromanager/src/state.ts"
 
 const task = (over: Partial<Task> = {}): Task => ({
   id: "T1", title: "add mean()", description: "in stats.js", role: "code", acceptance: ["A1"], dependsOn: [], files: ["stats.js"],
@@ -137,7 +137,7 @@ test("small helpers: reader count, research path, test file names", () => {
 })
 
 test("an acceptance point several tasks cover is marked as shared in the brief and the review", async () => {
-  const { sharedNote } = await import("../src/brief.ts")
+  const { sharedNote } = await import("../packages/micromanager/src/brief.ts")
   const job = { tasks: [task(), task({ id: "T2" }), task({ id: "T3", acceptance: ["A2"] })] } as unknown as Parameters<typeof sharedNote>[0]
   assert.equal(sharedNote(job, task(), "A1"), " [shared with T2: only this task's part counts here]")
   assert.equal(sharedNote(job, task({ id: "T3", acceptance: ["A2"] }), "A2"), "")

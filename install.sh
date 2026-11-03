@@ -3,7 +3,7 @@
 # without a checkout use OpenCode's own installer, which needs nothing from this script:
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
-#   ./install.sh            link src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts, and write the TUI
+#   ./install.sh            link packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts, and write the TUI
 #                           package ~/.config/opencode/micromanager-tui/ (job progress in the TUI, packages/tui/src/tui.js) into
 #                           the "plugins" of ~/.config/opencode/cli.json
 #   ./install.sh --remove   remove both
@@ -119,15 +119,15 @@ fi
 mkdir -p "$PLUGINS"
 # The link's name before 2026-10-19: two links to the same plugin would load it twice.
 OLD_LINK="$PLUGINS/jev-micromanager.ts"
-if [[ -L "$OLD_LINK" && "$(realpath "$OLD_LINK")" == "$(realpath "$REPO/src/plugin.ts")" ]]; then
+if [[ -L "$OLD_LINK" && "$(realpath "$OLD_LINK")" == "$(realpath "$REPO/packages/micromanager/src/plugin.ts")" ]]; then
   rm "$OLD_LINK" && echo "removed the old link $OLD_LINK"
 fi
 if [[ -e "$LINK" && ! -L "$LINK" ]]; then
   echo "$LINK exists and is not our link; not touching it" >&2
   exit 1
 fi
-ln -sfn "$REPO/src/plugin.ts" "$LINK"
-echo "linked $LINK -> $REPO/src/plugin.ts (restart the OpenCode server to load it)"
+ln -sfn "$REPO/packages/micromanager/src/plugin.ts" "$LINK"
+echo "linked $LINK -> $REPO/packages/micromanager/src/plugin.ts (restart the OpenCode server to load it)"
 write_tui
 cli_plugin add
 echo "the TUI shows job progress from its next start (the sidebar toggles with <leader>b, or set \"session\": {\"sidebar\": \"auto\"} in cli.json; /tasks opens a task)"

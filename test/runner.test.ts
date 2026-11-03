@@ -4,10 +4,10 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { lastAssistantText, parseReport } from "../src/brief.ts"
-import { DEFAULT_REGISTRY, route } from "../src/registry.ts"
-import { Runner, summary, toModel, type SessionApi } from "../src/runner.ts"
-import { loadJob } from "../src/store.ts"
+import { lastAssistantText, parseReport } from "../packages/micromanager/src/brief.ts"
+import { DEFAULT_REGISTRY, route } from "../packages/micromanager/src/registry.ts"
+import { Runner, summary, toModel, type SessionApi } from "../packages/micromanager/src/runner.ts"
+import { loadJob } from "../packages/micromanager/src/store.ts"
 import { tempDir } from "./harness.ts"
 
 function repo(): string {
@@ -210,8 +210,8 @@ test("reports and assistant text are read from the session context", () => {
 
 // --- Phase C: gate, triage and the planning session -----------------------------------------------------
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
-import type { Decision } from "../src/jev.ts"
+import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import type { Decision } from "../packages/micromanager/src/jev.ts"
 
 const noul = (v: number) => ({ type: "noul" as const, noul: v })
 // A decision model that answers by node: G0 on gliner, the rest on "typesafe".
@@ -292,7 +292,7 @@ test("a cloud model preset never takes a local-only job to the cloud", async () 
 })
 
 test("a goal that failed to plan a short while ago is reported, not started again", async () => {
-  const { recentFailure } = await import("../src/runner.ts")
+  const { recentFailure } = await import("../packages/micromanager/src/runner.ts")
   const project = repo()
   const fake = fakeSession({ plan: ["no", "no", "no"] })
   const { job } = await runner(project, fake.api).plan("add an add function")
@@ -581,9 +581,9 @@ test("a run that ended mid-task starts that task again on a clean worktree", asy
 
 // --- Phase E: the task queue (priority, follow-ups, replan) ----------------------------------------------
 
-import { buildAgenda } from "../src/agenda.ts"
-import { moveJob, moveTask, newJob } from "../src/state.ts"
-import { saveJob } from "../src/store.ts"
+import { buildAgenda } from "../packages/micromanager/src/agenda.ts"
+import { moveJob, moveTask, newJob } from "../packages/micromanager/src/state.ts"
+import { saveJob } from "../packages/micromanager/src/store.ts"
 
 test("a worker's follow-up in the plan's files becomes a task after its finder; one outside goes to later", async () => {
   const project = repo()
@@ -722,7 +722,7 @@ test("a follow-up the injection guard flags goes to later; every prompt is sent 
 })
 
 test("budget and notify settings: defaults, ceilings and bad values", async () => {
-  const { parseBudget, parseNotify, DEFAULT_BUDGET } = await import("../src/config.ts")
+  const { parseBudget, parseNotify, DEFAULT_BUDGET } = await import("../packages/micromanager/src/config.ts")
   assert.deepEqual(parseBudget("{}"), DEFAULT_BUDGET)
   assert.deepEqual(parseBudget('{"budget": {"tokens": 1e12, "cost": 3}}'), { ...DEFAULT_BUDGET, tokens: 50_000_000, cost: 3 })
   assert.throws(() => parseBudget('{"budget": {"tokns": 5}}'), /unknown budget/)
@@ -747,7 +747,7 @@ test("when the decision model sees progress, a repeated failure keeps its fix ro
 
 // --- Phase E: two-axis review ----------------------------------------------------------------------------------
 
-import { mergeReviews, parseReview } from "../src/pipelines.ts"
+import { mergeReviews, parseReview } from "../packages/micromanager/src/pipelines.ts"
 
 test("review parsing: confidence decides blocking, standards findings need one, outside work is kept", () => {
   const text = '{"verdict":"FAIL","checks":[{"point":"umlauts","met":false,"evidence":"slug(\\"Straße\\") gives strae","confidence":0.9},{"point":"naming","met":false,"evidence":"x.js:3"}],"fixes":[],"outside":[{"what":"slug the titles in the CLI too","why":"same bug","files":["cli.js"]}]}'
@@ -789,7 +789,7 @@ test("P2 with two axes: a confident standards finding goes back to the worker; t
 
 // --- Phase E: worker_refused ---------------------------------------------------------------------------------
 
-import { refused } from "../src/brief.ts"
+import { refused } from "../packages/micromanager/src/brief.ts"
 
 test("a refusal without a report is recognised; a report that mentions refusing is not", () => {
   assert.equal(refused("I'm sorry, but I can't help with writing that scanner."), true)
@@ -1000,8 +1000,8 @@ test("the stall poll watches the message bookkeeping, not the messages: a growin
 
 // --- omo-hybrid: the rolling session job ------------------------------------------------------------------------
 
-import { addDelegated } from "../src/plan.ts"
-import { taskReport } from "../src/runner.ts"
+import { addDelegated } from "../packages/micromanager/src/plan.ts"
+import { taskReport } from "../packages/micromanager/src/runner.ts"
 
 function rolling(project: string) {
   const job = newJob("job-20261005-120000-abcd", "the delegated tasks of micromanager session ses_dict")
@@ -1083,7 +1083,7 @@ test("a delegation is checked like a plan: unknown dependencies are refused", ()
 })
 
 test("delegated checks must be shell commands, not sentences", async () => {
-  const { checkProblem } = await import("../src/plan.ts")
+  const { checkProblem } = await import("../packages/micromanager/src/plan.ts")
   assert.match(checkProblem("Run `npm test` from the project root; it must pass with the new tests included.")!, /backticks/)
   assert.match(checkProblem("Ensure all tests pass")!, /sentence/)
   assert.match(checkProblem("The README lists the three helpers in the functions section.")!, /sentence/)
@@ -1113,8 +1113,8 @@ test("rolling: an answer reaches a task of the job while it runs", async () => {
 // --- cloud only (the user's choice for now, 2026-10-05) ----------------------------------------------------------
 
 test("cloud only: guards ask cloud Jev, no local model is routed, and a local-only job waits instead of going to the cloud", async () => {
-  const { cloudRegistry, parseCloudOnly } = await import("../src/config.ts")
-  const { gateQuestion } = await import("../src/gate.ts")
+  const { cloudRegistry, parseCloudOnly } = await import("../packages/micromanager/src/config.ts")
+  const { gateQuestion } = await import("../packages/micromanager/src/gate.ts")
   const jev: Asker = { ask: async () => ({ answers: {}, model: "jev", latencyMs: 1 }) }
   const d = new Decider({ ...DEFAULT_BACKENDS, cloudOnly: true }, { typesafe: jev, gliner: jev }, () => {})
   assert.equal(d.backendFor("G0"), "typesafe")
@@ -1142,7 +1142,7 @@ test("cloud only: guards ask cloud Jev, no local model is routed, and a local-on
 })
 
 test("cloud only: a sensitive flag alone does not stop a job; injection still asks the user", async () => {
-  const { flagsWithoutUser } = await import("../src/gate.ts")
+  const { flagsWithoutUser } = await import("../packages/micromanager/src/gate.ts")
   const sensitive = { flagged: ["sensitive" as const], scores: { sensitive: 0.69 }, checked: true }
   assert.equal(flagsWithoutUser(sensitive, "cloud", false), "ask_user")
   assert.deepEqual(flagsWithoutUser(sensitive, "cloud", true), { gate: sensitive })
@@ -1179,7 +1179,7 @@ test("cloud only: a local-only flag from an unchecked goal is dropped; one the u
 })
 
 test("delegated files are project paths; prose and paths outside are refused", async () => {
-  const { parseFiles } = await import("../src/plan.ts")
+  const { parseFiles } = await import("../packages/micromanager/src/plan.ts")
   const p = "/home/u/repo"
   assert.deepEqual(parseFiles("src/a.js, test/a.test.js", p), { files: ["src/a.js", "test/a.test.js"] })
   assert.deepEqual(parseFiles("/home/u/repo/src/a.js ./README.md", p), { files: ["src/a.js", "README.md"] })
@@ -1201,8 +1201,8 @@ test("rolling: an answer can replace a task's wrong checks", () => {
 
 // --- project memory: Jev keeps what workers learned and recalls it per task ---------------------------------------
 
-import { readMemory, writeMemory } from "../src/memory.ts"
-import { MODELS } from "../src/roles.ts"
+import { readMemory, writeMemory } from "../packages/micromanager/src/memory.ts"
+import { MODELS } from "../packages/micromanager/src/roles.ts"
 
 test("memory: a lasting, new LEARNED line is kept; a known or one-off one is not; the next task's brief recalls it", async () => {
   const project = repo()

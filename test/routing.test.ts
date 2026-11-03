@@ -4,11 +4,11 @@ import { test } from "node:test"
 import { writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { loadPicks, NO_PICKS, parsePicks, parseRouting, parseSandbox, savePicks, stripComments } from "../src/config.ts"
-import { backstop, DELEGATION_TOOLS, delegationRole, HEADER, notRouted, routeDelegation, routeSubagentCall, unownedDelegation, type ChildSession } from "../src/hooks.ts"
-import { modelAvailability } from "../src/plugin.ts"
-import { family, MODELS, ROLES, roleById } from "../src/roles.ts"
-import { DEFAULT_ROUTING, chooseModel, guessNeeds, withPicks } from "../src/routing.ts"
+import { loadPicks, NO_PICKS, parsePicks, parseRouting, parseSandbox, savePicks, stripComments } from "../packages/micromanager/src/config.ts"
+import { backstop, DELEGATION_TOOLS, delegationRole, HEADER, notRouted, routeDelegation, routeSubagentCall, unownedDelegation, type ChildSession } from "../packages/micromanager/src/hooks.ts"
+import { modelAvailability } from "../packages/micromanager/src/plugin.ts"
+import { family, MODELS, ROLES, roleById } from "../packages/micromanager/src/roles.ts"
+import { DEFAULT_ROUTING, chooseModel, guessNeeds, withPicks } from "../packages/micromanager/src/routing.ts"
 import { tempDir } from "./harness.ts"
 
 

@@ -2,15 +2,15 @@ import assert from "node:assert/strict"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { covers, ledger, type Message } from "../src/context/ledger.ts"
-import { ContextManager } from "../src/context/manager.ts"
-import { digestText, readDigest, writeDigest } from "../src/context/digest.ts"
-import { findUsage, tapResponse, usageOf } from "../src/context/tokens.ts"
-import { newJob, type Task } from "../src/state.ts"
-import { Summarizer } from "../src/context/summary.ts"
-import { epochDue, expectedRemaining, pricesOf } from "../src/context/policy.ts"
-import { PriceBook } from "../src/context/prices.ts"
-import { DEFAULT_RULES, findReplacements } from "../src/context/rules.ts"
+import { covers, ledger, type Message } from "../packages/micromanager/src/context/ledger.ts"
+import { ContextManager } from "../packages/micromanager/src/context/manager.ts"
+import { digestText, readDigest, writeDigest } from "../packages/micromanager/src/context/digest.ts"
+import { findUsage, tapResponse, usageOf } from "../packages/micromanager/src/context/tokens.ts"
+import { newJob, type Task } from "../packages/micromanager/src/state.ts"
+import { Summarizer } from "../packages/micromanager/src/context/summary.ts"
+import { epochDue, expectedRemaining, pricesOf } from "../packages/micromanager/src/context/policy.ts"
+import { PriceBook } from "../packages/micromanager/src/context/prices.ts"
+import { DEFAULT_RULES, findReplacements } from "../packages/micromanager/src/context/rules.ts"
 import { tempDir } from "./harness.ts"
 
 interface Call { tool: string; input: Record<string, unknown>; out: string; error?: boolean }
@@ -230,7 +230,7 @@ test("price book: prices by provider and model from the host's catalog, read onc
 })
 
 test("summary: the older turns form a segment; the answer is parsed; the summary survives a rule's stub", async () => {
-  const { segmentOf, parseSummary, Summarizer } = await import("../src/context/summary.ts")
+  const { segmentOf, parseSummary, Summarizer } = await import("../packages/micromanager/src/context/summary.ts")
   const msgs = history(Array.from({ length: 12 }, (_, i): Call => ({ tool: "read", input: { path: `f${i}.ts` }, out: big(`F${i}`, 5000) })))
   const l = ledger(msgs)
   const seg = segmentOf(msgs, l, new Set(["c0"]), { startAt: 0.8, keepTurns: 6, minChars: 10_000, maxChars: 120_000, perResult: 4000, timeoutMs: 1000 })!
@@ -252,7 +252,7 @@ test("summary: the older turns form a segment; the answer is parsed; the summary
 })
 
 test("status: the server's file per session, the bar and the folded line the sidebar shows", async () => {
-  const { bar, foldedContext, freshStatuses, readStatus, writeStatus } = await import("../src/context/status.ts")
+  const { bar, foldedContext, freshStatuses, readStatus, writeStatus } = await import("../packages/micromanager/src/context/status.ts")
   const dir = tempDir("status-")
   const s = { tokens: 60_000, ceiling: 120_000, summaryAt: 96_000, epochs: 2, savedChars: 284_000, pending: 3, recalled: ["tests need uv run"], at: Date.now() }
   writeStatus("ses_1", s, dir)

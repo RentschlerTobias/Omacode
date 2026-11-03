@@ -4,12 +4,12 @@ import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../src/backends.ts"
-import { capture, learnedLines } from "../src/context/capture.ts"
-import { Embedder } from "../src/context/embed.ts"
-import { CoreSnapshots, recall, recallBlock, RecentRecalls } from "../src/context/recall.ts"
-import { diversify, search } from "../src/context/search.ts"
-import { CORE_BUDGET, MemoryStore, parseEntry, projectSlug, renderEntry } from "../src/context/store.ts"
+import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import { capture, learnedLines } from "../packages/micromanager/src/context/capture.ts"
+import { Embedder } from "../packages/micromanager/src/context/embed.ts"
+import { CoreSnapshots, recall, recallBlock, RecentRecalls } from "../packages/micromanager/src/context/recall.ts"
+import { diversify, search } from "../packages/micromanager/src/context/search.ts"
+import { CORE_BUDGET, MemoryStore, parseEntry, projectSlug, renderEntry } from "../packages/micromanager/src/context/store.ts"
 
 const dir = () => tempDir("mem-")
 
@@ -118,7 +118,7 @@ test("recall: Jev's picks within the role's budget, the rest as pointers; held-b
 })
 
 test("settings: memory on by default, the embedding service configurable or off", async () => {
-  const { parseMemory, DEFAULT_MEMORY } = await import("../src/config.ts")
+  const { parseMemory, DEFAULT_MEMORY } = await import("../packages/micromanager/src/config.ts")
   assert.deepEqual(parseMemory("{}"), DEFAULT_MEMORY)
   assert.equal(parseMemory('{ "memory": false }').enabled, false)
   assert.equal(parseMemory('{ "memory": { "embedding": false } }').embedding, false)
