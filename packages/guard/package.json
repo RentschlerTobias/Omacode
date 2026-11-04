@@ -4,6 +4,31 @@
   "private": false,
   "type": "module",
   "description": "Redacts private data from every outgoing OpenCode request and restores it in responses",
+  "license": "Apache-2.0",
+  "author": "Tobias Rentschler <tobias-rentschler@gmx.de>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RentschlerTobias/Omacode.git",
+    "directory": "packages/guard"
+  },
+  "homepage": "https://github.com/RentschlerTobias/Omacode#readme",
+  "bugs": {
+    "url": "https://github.com/RentschlerTobias/Omacode/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "privacy",
+    "redaction",
+    "security"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/copy-license.mjs",
+    "postpack": "node ../../scripts/copy-license.mjs --remove"
+  },
   "exports": {
     ".": "./src/plugin.ts",
     "./redact": "./src/redact.ts",

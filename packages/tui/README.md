@@ -10,4 +10,5 @@ The OpenCode TUI plugin. It reads the job/control files through `@omacode/state`
 
 Without an orchestrator or context plugin there are no jobs and no status files; the task panels stay empty, while the session and model panels still work.
 
-Install the package, then add its `./tui` export to `~/.config/opencode/cli.json` (the host's `plugin add` only registers server plugins).
+Install the package; `opencode plugin add @omacode/tui` writes its `./tui` entry into `~/.config/opencode/cli.json`
+(the package has no server part, so only the TUI loads it).

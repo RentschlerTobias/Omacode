@@ -1,3 +1,5 @@
 node_modules/
 __pycache__/
 .venv/
+# copied in by scripts/copy-license.mjs at prepack and removed again at postpack
+packages/*/LICENSE

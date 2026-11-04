@@ -22,7 +22,9 @@ opencode plugin add @omacode/context       # only context + memory
 opencode plugin add @omacode/micromanager  # the orchestrator
 ```
 
-The TUI is a CLI plugin, not a server plugin: `opencode plugin add` does not put it into `cli.json`. Use `./install.sh --all` for a local checkout, or add the `@omacode/tui` `./tui` entry to `cli.json` yourself.
+The TUI is a CLI plugin, not a server plugin: `opencode plugin add @omacode/tui` installs it and writes its
+`./tui` entry into `~/.config/opencode/cli.json` (the package has no server part). `./install.sh --all` does the same
+from a checkout.
 
 ## One setup per plugin
 
@@ -37,3 +39,19 @@ npm run test:min       # package boundaries, ~0.3 s, 29 tests
 npm test               # core behaviour, ~8 s, 317 tests
 npm run test:all       # everything including browser, UI, evals, 535 tests
 ```
+
+## Release
+
+All packages share one version and are published in dependency order, so no package is on the registry before the
+ones it depends on:
+
+```bash
+node scripts/release.mjs            # typecheck + test:min + `npm publish --dry-run` for all 8
+node scripts/release.mjs --publish  # the real upload (2FA code per package, or NPM_TOKEN with bypass 2FA)
+```
+
+The version lives in the eight `package.json` files and in their exact cross-dependencies; bump them together. The
+`LICENSE` at the repository root is copied into each tarball at `prepack` and removed again at `postpack`.
+
+To try a release without touching npm, publish to a local registry first (e.g. `verdaccio`) and run
+`opencode plugin add @omacode/full` against it.

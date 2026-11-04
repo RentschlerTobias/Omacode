@@ -4,6 +4,20 @@
   "private": false,
   "type": "module",
   "description": "An OpenCode v2 plugin that orchestrates sub-agents, with Jev making the decisions",
+  "license": "Apache-2.0",
+  "author": "Tobias Rentschler <tobias-rentschler@gmx.de>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RentschlerTobias/Omacode.git",
+    "directory": "packages/micromanager"
+  },
+  "homepage": "https://github.com/RentschlerTobias/Omacode#readme",
+  "bugs": {
+    "url": "https://github.com/RentschlerTobias/Omacode/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "exports": {
     ".": "./src/plugin.ts",
     "./guard": "./src/guard/index.ts",
@@ -26,12 +40,17 @@
   "publishConfig": {
     "access": "public"
   },
+  "scripts": {
+    "prepack": "node ../../scripts/copy-license.mjs",
+    "postpack": "node ../../scripts/copy-license.mjs --remove"
+  },
   "dependencies": {
     "@omacode/context": "0.1.1",
     "@omacode/core": "0.1.1",
     "@omacode/guard": "0.1.1",
     "@omacode/sandbox": "0.1.1",
     "@omacode/state": "0.1.1",
+    "@omacode/tui": "0.1.1",
     "@anthropic-ai/sandbox-runtime": "0.0.81",
     "playwright-core": "^1.64.1"
   }

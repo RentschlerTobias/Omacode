@@ -4,8 +4,27 @@
   "private": false,
   "type": "module",
   "description": "The OpenCode TUI plugin: jobs, tasks, workers and the context panel",
+  "license": "Apache-2.0",
+  "author": "Tobias Rentschler <tobias-rentschler@gmx.de>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RentschlerTobias/Omacode.git",
+    "directory": "packages/tui"
+  },
+  "homepage": "https://github.com/RentschlerTobias/Omacode#readme",
+  "bugs": {
+    "url": "https://github.com/RentschlerTobias/Omacode/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "tui",
+    "opentui"
+  ],
   "exports": {
-    ".": "./src/tui.tsx",
     "./tui": "./src/tui.js",
     "./progress": "./src/progress.ts",
     "./switcher": "./src/switcher.ts",
@@ -17,6 +36,10 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "scripts": {
+    "prepack": "node ../../scripts/copy-license.mjs",
+    "postpack": "node ../../scripts/copy-license.mjs --remove"
   },
   "dependencies": {
     "@omacode/context": "0.1.1",

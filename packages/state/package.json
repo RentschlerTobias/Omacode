@@ -4,6 +4,30 @@
   "private": false,
   "type": "module",
   "description": "The job schema, store, control file and options shared by the TUI and the orchestrator",
+  "license": "Apache-2.0",
+  "author": "Tobias Rentschler <tobias-rentschler@gmx.de>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RentschlerTobias/Omacode.git",
+    "directory": "packages/state"
+  },
+  "homepage": "https://github.com/RentschlerTobias/Omacode#readme",
+  "bugs": {
+    "url": "https://github.com/RentschlerTobias/Omacode/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "job-state",
+    "schema"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/copy-license.mjs",
+    "postpack": "node ../../scripts/copy-license.mjs --remove"
+  },
   "exports": {
     ".": "./src/state.ts",
     "./store": "./src/store.ts",
@@ -18,6 +42,9 @@
   "files": [
     "src"
   ],
+  "dependencies": {
+    "@omacode/core": "0.1.1"
+  },
   "publishConfig": {
     "access": "public"
   }
