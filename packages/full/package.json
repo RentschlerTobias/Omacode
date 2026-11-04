@@ -1,0 +1,23 @@
+{
+  "name": "@omacode/full",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Guard, sandbox and context in one install",
+  "exports": {
+    ".": "./src/plugin.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omacode/context": "0.1.1",
+    "@omacode/core": "0.1.1",
+    "@omacode/guard": "0.1.1",
+    "@omacode/sandbox": "0.1.1",
+    "@omacode/micromanager": "0.1.1"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@omacode/context",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Context epochs, memory and token accounting for OpenCode sessions",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omacode/core": "0.1.1"
+  }
+}

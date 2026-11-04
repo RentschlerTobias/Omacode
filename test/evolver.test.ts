@@ -4,8 +4,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import type { Contract } from "../src/contract.ts"
-import { duration, estimate, evolverFits, evolverForm, heldOutProblem, markBlock, progressOf, readMethod, runEvolver, specOf, startBridge } from "../src/evolver.ts"
+import type { Contract } from "../packages/micromanager/src/contract.ts"
+import { duration, estimate, evolverFits, evolverForm, heldOutProblem, markBlock, progressOf, readMethod, runEvolver, specOf, startBridge } from "../packages/micromanager/src/evolver.ts"
 
 const contract = (extra: Partial<Contract> = {}): Contract => ({
   id: "C1", version: 2, status: "frozen", goal: "faster", evaluator: "node bench.js", timeoutMs: 60_000, repeats: 1,

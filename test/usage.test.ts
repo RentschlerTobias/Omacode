@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_REGISTRY } from "../src/registry.ts"
-import { family, MODELS, roleById } from "../src/roles.ts"
-import { chooseModel, DEFAULT_ROUTING, FREE_BUDGET } from "../src/routing.ts"
-import { seedFromJournal, Usage, WINDOW_MS } from "../src/usage.ts"
+import { DEFAULT_REGISTRY } from "../packages/micromanager/src/registry.ts"
+import { family, MODELS, roleById } from "../packages/micromanager/src/roles.ts"
+import { chooseModel, DEFAULT_ROUTING, FREE_BUDGET } from "../packages/micromanager/src/routing.ts"
+import { seedFromJournal, Usage, WINDOW_MS } from "../packages/micromanager/src/usage.ts"
 
 const budget = (model: string) => DEFAULT_REGISTRY.find((m) => m.id === model)?.budget
 const picks = async (role: string, n: number, usage = new Usage(), extra: { avoidFamilies?: string[]; worker?: string } = {}) => {

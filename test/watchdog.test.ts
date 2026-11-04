@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { handoffNote, Watchdog } from "../src/watchdog.ts"
+import { handoffNote, Watchdog } from "../packages/micromanager/src/watchdog.ts"
 
 const w = (limits = {}) => {
   const d = new Watchdog()

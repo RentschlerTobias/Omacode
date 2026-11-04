@@ -4,12 +4,12 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { parseRedact } from "../src/config.ts"
-import { Jev, redact, type Question } from "../src/jev.ts"
+import { parseRedact } from "../packages/micromanager/src/config.ts"
+import { Jev, redact, type Question } from "../packages/micromanager/src/jev.ts"
 import {
   DEFAULT_LABELS, findPii, findSecrets, guardedValue, ibanValid, knownSecrets, luhn, mapStrings, plausibleEntity, prose, requestTexts, restoreScope, scanNames, scrub,
   useVault, Vault,
-} from "../src/redact.ts"
+} from "../packages/micromanager/src/redact.ts"
 
 const vault = (o: ConstructorParameters<typeof Vault>[0] = {}) => new Vault({ path: null, ...o })
 

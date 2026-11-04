@@ -4,9 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { addGrant, loadControl } from "../src/control.ts"
-import { grantBatchForm, grantForm, readForm } from "../src/forms.ts"
-import { badName, grantBatchNote, grantNote, GrantRequests, grantResult, grantState, triage, valueShape, type GrantFacts } from "../src/grants.ts"
+import { addGrant, loadControl } from "../packages/micromanager/src/control.ts"
+import { grantBatchForm, grantForm, readForm } from "../packages/micromanager/src/forms.ts"
+import { badName, grantBatchNote, grantNote, GrantRequests, grantResult, grantState, triage, valueShape, type GrantFacts } from "../packages/micromanager/src/grants.ts"
 
 const env = (name: string, value: string | undefined, more: Partial<GrantFacts> = {}): GrantFacts => ({ kind: "env", name, value, open: [], refused: [], sandboxed: true, secrets: [], ...more })
 const host = (name: string, more: Partial<GrantFacts> = {}): GrantFacts => ({ kind: "network", name, open: [], refused: [], sandboxed: true, secrets: [], ...more })

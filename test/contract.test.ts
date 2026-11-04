@@ -4,10 +4,10 @@ import { test } from "node:test"
 import {
   better, coarse, contractBrief, contractHash, describe, guardViolations, measuredOf, median, parseContract, parseScoreLines, reward,
   type Contract, type Measured,
-} from "../src/contract.ts"
-import { gradedOf, runEvaluator, runGate, type Exec } from "../src/integration.ts"
-import { outcomeOf, routerRows } from "../src/outcomes.ts"
-import { newJob, stage, type Task } from "../src/state.ts"
+} from "../packages/micromanager/src/contract.ts"
+import { gradedOf, runEvaluator, runGate, type Exec } from "../packages/micromanager/src/integration.ts"
+import { outcomeOf, routerRows } from "../packages/micromanager/src/outcomes.ts"
+import { newJob, stage, type Task } from "../packages/micromanager/src/state.ts"
 
 const contract = (extra: Partial<Contract> = {}): Contract => ({
   id: "C1",

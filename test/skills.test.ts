@@ -4,9 +4,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { combine } from "../src/profile.ts"
-import { registerSkills, SKILLS, skillsFor, type SkillEditor } from "../src/skills.ts"
-import type { Task } from "../src/state.ts"
+import { combine } from "../packages/micromanager/src/profile.ts"
+import { registerSkills, SKILLS, skillsFor, type SkillEditor } from "../packages/micromanager/src/skills.ts"
+import type { Task } from "../packages/micromanager/src/state.ts"
 
 const ALL = new Set(SKILLS.map((s) => s.name))
 const task: Task = { id: "T1", title: "t", description: "", role: "code", acceptance: ["A1"], dependsOn: [], files: ["a.js"], wave: 0, status: "ready", attempts: 0, stages: [], signatures: [] }
@@ -48,7 +48,7 @@ test("an install that lost skills/, or a server without ctx.skill, still starts:
 
 test("every catalog skill exists in skills/ with a matching name and its source in the frontmatter", () => {
   for (const s of SKILLS) {
-    const path = join(import.meta.dirname, "..", "skills", s.name, "SKILL.md")
+    const path = join(import.meta.dirname, "..", "packages", "micromanager", "skills", s.name, "SKILL.md")
     assert.ok(existsSync(path), path)
     const text = readFileSync(path, "utf8")
     assert.match(text, new RegExp(`^---\\nname: ${s.name}\\n`), s.name)

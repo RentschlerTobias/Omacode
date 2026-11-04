@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { ending, Notifier, Scheduler, type Cancel } from "../src/scheduler.ts"
-import { moveJob, newJob, type Job } from "../src/state.ts"
+import { ending, Notifier, Scheduler, type Cancel } from "../packages/micromanager/src/scheduler.ts"
+import { moveJob, newJob, type Job } from "../packages/micromanager/src/state.ts"
 
 const jobIn = (id: string, ...phases: Job["phase"][]) => {
   const job = newJob(id, "goal")

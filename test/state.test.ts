@@ -1,9 +1,9 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { buildAgenda, nextProposal } from "../src/agenda.ts"
-import { applyPlan, extractJson, parsePlan, waves, type PlannedTask } from "../src/plan.ts"
-import { allDone, canMoveTask, moveJob, moveTask, newJob, parallelSafe, promoteReady, StateError, type Task } from "../src/state.ts"
+import { buildAgenda, nextProposal } from "../packages/micromanager/src/agenda.ts"
+import { applyPlan, extractJson, parsePlan, waves, type PlannedTask } from "../packages/micromanager/src/plan.ts"
+import { allDone, canMoveTask, moveJob, moveTask, newJob, parallelSafe, promoteReady, StateError, type Task } from "../packages/micromanager/src/state.ts"
 
 const plan = (tasks: object[], acceptance: object[] = [{ id: "A1", text: "works", verify: "npm test" }]) =>
   "Here is the plan:\n```json\n" + JSON.stringify({ acceptance, tasks }) + "\n```"

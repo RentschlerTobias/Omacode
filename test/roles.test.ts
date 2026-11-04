@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { MICROMANAGER, MODELS, ROLES, micromanagerSystem, family, roleByAgent } from "../src/roles.ts"
+import { MICROMANAGER, MODELS, ROLES, micromanagerSystem, family, roleByAgent } from "../packages/micromanager/src/roles.ts"
 
 const ALLOWED = new Set<string>(Object.values(MODELS))
 const effect = (rules: readonly { action: string; resource: string; effect: string }[], action: string, resource = "*") =>

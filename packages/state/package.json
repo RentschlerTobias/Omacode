@@ -1,0 +1,24 @@
+{
+  "name": "@omacode/state",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "The job schema, store, control file and options shared by the TUI and the orchestrator",
+  "exports": {
+    ".": "./src/state.ts",
+    "./store": "./src/store.ts",
+    "./control": "./src/control.ts",
+    "./schema": "./src/schema.ts",
+    "./options": "./src/options.ts",
+    "./roles": "./src/roles.ts",
+    "./routing": "./src/routing.ts",
+    "./picks": "./src/picks.ts",
+    "./board": "./src/board.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

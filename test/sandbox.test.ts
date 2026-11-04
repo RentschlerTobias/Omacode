@@ -4,9 +4,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { heldOutRoot } from "../src/contract.ts"
-import { isChildShell, isDelegated } from "../src/shell/decide.ts"
-import { cleanEnv, looksSecret, neverHanded, REGISTRIES, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells } from "../src/sandbox.ts"
+import { heldOutRoot } from "../packages/micromanager/src/contract.ts"
+import { isChildShell, isDelegated } from "../packages/micromanager/src/shell/decide.ts"
+import { cleanEnv, looksSecret, neverHanded, REGISTRIES, rulesFor, startSandbox, tempDirFor, withTemp, WorkerShells } from "../packages/micromanager/src/sandbox.ts"
 import { tempDir } from "./harness.ts"
 
 test("a worker's environment is an allowlist; the never list beats any grant", () => {

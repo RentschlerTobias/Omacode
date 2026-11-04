@@ -4,9 +4,9 @@ import { request } from "node:http"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { ensureFfmpeg, MAX_STEPS, parseSteps, runBrowser } from "../src/browser.ts"
-import { findChromium, serveDir } from "../src/look.ts"
-import { installBrowserTool, type ToolDraft } from "../src/tools.ts"
+import { ensureFfmpeg, MAX_STEPS, parseSteps, runBrowser } from "../packages/micromanager/src/browser.ts"
+import { findChromium, serveDir } from "../packages/micromanager/src/look.ts"
+import { installBrowserTool, type ToolDraft } from "../packages/micromanager/src/tools.ts"
 import { tempDir } from "./harness.ts"
 
 // Real-browser tests need a Chromium on the host; they are opt-in so `npm test`

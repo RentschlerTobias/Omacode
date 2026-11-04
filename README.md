@@ -34,22 +34,26 @@ and research [docs/plan.md](docs/plan.md). Development happens on the branch `om
 - For the sandbox: on Linux `bubblewrap`, `socat` and `ripgrep`; on macOS nothing extra (Seatbelt). Without them
   commands run unwrapped, and the plugin says so.
 - Optional: the local embedding service for the memory (`./install.sh --embedding`, a systemd user unit), and `uv`
-  for the GLiNER decision server in `decider/` and for the evolver in `evolver/` (`evolve_task`; `uv` sets up its
+  for the GLiNER decision server in `decider/` and for the evolver in `packages/micromanager/evolver/` (`evolve_task`; `uv` sets up its
   environment, OpenEvolve pinned, on the first run).
 
 ## Install
 
-As an OpenCode plugin, straight from git, pinned to a tag or a commit:
+As an OpenCode plugin, from npm:
 
 ```bash
-opencode plugin add 'github:RentschlerTobias/Micromanager#main'
+opencode plugin add @omacode/micromanager
 ```
 
-That fetches the package, its dependencies and the skills; `package.json` exports the server plugin as `.` and the
-TUI as `./tui`. A tag or a full commit hash pins it (`#v0.1.0`, `#<sha>`), `#main` follows the branch. The
-repository is private, so `git` needs credentials for it: a credential helper, `gh auth login`, or a token in the
-URL. To upgrade, the same command with a newer ref, or `opencode plugin update`; `opencode plugin remove micromanager`
-takes it out again.
+That installs the orchestrator and its library dependencies (`@omacode/core`, `state`, `guard`, `sandbox`, `context`).
+The TUI is a separate CLI plugin:
+
+```bash
+opencode plugin add @omacode/tui
+```
+
+and its `./tui` entry still goes into `~/.config/opencode/cli.json`; `./install.sh --all` does both from a checkout.
+To upgrade: `opencode plugin update`; to remove: `opencode plugin remove @omacode/micromanager`.
 
 From a checkout, for development (the symlink means the running server reads your working tree):
 
@@ -57,7 +61,7 @@ From a checkout, for development (the symlink means the running server reads you
 git clone git@github.com:RentschlerTobias/Micromanager.git micromanager
 cd micromanager
 npm install                    # the sandbox runtime
-./install.sh                   # links src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts
+./install.sh                   # links packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts
 ./install.sh --embedding 4b    # optional: the memory's embedding service (0.6b, 4b or 8b), see "Context and memory"
 ./install.sh --remove
 ```
@@ -300,7 +304,7 @@ waits for and what it cost so far (its worker and helpers, or the evolver's mode
 requests and cost. The sidebar puts each task's cost after its line too. In a terminal, in the project:
 
 ```bash
-node ~/Fun/Projects/Repos/micromanager/src/cli.ts status --watch   # redraws every 2 s; --all for every job
+node ~/Fun/Projects/Repos/micromanager/packages/micromanager/src/cli.ts status --watch   # redraws every 2 s; --all for every job
 ```
 
 **Memory.** In planned jobs (`plan_job`), workers report what they learned about the project (`LEARNED:`); Jev keeps the lasting, new facts in
@@ -391,7 +395,7 @@ Optional settings in `~/.config/opencode/micromanager.jsonc`:
 Hard rules (pushes, `sudo`, system installs, deleting tracked files, …) always go to you, whatever a preset says.
 
 The plugin registers its skills into OpenCode at startup: `deliberate` (the facilitator's rules) and six leaf skills
-for workers, adapted from mattpocock/skills and obra/superpowers (`skills/THIRD_PARTY.md`). They come from the
+for workers, adapted from mattpocock/skills and obra/superpowers (`packages/micromanager/skills/THIRD_PARTY.md`). They come from the
 package, so a git install has them without a step; a skill of your own with the same name wins, and the plugin then
 never names that skill in a brief. The local GLiNER
 decision server (`decider/`, see its README) answers guard questions on the CPU, and `npm run bench-guards`
@@ -516,7 +520,7 @@ Two things to know when changing the delegation path. A delegation is recognised
 call aimed at one of this plugin's role agents — not by which agent made it, because the agent is a property of the
 session and switching it silently skipped every later delegation (live test, 2026-10-06: ten workers wrote into the
 user's checkout with no task, no worktree and no error). And plugins load when the OpenCode server starts, so a change
-to `src/plugin.ts` needs a restart before anything observes it.
+to `packages/micromanager/src/plugin.ts` needs a restart before anything observes it.
 
 ## License
 

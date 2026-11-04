@@ -1,13 +1,15 @@
 import assert from "node:assert/strict"
-import { test } from "node:test"
+import { beforeEach, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
 
-import guard from "../src/guard/index.ts"
-import shell, { isChildShell } from "../src/shell/index.ts"
-import worktree, { worktreeApi } from "../src/worktree/index.ts"
-import context from "../src/context/index.ts"
-import plugin from "../src/plugin.ts"
+import guard from "../packages/micromanager/src/guard/index.ts"
+import shell, { isChildShell } from "../packages/micromanager/src/shell/index.ts"
+import context from "../packages/micromanager/src/context/index.ts"
+import plugin from "../packages/micromanager/src/plugin.ts"
+import { resetClaims } from "@omacode/core/registry"
+
+beforeEach(() => resetClaims())
 
 const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
 
@@ -44,7 +46,7 @@ test("each entry point can be set up standalone", async (t) => {
     else process.env.XDG_STATE_HOME = before
   })
 
-  for (const entry of [guard, shell, worktree, context]) {
+  for (const entry of [guard, shell, context]) {
     await entry.setup(makeMockCtx() as never)
   }
 })
@@ -55,7 +57,7 @@ test("the default export still has id micromanager and a setup function", () => 
 })
 
 test("each entry has a distinct id", () => {
-  const ids = [guard.id, shell.id, worktree.id, context.id]
+  const ids = [guard.id, shell.id, context.id]
   assert.equal(new Set(ids).size, ids.length)
 })
 
@@ -68,18 +70,6 @@ test("the shell plugin on its own wraps the shells of a child session", async ()
   assert.equal((ctx.hooks["execute.before"] ?? []).length, 1, "the shell plugin hooks the tool")
 })
 
-test("the worktree plugin on its own publishes the worktree handling", async () => {
-  const ctx = makeMockCtx()
-  await worktree.setup(ctx as never)
-  const api = worktreeApi()
-  assert.ok(api, "the worktree plugin publishes its handling")
-  assert.equal(typeof api.prepareTaskWorktree, "function")
-  assert.equal(typeof api.prepareIntegration, "function")
-  assert.equal(typeof api.rebaseTask, "function")
-  assert.equal(typeof api.fastForward, "function")
-  assert.equal(typeof api.frozenChanged, "function")
-  assert.equal(typeof api.commitTask, "function")
-})
 
 test("the shell plugin's decision wraps a child of any plugin and not the user's own shell", () => {
   const child = { tool: "shell", sessionID: "ses_child" }

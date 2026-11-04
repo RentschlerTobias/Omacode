@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { Helpers, MAX_HELPERS, type Caller } from "../src/helpers.ts"
+import { Helpers, MAX_HELPERS, type Caller } from "../packages/micromanager/src/helpers.ts"
 
 const CALLER: Caller = { dir: "/p/.jev-micromanager/worktrees/job-1--T3", label: "T3 of job-1", task: "Add a --verbose flag: …" }
 

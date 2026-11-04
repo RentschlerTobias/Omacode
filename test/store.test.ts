@@ -5,9 +5,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { matchShortcut, resolvePolicy, validatePolicies } from "../src/policy.ts"
-import { newJob } from "../src/state.ts"
-import { backlogIgnored, excludeFromGit, jobId, LEGACY_DIR, listJobs, loadJob, reconcileJob, saveJob, saveNote, stateDir } from "../src/store.ts"
+import { matchShortcut, resolvePolicy, validatePolicies } from "../packages/micromanager/src/policy.ts"
+import { newJob } from "../packages/micromanager/src/state.ts"
+import { backlogIgnored, excludeFromGit, jobId, LEGACY_DIR, listJobs, loadJob, reconcileJob, saveJob, saveNote, stateDir } from "../packages/micromanager/src/store.ts"
 
 test("jobs round-trip through their file, newest first", () => {
   const project = mkdtempSync(join(tmpdir(), "jd-store-"))
@@ -222,7 +222,7 @@ test("chat shortcuts become pins", () => {
 })
 
 test("the config's decisions are read and checked", async () => {
-  const { parseDecisions } = await import("../src/config.ts")
+  const { parseDecisions } = await import("../packages/micromanager/src/config.ts")
   assert.deepEqual(parseDecisions('{ // presets\n "decisions": { "N6.pipeline": "fixed:P1" } }'), { "N6.pipeline": "fixed:P1" })
   assert.deepEqual(parseDecisions("{}"), {})
   assert.throws(() => parseDecisions('{ "decisions": { "N6.pipeline": "maybe" } }'))

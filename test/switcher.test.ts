@@ -1,8 +1,8 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { newJob, type Task } from "../src/state.ts"
-import { agentRows, agentSummary, taskSessions, type SessionFacts } from "../src/switcher.ts"
+import { newJob, type Task } from "../packages/micromanager/src/state.ts"
+import { agentRows, agentSummary, taskSessions, type SessionFacts } from "../packages/micromanager/src/switcher.ts"
 
 const now = Date.parse("2026-10-19T12:00:00Z")
 const at = (iso: string) => Date.parse(iso)

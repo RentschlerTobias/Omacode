@@ -4,8 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { gitForm, readForm } from "../src/forms.ts"
-import { gitState, initRepo, MAX_FILE_BYTES, surveyFolder } from "../src/nogit.ts"
+import { gitForm, readForm } from "../packages/micromanager/src/forms.ts"
+import { gitState, initRepo, MAX_FILE_BYTES, surveyFolder } from "../packages/micromanager/src/nogit.ts"
 import { tempDir } from "./harness.ts"
 
 const folder = () => tempDir("mm-nogit-")

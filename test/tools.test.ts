@@ -1,13 +1,14 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
 
-import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, installWaitTool, planText, TOOL_IDS, WAIT_ID, type ToolDraft } from "../src/tools.ts"
-import { newJob } from "../src/state.ts"
-import type { Signal } from "../src/watchdog.ts"
+import { FINISH_ID, HELPER_IDS, installFinishTool, installHelperTools, installTools, installWaitTool, planText, TOOL_IDS, WAIT_ID, type ToolDraft } from "../packages/micromanager/src/tools.ts"
+import { newJob } from "../packages/micromanager/src/state.ts"
+import type { Signal } from "../packages/micromanager/src/watchdog.ts"
+import { resetClaims } from "@omacode/core/registry"
 
 function fakeDraft() {
   const added: Record<string, unknown>[] = []
@@ -141,7 +142,7 @@ test("the plan text lists acceptance points and tasks", () => {
 })
 
 test("a nudge from the watchdog is recorded and nothing else; a stop and a bare signal both interrupt", async () => {
-  const { applySignal } = await import("../src/plugin.ts")
+  const { applySignal } = await import("../packages/micromanager/src/plugin.ts")
   const run = (signal: Signal) => {
     const stops = new Map<string, Signal>()
     const unwatched: string[] = []
@@ -177,7 +178,7 @@ test("a nudge from the watchdog is recorded and nothing else; a stop and a bare 
 })
 
 test("a reader may read outside the project only in a directory its task names", async () => {
-  const { namedInTask } = await import("../src/plugin.ts")
+  const { namedInTask } = await import("../packages/micromanager/src/plugin.ts")
   const task = "T2 Map oc-voice fluency: read /home/t1dde/Fun/Projects/Repos/oc-voice/voice/loop.py and the README in /home/t1dde/Fun/Projects/Repos/oc-voice"
   assert.equal(namedInTask(task, ["/home/t1dde/Fun/Projects/Repos/oc-voice/*"]), true)
   assert.equal(namedInTask(task, ["/home/t1dde/Fun/Projects/Repos/oc-voice/voice/*"]), true)
@@ -189,10 +190,10 @@ test("a reader may read outside the project only in a directory its task names",
 
 // --- the behaviour behind the new controls (src/plugin.ts) ------------------------------------------------
 
-const task = (over: Partial<import("../src/state.ts").Task> = {}): import("../src/state.ts").Task =>
+const task = (over: Partial<import("../packages/micromanager/src/state.ts").Task> = {}): import("../packages/micromanager/src/state.ts").Task =>
   ({ id: "T1", title: "add a flag", description: "", role: "code", acceptance: [], dependsOn: [], files: ["cli.ts"], wave: 0, status: "running", attempts: 1, stages: [], signatures: [], ...over })
 
-const job = (over: Partial<import("../src/state.ts").Job> = {}): import("../src/state.ts").Job => {
+const job = (over: Partial<import("../packages/micromanager/src/state.ts").Job> = {}): import("../packages/micromanager/src/state.ts").Job => {
   const j = newJob("job-1", "add a flag")
   j.tasks = [task()]
   return Object.assign(j, over)
@@ -224,7 +225,7 @@ const head = (dir: string) => execFileSync("git", ["-C", dir, "rev-parse", "--sh
 const log = (dir: string) => execFileSync("git", ["-C", dir, "log", "--oneline", "-1"], { encoding: "utf8" }).trim()
 
 test("steer_task on a running worker notes it; on a finished one it says how to continue it", async () => {
-  const { steerTask } = await import("../src/plugin.ts")
+  const { steerTask } = await import("../packages/micromanager/src/plugin.ts")
   const running = steerTask(task({ session: "ses_live" }), "ses_live", true, "skip the docs, test only")
   assert.match(running.note ?? "", /skip the docs, test only/)
   assert.match(running.text, /next turn/)
@@ -240,7 +241,7 @@ test("steer_task on a running worker notes it; on a finished one it says how to 
 })
 
 test("stop_task keeps the worktree and says where the work is", async () => {
-  const { stopTaskAnswer } = await import("../src/plugin.ts")
+  const { stopTaskAnswer } = await import("../packages/micromanager/src/plugin.ts")
   const text = stopTaskAnswer(task({ worktree: "/wt/T1", branch: "micromanager/job-1--T1", session: "ses_live" }), "job-1", "ses_live", ["T2 add docs"])
   assert.match(text, /cancelled/)
   assert.match(text, /\/wt\/T1/, "the worktree's path is named")
@@ -252,7 +253,7 @@ test("stop_task keeps the worktree and says where the work is", async () => {
 })
 
 test("merge_job refuses a checkout with uncommitted changes and writes nothing", async () => {
-  const { mergeJobInto } = await import("../src/plugin.ts")
+  const { mergeJobInto } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
   writeFileSync(join(project, "dirty.txt"), "mine\n")
@@ -267,7 +268,7 @@ test("merge_job refuses a checkout with uncommitted changes and writes nothing",
 })
 
 test("merge_job refuses a non-fast-forward and leaves the checkout exactly as it was", async () => {
-  const { mergeJobInto } = await import("../src/plugin.ts")
+  const { mergeJobInto } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   // The user commits on their own branch, so the job branch can no longer be fast-forwarded.
   writeFileSync(join(project, "a.txt"), "a\nmine\n")
@@ -284,7 +285,7 @@ test("merge_job refuses a non-fast-forward and leaves the checkout exactly as it
 })
 
 test("merge_job shows what would land, refuses unfinished work without the user's words, and fast-forwards with them", async () => {
-  const { mergeJobInto } = await import("../src/plugin.ts")
+  const { mergeJobInto } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   const j = job({ integrationBranch: branch })
   const before = head(project)
@@ -304,7 +305,7 @@ test("merge_job shows what would land, refuses unfinished work without the user'
 })
 
 test("discard_job lists what it would delete, and deletes nothing without the user's words", async () => {
-  const { discardJob } = await import("../src/plugin.ts")
+  const { discardJob } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   const wt = join(project, ".jev-micromanager", "worktrees", "job-1")
   const j = job({ integrationBranch: branch, integrationWorktree: wt })
@@ -321,7 +322,7 @@ test("discard_job lists what it would delete, and deletes nothing without the us
 })
 
 test("discard_job removes the worktree and the branch, and never the checkout", async () => {
-  const { discardJob } = await import("../src/plugin.ts")
+  const { discardJob } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   const wt = join(project, ".jev-micromanager", "worktrees", "job-1")
   const out = await discardJob(project, job({ integrationBranch: branch, integrationWorktree: wt }), "the user said: throw it away")
@@ -339,7 +340,7 @@ test("discard_job removes the worktree and the branch, and never the checkout", 
 // for worktrees and branches that outlived their task. The live-run defect: a worker that died without handing off
 // left its task at `running`, so the board said the job was running days after it ended.
 test("a job load sweeps a stale task to a terminal state and reports the leftovers, once", async () => {
-  const { reconcileJob } = await import("../src/store.ts")
+  const { reconcileJob } = await import("../packages/micromanager/src/store.ts")
   const live = new Set(["ses_live"])
   const j = job({ tasks: [task({ id: "T1", session: "ses_dead" }), task({ id: "T2", session: "ses_live" }), task({ id: "T3", status: "merged", worktree: "/wt/T3", branch: "micromanager/job-1--T3" })] })
   const { job: next, result } = reconcileJob(j, { aliveSessions: live })
@@ -353,7 +354,7 @@ test("a job load sweeps a stale task to a terminal state and reports the leftove
 })
 
 test("request_access asks the user about a refused path rather than answering for them, and vouches for an ordinary one", async () => {
-  const { vouchAccess, vouchText } = await import("../src/plugin.ts")
+  const { vouchAccess, vouchText } = await import("../packages/micromanager/src/plugin.ts")
   const j = job()
   const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
   // ~/.ssh is layer 1 of decide.ts: no layer may pass it, and a vouch from the orchestrator is not a layer above that.
@@ -392,8 +393,9 @@ test("request_access asks the user about a refused path rather than answering fo
 // after setup has returned, and a test that let those records land in the operator's real journal would be worse than
 // no test at all.
 async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record<string, Record<string, unknown>>) {
-  const { readJournal } = await import("../src/journal.ts")
-  const plugin = (await import("../src/plugin.ts")).default
+  resetClaims()
+  const { readJournal } = await import("../packages/micromanager/src/journal.ts")
+  const plugin = (await import("../packages/micromanager/src/plugin.ts")).default
   const hooks: Record<string, ((arg: never) => Promise<void>)[]> = {}
   const noop = async () => undefined
   const draft = { list: () => [], get: () => undefined, namespace: () => {}, add: () => {}, update: () => {}, remove: () => {} }
@@ -436,7 +438,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
 test("the plugin says it is loaded, and what it thinks it is doing", async (t) => {
   const { journal } = await loadedPlugin(t, {})
   const setup = journal().find((e) => e.kind === "plugin")!
-  assert.equal(setup.version, "0.1.0", "the version comes from package.json, so it cannot drift from the manifest")
+  assert.equal(setup.version, JSON.parse(readFileSync(new URL("../packages/micromanager/package.json", import.meta.url), "utf8")).version, "the version comes from package.json, so it cannot drift from the manifest")
   assert.equal(setup.directory, PROJECT)
   assert.equal(setup.repository, PROJECT, "the repository root this project sits in")
   assert.equal(setup.rel, "", "the project's offset inside it")
@@ -522,7 +524,7 @@ function rewindRepo() {
 }
 
 test("a job's checkpoints are its start and the state after each merged task", async () => {
-  const { checkpoints } = await import("../src/plugin.ts")
+  const { checkpoints } = await import("../packages/micromanager/src/plugin.ts")
   const { j, t1, t2, t3 } = rewindRepo()
   const points = await checkpoints(j)
   assert.deepEqual(points.map((c) => c.name), ["start", "T1", "T2", "T3"])
@@ -530,10 +532,10 @@ test("a job's checkpoints are its start and the state after each merged task", a
 })
 
 test("rewind_job lists, shows, and only with the user's words moves the branch back, keeping the old tip", async () => {
-  const { rewindJob, checkpoints } = await import("../src/plugin.ts")
+  const { rewindJob, checkpoints } = await import("../packages/micromanager/src/plugin.ts")
   const { project, j, t1, t3, tip } = rewindRepo()
   const dropped: string[] = []
-  const drop = async (t: import("../src/state.ts").Task) => { dropped.push(t.id) }
+  const drop = async (t: import("../packages/micromanager/src/state.ts").Task) => { dropped.push(t.id) }
   assert.match((await rewindJob(project, j, "", "", [], drop)).text, /- start .*\n- T1 .*\n- T2 .*\n- T3 /)
   assert.match((await rewindJob(project, j, "T9", "", [], drop)).text, /has no checkpoint "T9"/)
   const shown = await rewindJob(project, j, "T1", "", [], drop)
@@ -558,7 +560,7 @@ test("rewind_job lists, shows, and only with the user's words moves the branch b
 })
 
 test("undo_merge takes back the last merge only while the checkout is where the merge left it", async () => {
-  const { mergeJobInto, undoMerge } = await import("../src/plugin.ts")
+  const { mergeJobInto, undoMerge } = await import("../packages/micromanager/src/plugin.ts")
   const { project, branch } = repo()
   const j = job({ integrationBranch: branch, tasks: [task({ status: "merged" })] })
   assert.match((await undoMerge(project, j, "")).text, /has not merged job job-1/)

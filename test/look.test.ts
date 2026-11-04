@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { request } from "node:http"
 import { test } from "node:test"
 
-import { findChromium, hostAllowed, look, lookTarget, missingVisualEvidence, resolverRules, serveDir } from "../src/look.ts"
+import { findChromium, hostAllowed, look, lookTarget, missingVisualEvidence, resolverRules, serveDir } from "../packages/micromanager/src/look.ts"
 import { tempDir } from "./harness.ts"
 
 // Real-browser cases are opt-in; `npm test` must never launch Chromium.

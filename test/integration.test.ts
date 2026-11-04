@@ -13,11 +13,11 @@ import { tempDir } from "./harness.ts"
 import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
   projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type Run,
-} from "../src/integration.ts"
-import { parseCheckTimeout } from "../src/config.ts"
-import { checkTimeoutOf } from "../src/worktree/git.ts"
-import { useVault, Vault } from "../src/redact.ts"
-import { DIR } from "../src/store.ts"
+} from "../packages/micromanager/src/integration.ts"
+import { parseCheckTimeout } from "../packages/micromanager/src/config.ts"
+import { checkTimeoutOf } from "../packages/micromanager/src/worktree/git.ts"
+import { useVault, Vault } from "../packages/micromanager/src/redact.ts"
+import { DIR } from "../packages/micromanager/src/store.ts"
 
 interface Call {
   readonly command: string
