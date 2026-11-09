@@ -173,6 +173,19 @@ test("a STATE digest is written before a compaction, so the orchestrator keeps t
   assert.ok(journal.some((e) => e.kind === "context.digest"), "the journal has the digest too")
 })
 
+test("the digest keeps done work with commits and bounds a long job", () => {
+  const tasks = [
+    ...Array.from({ length: 20 }, (_, i) => ({ id: `T${i + 1}`, title: `done ${i + 1}`, status: "merged", commit: `c${i + 1}` })),
+    ...Array.from({ length: 40 }, (_, i) => ({ id: `T${i + 21}`, title: `open ${i + 21}`, status: "pending" })),
+  ]
+  const acceptance = Array.from({ length: 50 }, (_, i) => ({ id: `A${i + 1}`, text: `point ${i + 1}` }))
+  const text = digestText({ sessionID: "ses_long", job: { id: "j2", goal: "the goal", phase: "execute", tasks, acceptance } })
+  assert.match(text, /Done: T11 done 11 \(c11\); .*T20 done 20 \(c20\); … and 10 earlier/)
+  assert.match(text, /- T21 open 21 \[pending\]/)
+  assert.match(text, /… and 10 more open tasks/)
+  assert.match(text, /Acceptance: A1 point 1; .*A20 point 20; … and 30 more/)
+})
+
 test("provider usage: what the provider counted is read from its answer and used next to the estimate", async () => {
   // The names providers use: OpenAI, Anthropic, and the plain ones.
   assert.deepEqual(usageOf({ usage: { prompt_tokens: 1200, completion_tokens: 300 } }), { input: 1200, output: 300, total: 1500 })

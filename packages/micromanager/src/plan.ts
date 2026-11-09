@@ -1,6 +1,8 @@
 // The planner subagent's plan: parsed from its final message, validated by code, turned into tasks
 // (design.md §7). The planner writes; code decides whether the plan is usable.
 
+import { isAbsolute, resolve, sep } from "node:path"
+
 import { hardRule, readsOnly } from "./decide.ts"
 import { MICROMANAGER, roleById } from "./roles.ts"
 import { DEFAULT_PRIORITY, isDone, type Acceptance, type FollowUp, type Job, type Task } from "./state.ts"
@@ -314,13 +316,18 @@ const asPlanned = (t: Task): PlannedTask => ({ id: t.id, title: t.title, descrip
 export function replanFormat(job: Job): string {
   const done = job.tasks.filter(isDone)
   const open = job.tasks.filter((t) => !isDone(t) && t.status !== "cancelled")
+  // A 99-task job has 99 acceptance points and dozens of done tasks; repeating all of them in the replan prompt hides
+  // the ones that matter. Show the recent tail and count the rest.
+  const doneText = done.length ? `${done.slice(-20).map((t) => `${t.id} ${t.title}`).join("; ")}${done.length > 20 ? `; … and ${done.length - 20} earlier` : ""}` : "none"
+  const openText = open.length ? `${open.slice(0, 30).map((t) => `- ${t.id} [${t.role}] ${t.title} (${t.status}${t.stages.length ? `; last: ${t.stages.at(-1)!.stage} ${t.stages.at(-1)!.result}${t.stages.at(-1)!.evidence ? `: ${t.stages.at(-1)!.evidence!.slice(0, 200)}` : ""}` : ""})`).join("\n")}${open.length > 30 ? `\n- … and ${open.length - 30} more open tasks` : ""}` : "- none"
+  const acceptanceText = job.acceptance.slice(0, 20).map((a) => `${a.id}: ${a.text}${a.verify ? ` (verify: ${a.verify})` : ""}`).join("; ")
   return `The job is stalled. Rewrite the unfinished part of the plan.
 
-Done (keep, do not repeat; new tasks may depend on them): ${done.map((t) => `${t.id} ${t.title}`).join("; ") || "none"}
+Done (keep, do not repeat; new tasks may depend on them): ${doneText}
 Unfinished (these are replaced by your tasks):
-${open.map((t) => `- ${t.id} [${t.role}] ${t.title} (${t.status}${t.stages.length ? `; last: ${t.stages.at(-1)!.stage} ${t.stages.at(-1)!.result}${t.stages.at(-1)!.evidence ? `: ${t.stages.at(-1)!.evidence!.slice(0, 200)}` : ""}` : ""})`).join("\n") || "- none"}
+${openText}
 What went wrong so far: ${job.lessons.slice(-5).join("; ") || "nothing recorded"}
-Acceptance points: ${job.acceptance.map((a) => `${a.id}: ${a.text}${a.verify ? ` (verify: ${a.verify})` : ""}`).join("; ")}
+Acceptance points: ${acceptanceText}${job.acceptance.length > 20 ? `; … and ${job.acceptance.length - 20} more` : ""}
 
 First find the root cause of the stall from the facts above; then plan around it, e.g. a smaller step, another
 order, or a task that removes the obstacle. Use new task ids that are not used yet; you may add acceptance points with
@@ -356,17 +363,32 @@ export function applyReplan(job: Job, text: string): Parsed {
 export interface Delegation {
   readonly title: string
   readonly prompt: string
+  readonly goal?: string // the job's goal, when the delegation carries one
   readonly files: readonly string[] // what the task may change; empty for a reader
   readonly dependsOn: readonly string[]
   readonly priority?: number
   readonly checks: readonly string[] // shell commands that exit 0 when the task is done
 }
 
+// The acceptance text of an ad-hoc delegation: the first meaningful line of its brief, not the bare title. With one
+// title-text point per task, a 99-task job accumulated 99 points and the digest/replan prompt repeated all of them.
+export function acceptanceText(title: string, prompt: string): string {
+  const line = prompt
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l && !/^(task|files|checks|goal|replaces|frozen|contract|method|pick|preview|attempt):/i.test(l))
+  const text = (line && line.length > 8 ? line : title).trim()
+  return text.slice(0, 240)
+}
+
 // The task a delegation becomes: a code task when it names files, an explore task when not (N5 may pick another role
 // when it is dispatched); its checks are its acceptance point. Returns the errors instead when the graph would break.
 export function addDelegated(job: Job, d: Delegation): { task?: Task; errors?: string[] } {
   const n = Math.max(0, ...job.tasks.map((t) => Number(t.id.match(/^T(\d+)$/)?.[1] ?? 0))) + 1
-  const point = `A${Math.max(0, ...job.acceptance.map((a) => Number(a.id.match(/^A(\d+)$/)?.[1] ?? 0))) + 1}`
+  const verify = d.checks.length ? d.checks.join(" && ") : undefined
+  const text = acceptanceText(d.title, d.prompt)
+  const existing = job.acceptance.find((a) => a.text === text && (a.verify ?? "") === (verify ?? ""))
+  const point = existing?.id ?? `A${Math.max(0, ...job.acceptance.map((a) => Number(a.id.match(/^A(\d+)$/)?.[1] ?? 0))) + 1}`
   const byId = new Map(job.tasks.map((t) => [t.id, t]))
   const task: Task = {
     id: `T${n}`,
@@ -384,7 +406,7 @@ export function addDelegated(job: Job, d: Delegation): { task?: Task; errors?: s
     priority: d.priority !== undefined && d.priority >= 1 && d.priority <= 5 ? Math.round(d.priority) : DEFAULT_PRIORITY,
     origin: "delegated",
   }
-  const acceptance = [...job.acceptance, { id: point, text: d.title, ...(d.checks.length ? { verify: d.checks.join(" && ") } : {}) }]
+  const acceptance = existing ? job.acceptance : [...job.acceptance, { id: point, text, ...(verify ? { verify } : {}) }]
   const errors = checkGraph(acceptance, [...job.tasks.map(asPlanned), asPlanned(task)])
   if (errors.length) return { errors }
   job.acceptance = acceptance
@@ -423,6 +445,61 @@ export function checkSetProblems(checks: readonly string[], writer: boolean): st
   }
   const unsafe = checks.map((c) => checkSafetyProblem(c)).find(Boolean)
   return unsafe
+}
+
+// The task-worktree path shape inside the plugin's state directory: ".../worktrees/<job>--T3". A check that cds there
+// runs against a worktree, not the user's checkout; the plugin already runs it in its own task directory.
+const TASK_WORKTREE = /(?:^|\/)(?:\.micromanager|\.jev-micromanager)\/worktrees\/[^/]+--T[^/]+\/?$/
+
+function cwdTargets(check: string): string[] {
+  const out: string[] = []
+  const re = /(?:^|[;&|(])\s*(?:cd|pushd)\s+(?:"([^"]*)"|'([^']*)'|([^\s;&|)]+))/g
+  for (const m of check.matchAll(re)) out.push(m[1] ?? m[2] ?? m[3] ?? "")
+  return out
+}
+
+// A stale "cd <task worktree> &&" prefix in an acceptance verify command, from an earlier run whose worktree is gone.
+// Only a task worktree is stripped, and only when the project is the repository root: a subdirectory project would
+// have run the original command from the worktree root, and silently moving it to the project directory would change
+// what it checks. Everything else stays and is rejected by checkCwdProblem.
+export function stripTaskWorktreeCwd(check: string, rel = ""): string {
+  if (rel !== "") return check
+  const m = check.match(/^\s*cd\s+(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))\s*&&\s*([\s\S]+)$/)
+  if (!m) return check
+  const target = m[1] ?? m[2] ?? m[3] ?? ""
+  return TASK_WORKTREE.test(target) ? m[4]! : check
+}
+
+// Why a check must not change directory: it runs with the task directory as cwd (src/worktree/git.ts runGate), so a
+// cd to the user's checkout makes the check pass against files the worker did not change (live run: "the checks passed
+// but no file was changed"). Outside the worktree is refused; the main checkout and another task worktree are named
+// separately, because those are the mistakes that actually happened.
+export function checkCwdProblem(check: string, dir: string, worktree: string, project?: string): string | undefined {
+  const root = resolve(worktree)
+  for (const raw of cwdTargets(check)) {
+    if (raw === "." || raw === "./") continue
+    if (!raw || raw === "-" || raw.startsWith("~")) {
+      return `the check changes to ${raw || "the home directory"}, which is outside the task worktree; remove the cd or stay inside ${worktree}`
+    }
+    // A shell expression is not statically checkable: "$HOME" and $(pwd) cannot be resolved here.
+    if (/[$`]/.test(raw)) return `the check changes to the shell expression ${raw}, which cannot be checked; remove the cd`
+    const target = resolve(dir, raw)
+    if (project && target === resolve(project)) {
+      return `the check cds to the user's checkout ${project}; it runs in the task worktree, so remove that cd`
+    }
+    // At intake the task worktree does not exist yet, so dir and worktree are the project. An absolute path inside it
+    // would point at the user's checkout when the check actually runs; a relative one follows the worktree.
+    if (project && isAbsolute(raw) && resolve(worktree) === resolve(project) && target.startsWith(`${resolve(project)}${sep}`) && !TASK_WORKTREE.test(target)) {
+      return `the check cds to the absolute path ${target} inside the user's checkout; use a path relative to the task directory`
+    }
+    if (project && TASK_WORKTREE.test(target) && target !== root) {
+      return `the check cds to another task worktree ${target}; remove that cd, the plugin already runs it in this task's worktree`
+    }
+    if (target !== root && !target.startsWith(`${root}${sep}`)) {
+      return `the check cds outside the task worktree (${target}); remove the cd or stay inside ${worktree}`
+    }
+  }
+  return undefined
 }
 
 // A check is not required to be able to fail. `test -f a.js` reads nothing but fails when the work is missing, which

@@ -18,6 +18,7 @@ export interface DigestTask {
   readonly title: string
   readonly status: string
   readonly session?: string
+  readonly commit?: string
 }
 
 export interface DigestJob {
@@ -42,11 +43,14 @@ export function digestText(s: DigestState): string {
   if (job) {
     lines.push(`Job ${job.id}: ${job.goal}`)
     lines.push(`Phase: ${job.phase}. Task ${job.tasks.filter((t) => t.status !== "merged").length} of ${job.tasks.length} not merged.`)
-    for (const t of job.tasks) {
-      if (t.status === "merged") continue
-      lines.push(`- ${t.id} ${t.title} [${t.status}]${t.session ? ` (session ${t.session})` : ""}`)
-    }
-    if (job.acceptance.length) lines.push(`Acceptance: ${job.acceptance.map((a) => `${a.id} ${a.text}`).join("; ")}`)
+    // Done work is what a fresh context most needs: without it the orchestrator has titles but no outcomes and writes
+    // the same plan again. A long job lists the recent tail and counts the rest.
+    const done = job.tasks.filter((t) => t.status === "merged" || t.status === "passed")
+    if (done.length) lines.push(`Done: ${done.slice(-10).map((t) => `${t.id} ${t.title}${t.commit ? ` (${t.commit})` : ""}`).join("; ")}${done.length > 10 ? `; … and ${done.length - 10} earlier` : ""}`)
+    const open = job.tasks.filter((t) => t.status !== "merged" && t.status !== "passed")
+    for (const t of open.slice(0, 30)) lines.push(`- ${t.id} ${t.title} [${t.status}]${t.session ? ` (session ${t.session})` : ""}`)
+    if (open.length > 30) lines.push(`- … and ${open.length - 30} more open tasks`)
+    if (job.acceptance.length) lines.push(`Acceptance: ${job.acceptance.slice(0, 20).map((a) => `${a.id} ${a.text}`).join("; ")}${job.acceptance.length > 20 ? `; … and ${job.acceptance.length - 20} more` : ""}`)
   }
   if (s.task) lines.push(`This session works on ${s.task.id} ${s.task.title} [${s.task.status}].`)
   if (s.reason) lines.push(`Written before a ${s.reason}, so the thread keeps this after the compaction.`)

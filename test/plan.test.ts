@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { applySplits, parsePlan, type Plan } from "../packages/micromanager/src/plan.ts"
+import { applySplits, checkCwdProblem, parsePlan, stripTaskWorktreeCwd, type Plan } from "../packages/micromanager/src/plan.ts"
 
 const fence = (o: unknown) => "```json\n" + JSON.stringify(o) + "\n```"
 const base = parsePlan(fence({
@@ -33,4 +33,23 @@ test("a split is rejected when it leaves the parent's scope, drops a point, has 
   assert.match(String(split([ok, { ...ok, id: "X2", acceptance: ["A2"], files: ["cli.js"] }]).errors), /must be named T1.<n>/)
   assert.match(String(applySplits(base, fence({ splits: { T2: [] } }), ["T1"]).errors), /not one of the tasks to split/)
   assert.match(String(applySplits(base, "nope", ["T1"]).errors), /no JSON/)
+})
+
+test("a check may not cd out of the task worktree; the main checkout and another task worktree are named", () => {
+  const dir = "/p/wt/a/b/c"
+  const wt = "/p/wt"
+  assert.equal(checkCwdProblem("npm test", dir, wt, "/p"), undefined)
+  assert.equal(checkCwdProblem("cd subdir && npm test", dir, wt, "/p"), undefined)
+  assert.equal(checkCwdProblem("cd ../.. && npm test", dir, wt, "/p"), undefined, "the worktree root is still inside")
+  assert.match(checkCwdProblem("cd /p && npm test", dir, wt, "/p")!, /user's checkout/)
+  assert.match(checkCwdProblem("cd /p/sub && npm test", "/p", "/p", "/p")!, /absolute path .* inside the user's checkout/)
+  assert.match(checkCwdProblem("cd ../../../.. && npm test", dir, wt, "/p")!, /user's checkout/)
+  assert.match(checkCwdProblem("cd /tmp && npm test", dir, wt, "/p")!, /outside the task worktree/)
+  assert.match(checkCwdProblem("cd - && npm test", dir, wt, "/p")!, /outside the task worktree/)
+  assert.equal(checkCwdProblem("echo cd /p", dir, wt, "/p"), undefined, "a word in an argument is not a cd")
+  assert.match(checkCwdProblem('cd "$HOME" && npm test', dir, wt, "/p")!, /shell expression/)
+  // The stale path from an earlier task worktree is stripped only for a root project.
+  assert.equal(stripTaskWorktreeCwd("cd /p/.micromanager/worktrees/job-1--T1 && pytest", ""), "pytest")
+  assert.equal(stripTaskWorktreeCwd("cd /p/.micromanager/worktrees/job-1--T1 && pytest", "a/b/c"), "cd /p/.micromanager/worktrees/job-1--T1 && pytest")
+  assert.match(checkCwdProblem("cd /p/.micromanager/worktrees/job-1--T1 && pytest", "/p", "/p", "/p")!, /another task worktree/)
 })

@@ -4,7 +4,7 @@
 
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { after, test } from "node:test"
 
@@ -12,8 +12,9 @@ import { tempDir } from "./harness.ts"
 
 import {
   changedFiles, commitTask, dirtyDeclared, dirtyPaths, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree,
-  projectRel, rebaseTask, revertFiles, runGate, taskDir, type Exec, type Run,
+  projectRel, rebaseTask, revertFiles, runGate, taskDir, validateIntegration, type Exec, type Run,
 } from "../packages/micromanager/src/integration.ts"
+import type { Job } from "../packages/micromanager/src/state.ts"
 import { parseCheckTimeout } from "../packages/micromanager/src/config.ts"
 import { checkTimeoutOf } from "../packages/micromanager/src/worktree/git.ts"
 import { useVault, Vault } from "../packages/micromanager/src/redact.ts"
@@ -379,4 +380,43 @@ test("commitTask redacts the subject and body before the git call", async () => 
   } finally {
     useVault(undefined)
   }
+})
+
+test("the integration worktree must be the job's own registered worktree at the branch tip", async () => {
+  const wt = join(ROOT, "integration-wt")
+  const taskWt = join(PROJECT, DIR, "worktrees", `${JOB}--T1`)
+  mkdirSync(wt, { recursive: true })
+  mkdirSync(taskWt, { recursive: true })
+  const job = { id: JOB, integrationBranch: `micromanager/${JOB}`, integrationWorktree: wt, isolation: "git" } as unknown as Job
+  const good = {
+    "git rev-parse --is-inside-work-tree": "true\n",
+    "git worktree list --porcelain": `worktree ${wt}\nHEAD abc\nbranch refs/heads/micromanager/${JOB}\n`,
+    "git rev-parse --abbrev-ref HEAD": `micromanager/${JOB}\n`,
+    "git rev-parse HEAD": "abc\n",
+    [`git rev-parse --verify micromanager/${JOB}`]: "abc\n",
+  }
+  assert.deepEqual(await validateIntegration(job, fakeGit(good).run, PROJECT), { ok: true })
+
+  const project = await validateIntegration({ ...job, integrationWorktree: PROJECT } as Job, fakeGit({ ...good, "git worktree list --porcelain": `worktree ${PROJECT}\n` }).run, PROJECT)
+  assert.match(project.ok ? "" : project.message, /project checkout/)
+
+  const task = await validateIntegration({ ...job, integrationWorktree: taskWt } as Job, fakeGit(good).run, PROJECT)
+  assert.match(task.ok ? "" : task.message, /task worktree/)
+
+  const unregistered = await validateIntegration(job, fakeGit({ ...good, "git worktree list --porcelain": "" }).run, PROJECT)
+  assert.match(unregistered.ok ? "" : unregistered.message, /not registered with git/)
+
+  const stale = await validateIntegration(job, fakeGit({ ...good, "git rev-parse HEAD": "def\n" }).run, PROJECT)
+  assert.match(stale.ok ? "" : stale.message, /but micromanager\/job-1 is at abc/)
+
+  // Without git the project folder itself is the integration worktree.
+  const noGit = await validateIntegration({ ...job, integrationWorktree: PROJECT, isolation: "none" } as Job, fakeGit({ ...good, "git worktree list --porcelain": `worktree ${PROJECT}\n` }).run, PROJECT)
+  assert.deepEqual(noGit, { ok: true })
+})
+
+test("a task worktree is never created at the project checkout or the job's integration worktree", async () => {
+  const integration = join(PROJECT, DIR, "worktrees", JOB)
+  mkdirSync(integration, { recursive: true })
+  await assert.rejects(() => prepareTaskWorktree(PROJECT, JOB, "T1", "HEAD", fakeGit({}).run, PROJECT), IntegrationError)
+  await assert.rejects(() => prepareTaskWorktree(PROJECT, JOB, "T1", "HEAD", fakeGit({}).run, integration), IntegrationError)
 })

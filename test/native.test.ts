@@ -5,6 +5,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import { segments } from "../packages/micromanager/src/decide.ts"
+import { exec as realExec } from "../packages/micromanager/src/integration.ts"
 import { CHILD_PREFIX, DelegationError, Native, NoGitError, namedFiles, parseDelegation, parseTodo, replaceIds, similarity } from "../packages/micromanager/src/native.ts"
 import { nextStep, settled } from "../packages/micromanager/src/continuation.ts"
 import { outcomeOf } from "../packages/micromanager/src/outcomes.ts"
@@ -128,12 +129,12 @@ test("the todo tool keeps the micromanager's list in its job; a todo is started 
   const native = new Native()
   const r = native.todo(project, "ses_mm", [
     { title: "write add.js", agent: "coder", files: "add.js", checks: "test -f add.js" },
-    { title: "document add", agent: "writer", files: "README.md", after: ["T1"] },
+    { title: "document add", agent: "writer", files: "README.md", checks: "test -f README.md", after: ["T1"] },
     { title: "map the repo", agent: "explorer" },
     { title: "", agent: "coder" },
     { title: "bad agent", agent: "nobody" },
     { title: "writer without files", agent: "coder" },
-    { title: "waits for nothing real", after: ["T9"], files: "x.js" },
+    { title: "waits for nothing real", after: ["T9"], files: "x.js", checks: "test -f x.js" },
   ], [])
   assert.deepEqual(r.added.map((t) => [t.id, t.role, t.status, t.dependsOn]), [["T1", "code", "pending", []], ["T2", "write", "pending", ["T1"]], ["T3", "explore", "pending", []]])
   assert.equal(r.errors.length, 4)
@@ -169,13 +170,13 @@ test("a todo that does a task over links both, across jobs too, and the old one 
   const old = { ...newJob("job-20261018-194216-8d1c", "old plan"), facilitator: "ses_mm" }
   old.tasks.push({ id: "T18", title: "GRPO ch02", description: "", role: "code", acceptance: [], dependsOn: [], files: ["a.js"], wave: 0, status: "escalated", attempts: 1, stages: [], signatures: [] })
   saveJob(project, old)
-  const first = native.todo(project, "ses_mm", [{ title: "ch04", agent: "coder", files: "b.js" }], [])
+  const first = native.todo(project, "ses_mm", [{ title: "ch04", agent: "coder", files: "b.js", checks: "test -f b.js" }], [])
   const t1 = first.added[0]!
   t1.status = "escalated"
   const r = native.todo(project, "ses_mm", [
-    { title: "ch04 (redo)", agent: "coder", files: "b.js", replaces: ["T1"] },
-    { title: "ch02 (restore)", agent: "coder", files: "a.js", replaces: ["job-20261018-194216-8d1c/T18"] },
-    { title: "nothing to redo", agent: "coder", files: "c.js", replaces: ["T9"] },
+    { title: "ch04 (redo)", agent: "coder", files: "b.js", checks: "test -f b.js", replaces: ["T1"] },
+    { title: "ch02 (restore)", agent: "coder", files: "a.js", checks: "test -f a.js", replaces: ["job-20261018-194216-8d1c/T18"] },
+    { title: "nothing to redo", agent: "coder", files: "c.js", checks: "test -f c.js", replaces: ["T9"] },
   ], [])
   assert.deepEqual(r.added.map((t) => [t.id, t.replaces]), [["T2", ["T1"]], ["T3", ["job-20261018-194216-8d1c/T18"]]])
   assert.match(r.errors[0]!, /no task T9 to replace/)
@@ -185,7 +186,7 @@ test("a todo that does a task over links both, across jobs too, and the old one 
   assert.equal(r.job.tasks.find((t) => t.id === "T1")!.status, "cancelled", "started: the replaced task is given up for good")
   // A merged task has nothing to do over.
   r.job.tasks.find((t) => t.id === "T1")!.status = "merged"
-  assert.match(native.todo(project, "ses_mm", [{ title: "again", agent: "coder", files: "b.js", replaces: ["T1"] }], []).errors[0]!, /T1 is merged/)
+  assert.match(native.todo(project, "ses_mm", [{ title: "again", agent: "coder", files: "b.js", checks: "test -f b.js", replaces: ["T1"] }], []).errors[0]!, /T1 is merged/)
 })
 
 test("plan first: a writer starts only from a todo of a started job; Parallel off and STOP hold writers back", async () => {
@@ -306,6 +307,59 @@ test("a reader asking what a running reader asks already is refused; a different
   assert.equal((await ask("Where is the router defined?")).task.id, "T2")
 })
 
+test("the first todo sets the real job goal; the brief carries done work and lessons", async () => {
+  const project = repo()
+  const native = new Native()
+  const parsed = parseTodo(JSON.stringify({ goal: "keep the blade in the mesh", items: [{ title: "write add.js", agent: "coder", files: "add.js", checks: "test -f add.js" }] }))
+  assert.ok(typeof parsed !== "string")
+  const r = native.todo(project, "ses_mm", parsed.list, parsed.ids, parsed.goal)
+  assert.equal(r.job.goal, "keep the blade in the mesh", "the placeholder is replaced once")
+  r.job.lessons.push("the checks run in the task worktree")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${r.job.id}` }, MODEL)
+  assert.match(d.prompt, /The job: keep the blade in the mesh/)
+  assert.match(d.prompt, /Learned earlier in this job: the checks run in the task worktree/)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "add.js"), "export const add = (a, b) => a + b\n")
+  assert.match((await native.finish("ses_w1", "wrote add.js")).text, /^Merged/)
+  native.todo(project, "ses_mm", [{ title: "document it", agent: "writer", files: "README.md", checks: "test -f README.md" }], [])
+  const d2 = await native.delegate(project, "ses_mm", { agent: "writer", description: "T2", prompt: `Task: T2 · ${r.job.id}` }, MODEL)
+  assert.match(d2.prompt, /Already done \(1\): T1 write add\.js \([0-9a-f]+\)/)
+})
+
+test("two planned steps on the same file are not duplicates when their text differs", () => {
+  const project = repo()
+  const native = new Native()
+  const r = native.todo(project, "ses_mm", [
+    { title: "implement parser", agent: "coder", files: "parser.ts", checks: "test -f parser.ts" },
+    { title: "implement parser tests", agent: "tester", files: "parser.ts", checks: "test -f parser.ts" },
+  ], [])
+  assert.equal(r.added.length, 2, "a second step on one file is allowed when it says something else")
+  assert.equal(r.errors.length, 0)
+})
+
+test("a todo cannot add work already on the list, or continue over a stopped worktree", async () => {
+  const project = repo()
+  const native = new Native()
+  const batch = native.todo(project, "ses_mm", [
+    { title: "fix the pill", agent: "coder", files: "add.js", checks: "test -f add.js" },
+    { title: "fix the pill", agent: "coder", files: "add.js", checks: "test -f add.js" },
+  ], [])
+  assert.equal(batch.added.length, 1, "the second identical todo is refused before it gets an id")
+  assert.match(batch.errors[0]!, /T1 .* already on the todo list/)
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${batch.job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "add.js"), "export const add = (a, b) => a + b\n")
+  await native.ended("ses_w1")
+  const again = native.todo(project, "ses_mm", [{ title: "fix the pill", agent: "coder", files: "add.js", checks: "test -f add.js" }], [])
+  assert.equal(again.added.length, 0)
+  assert.match(again.errors[0]!, /T1 .* stopped before its merge .*sessionID ses_w1/s)
+  // The worktree is gone: the refusal says so and offers Replaces instead of an impossible "continue".
+  const job = native.jobOf("ses_w1")!.job
+  await native.discard(project, job, "T1", "drop", "test")
+  const gone = native.todo(project, "ses_mm", [{ title: "fix the pill", agent: "coder", files: "add.js", checks: "test -f add.js" }], [])
+  assert.match(gone.errors[0]!, /T1 .* was cancelled and its worktree is gone.*replaces/s)
+})
+
 test("a writer works in its own worktree; failing checks go back to it, passing ones merge", async () => {
   const project = repo()
   const native = new Native()
@@ -313,7 +367,8 @@ test("a writer works in its own worktree; failing checks go back to it, passing 
   const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "add add.js", prompt: "Create add.js.\nFiles: add.js\nChecks: node -e \"require('./add.js')\"" }, MODEL)
   assert.equal(d.task.id, "T1")
   assert.equal(d.task.status, "running")
-  assert.match(d.prompt, /^\[micromanager\] task T1 · job job-\S+ · role code · model opencode-go\/glm-5.3-flash\n\nCreate add.js\./)
+  assert.match(d.prompt, /^\[micromanager\] task T1 · job job-\S+ · role code · model opencode-go\/glm-5\.3-flash\n\nThe job: .*\n\nYour task \(T1\): add add\.js/)
+  assert.match(d.prompt, /\n\nCreate add\.js\./)
   assert.match(d.prompt, /Files you may change: add\.js/)
   assert.match(d.prompt, /Checks the plugin runs when you finish: node -e "require/)
   assert.match(d.prompt, /call finish_task/)
@@ -559,6 +614,35 @@ test("a writer that ends without finishing is reported; continued, it finishes i
   assert.equal((await native.resume("ses_w"))!.id, "T1")
   writeFileSync(join(dir, "a.js"), "a\n")
   assert.match((await native.finish("ses_w", "a")).text, /^Merged/)
+})
+
+test("a writer that goes idle with a change gets one finish_task reminder, then the normal failure", async () => {
+  const project = repo()
+  const nudges: string[] = []
+  const cleared: string[] = []
+  const native = new Native({ nudge: (session, text) => { nudges.push(`${session}: ${text}`) }, onNudge: (session) => { cleared.push(session) } })
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "a", prompt: "x\nFiles: a.js\nChecks: test -f a.js" }, MODEL)
+  const dir = native.claim("ses_w", child(d.prompt))!.dir
+  writeFileSync(join(dir, "a.js"), "a\n")
+  const first = await native.ended("ses_w")
+  assert.equal(first?.note, undefined, "the first end is a reminder, not a failure")
+  assert.equal(nudges.length, 1)
+  assert.match(nudges[0]!, /^ses_w: .*call finish_task/)
+  assert.deepEqual(cleared, ["ses_w"], "the plugin clears the live-session exclusion before it re-arms the watch")
+  assert.equal(loadJob(project, d.job.id)!.tasks[0]!.status, "running")
+  assert.ok(!loadJob(project, d.job.id)!.tasks[0]!.stages.some((s) => s.stage === "end" && s.result === "fail"))
+  const second = await native.ended("ses_w")
+  assert.match(second!.note!, /without passing finish_task/)
+  assert.equal(nudges.length, 1, "only one reminder per task")
+  // A worker with no change is not nudged; a watchdog stop is not either.
+  const clean = await native.delegate(project, "ses_mm", { agent: "coder", description: "b", prompt: "x\nFiles: b.js\nChecks: test -f b.js" }, MODEL)
+  native.claim("ses_clean", child(clean.prompt))
+  assert.match((await native.ended("ses_clean"))!.note!, /without passing finish_task/)
+  const stopped = await native.delegate(project, "ses_mm", { agent: "coder", description: "c", prompt: "x\nFiles: c.js\nChecks: test -f c.js" }, MODEL)
+  const cdir = native.claim("ses_stopped", child(stopped.prompt))!.dir
+  writeFileSync(join(cdir, "c.js"), "c\n")
+  assert.match((await native.ended("ses_stopped", "the watchdog stopped it"))!.note!, /the watchdog stopped it/)
+  assert.equal(nudges.length, 1)
 })
 
 test("a merged writer continued by its session reuses the same task in a fresh worktree at the same place", async () => {
@@ -1386,4 +1470,29 @@ test("a user trial: a combination continues one version with the other's change;
   assert.match(none.text, /none of the versions of T1: "too loud, both"[\s\S]*"replaces": \["T1"\]/)
   tasks = none.job!.tasks
   assert.deepEqual(tasks.slice(0, 2).map((t) => t.status), ["cancelled", "cancelled"])
+})
+
+test("the merge retries when the integration branch moves between the rebase and the fast-forward", async () => {
+  const project = repo()
+  let raced = false
+  let integration = ""
+  const exec = async (command: string, args: readonly string[], options: { cwd: string; timeoutMs?: number; env?: Readonly<Record<string, string>> }) => {
+    if (!raced && command === "git" && args[0] === "merge" && args.includes("--ff-only") && integration && options.cwd === integration) {
+      raced = true
+      writeFileSync(join(integration, "other.txt"), "other\n")
+      await realExec("git", ["add", "-A"], { cwd: integration })
+      await realExec("git", ["commit", "-qm", "other work"], { cwd: integration })
+    }
+    return realExec(command, args, options)
+  }
+  const native = new Native({ exec })
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "a", prompt: "x\nFiles: a.js\nChecks: test -f a.js" }, MODEL)
+  integration = d.job.integrationWorktree!
+  const dir = native.claim("ses_w", child(d.prompt))!.dir
+  writeFileSync(join(dir, "a.js"), "a\n")
+  assert.match((await native.finish("ses_w", "a")).text, /^Merged into/)
+  assert.ok(raced, "the test moved the branch during the first fast-forward")
+  const log = execFileSync("git", ["-C", integration, "log", "--oneline"]).toString()
+  assert.match(log, /other work/)
+  assert.match(log, /T1: a/)
 })

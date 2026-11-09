@@ -28,7 +28,7 @@ import { recentFailure, Runner, summary, taskReport, toModel, type SessionApi } 
 import { checkGuards } from "./gate.ts"
 import { Compactor, stub as compactStub } from "./compact.ts"
 import { ContextManager, contextDir } from "./context/manager.ts"
-import { writeDigest } from "./context/digest.ts"
+import { readDigest, writeDigest } from "./context/digest.ts"
 import { findUsage, ReportedUsage, tapResponse } from "./context/tokens.ts"
 import { PriceBook } from "./context/prices.ts"
 import { learnedLines } from "./context/capture.ts"
@@ -1076,6 +1076,9 @@ const plugin = {
     const native = (SHARED.native ??= new Native({
       installedSkills, planFirst: true, noGit: (dir) => noGitNote(dir), evolverReady: () => evolverReady, evolverCallCost, evolverMaxEvalSeconds: () => loadSettings().evolverMaxEvalSeconds,
       checkTimeoutMs: settings.checkTimeoutMs,
+      // One reminder to a writer that went idle without finish_task; its next turn is watched again by the prompt hook.
+      nudge: (session, text) => { void ctx.session.prompt({ sessionID: session, text }).catch((err: unknown) => log("warn", `finish nudge failed: ${String(err)}`)) },
+      onNudge: (session) => { SHARED.ended.delete(session) },
       trialDeadlineMs: settings.trialDeadline * 60_000, trialPick: settings.trialPick, trialGrace: settings.trialGrace,
       idle: (session) => idleAttempt(SHARED.watchdog.progress(session)),
       // The picture of a "user" trial's attempt for the comparison page: its preview page, rendered like look does.
@@ -1439,8 +1442,10 @@ const plugin = {
       const d = await native.delegate(project, call.sessionID, { agent: String(call.input.agent ?? ""), description: String(call.input.description ?? ""), prompt: asked }, routed.model, assess)
       call.input.prompt = d.prompt
       // What the memory knows that helps this task (src/context/recall.ts), after the Files/Checks lines and a blank line,
-      // so they stay the task's (native.ts parseDelegation stops checks at a blank line).
-      const notes = await memory.recallText(asked, { projectDir: project, role: routed.role, session: call.sessionID }).catch(() => ({ text: "", ids: [] }))
+      // so they stay the task's (native.ts parseDelegation stops checks at a blank line). A planned/todo worker's prompt is
+      // only "Task: T… · job-…"; recalling on that found nothing, so use the task the plugin just resolved.
+      const recallQuery = `${d.task.title}\n${d.task.description}`.trim()
+      const notes = await memory.recallText(recallQuery || asked, { projectDir: project, role: routed.role, session: call.sessionID }).catch(() => ({ text: "", ids: [] }))
       if (notes.text) call.input.prompt = `${String(call.input.prompt)}\n\n${notes.text}`
       tasks.set(String(call.input.agent), asked)
       // What the router decided, next to the permission decisions, so /flow can show the whole path. `agent` is the
@@ -2542,8 +2547,8 @@ const plugin = {
             if (!tctx.sessionID) return "todo needs a session."
             const parsed = parseTodo(items)
             if (typeof parsed === "string") return parsed
-            const { list, ids } = parsed
-            const r = native.todo(project, tctx.sessionID, list, ids)
+            const { list, ids, goal } = parsed
+            const r = native.todo(project, tctx.sessionID, list, ids, goal)
             record({ kind: "todo", sessionID: tctx.sessionID, job: r.job.id, added: r.added.map((t) => t.id), dropped: r.dropped, errors: r.errors })
             const open = r.job.tasks.filter((t) => ["pending", "ready", "planned"].includes(t.status))
             const ready = new Set(startable(r.job).map((t) => t.id))
@@ -3001,6 +3006,12 @@ const plugin = {
         const r = await contextManager.apply(input.sessionID, input.messages, { prices: await priceBook.get(input.model), ceilingTokens, judged, baseChars, keepTurns: orchestrator ? 12 : 8, ...(state ? { state } : {}), ...(reportedTokens ? { reportedTokens } : {}) })
         if (r.epoch) log("info", `context epoch (${r.epoch.reason}) in ${input.sessionID}: ${r.epoch.applied} results, ${r.epoch.savedChars} characters`)
         epoch = Boolean(r.epoch)
+        // The STATE digest was written just before the compaction. It was write-only: read it back so the orchestrator
+        // keeps the goal, the done tasks and the open ones after the transcript is summarized away.
+        if (r.epoch && orchestrator) {
+          const kept = readDigest(contextDir(), input.sessionID)
+          if (kept) (input.messages as unknown[]).push({ role: "user", content: [{ type: "text", text: `[micromanager] state digest, kept through the compaction; trust it over the summary:\n${kept}` }] })
+        }
         // A worker's notes came with its brief, the first user message: read them from there for the sidebar.
         if (!orchestrator && !recalledFor.has(input.sessionID)) {
           const brief = (input.messages as { role?: string; content?: unknown }[]).find((m) => m.role === "user")
@@ -3082,7 +3093,16 @@ const plugin = {
               // A contract's red team: its loopholes move the contract's round on (src/contractround.ts).
               const loopholes = await native.noteLoopholes(worker, report)
               if (loopholes) await say({ sessionID: parent, text: loopholes, resume: true }).catch((err: unknown) => log("warn", `note failed: ${String(err)}`))
-              for (const line of learnedLines(report).slice(0, 5)) await memory.capture({ text: line, source: `LEARNED ${worker}` }, project)
+              const learned = learnedLines(report).slice(0, 5)
+              for (const line of learned) await memory.capture({ text: line, source: `LEARNED ${worker}` }, project)
+              // The same facts go to the job, where #brief shows the last few to every later worker. Without this the
+              // native path replanned on "nothing recorded" while the memory held the facts.
+              const fresh = learned.filter((line) => !r.job.lessons.includes(line))
+              if (fresh.length) {
+                r.job.lessons.push(...fresh)
+                if (r.job.lessons.length > 20) r.job.lessons.splice(0, r.job.lessons.length - 20)
+                saveJob(r.project, r.job)
+              }
             })().catch((err: unknown) => log("warn", `memory capture failed: ${String(err)}`))
             if (note) void say({ sessionID: parent, text: note, resume: false }).catch((err: unknown) => log("warn", `note failed: ${String(err)}`))
             // A planned job goes on by itself: the next ready tasks, or that it is done or stuck, at the micromanager's

@@ -672,6 +672,18 @@ test("FOLLOWUP lines are parsed; none and empty ones are skipped", () => {
   assert.deepEqual(r.followUps, [{ what: "add docs", why: "users ask", files: ["README.md", "docs/x.md"] }, { what: "check perf", why: "slow", files: [] }])
 })
 
+test("report paths keep a path and drop the prose around it", () => {
+  // The live logs had these shapes: a path followed by a parenthetical, and a prose segment with commands and flags.
+  const r = parseReport("STATUS: DONE\nFILES: experimentell/hex3d_algohex/calib_sweep.py, Makefile\nFOLLOWUP: tune | slow | experimentell/hex3d_algohex/calib_sweep.py (nothing to change; scheduling only)")
+  assert.deepEqual(r.files, ["experimentell/hex3d_algohex/calib_sweep.py", "Makefile"])
+  assert.deepEqual(r.followUps[0]!.files, ["experimentell/hex3d_algohex/calib_sweep.py"])
+  const p = parseReport("STATUS: DONE\nFILES: none\nFOLLOWUP: rerun | stale | run calib_report.py --build /work/calib/hexme_sweep --out /work/calib/report_hexme.json; CALIBRATION.md.")
+  assert.deepEqual(p.followUps[0]!.files, ["calib_report.py", "/work/calib/hexme_sweep", "/work/calib/report_hexme.json", "CALIBRATION.md"])
+  // A trailing sentence period goes; a dot inside a file name stays.
+  const q = parseReport("STATUS: DONE\nFILES: docs/HANDOFF_keepbl_2026-11-03.md.\nFOLLOWUP: x | y | none")
+  assert.deepEqual(q.files, ["docs/HANDOFF_keepbl_2026-11-03.md"])
+})
+
 test("a stopped run pauses the job mid-task; the next run resumes it from the last commit", async () => {
   const project = repo()
   let stop = false

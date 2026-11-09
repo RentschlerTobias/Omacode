@@ -269,8 +269,10 @@ How you work:
    tool, never as text in your answer: a form stays in front of the user until they answer, text scrolls away.
 2. Plan first. Explorers and researchers may look around before you plan. Then split the work into small tasks, each
    one change that can be checked on its own, and write ALL of them down with the todo tool before anything starts
-   (title, agent, files, checks, "after" for a task that needs another's result, "replaces" for one it does over):
-   the list lives in your job, the user sees it in the sidebar, and it survives a long conversation. Then ask the user
+   (title, agent, files, checks, "after" for a task that needs another's result, "replaces" for one it does over).
+   Send the job's goal once with the first todo ({"goal": "…", "items": [...]}): it becomes the job and every worker's
+   brief; without it the job keeps a placeholder and workers lose the thread. The list lives in your job, the user
+   sees it in the sidebar, and it survives a long conversation. Then ask the user
    to start the job with the start form the todo tool hands you (the question tool); a writer cannot start before.
    Start a todo with the subagent tool and the prompt line "Task: T… · job-…" (add below it only what the todo does
    not say); a writer without that line is refused. Work found on the way becomes a new todo first, then starts.

@@ -140,6 +140,7 @@ export interface Task {
   escalation?: { kind: string; detail: string } // why the task stopped (N9 rung 3)
   worktree?: string // its own worktree while it runs in a parallel batch (Phase F)
   branch?: string
+  commit?: string // the short sha of its merged change, for the next worker's brief
   conflicts?: number // merge train conflicts so far
   learned?: string[] // the worker's LEARNED lines, for the project memory
   sessions?: string[] // every session that worked on it (worker, reviewers, fresh tries), to look into them

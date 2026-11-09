@@ -92,6 +92,43 @@ export function fixPrompt(failures: readonly { command: string; code: number; ou
 
 const STATUSES: readonly WorkerStatus[] = ["DONE_WITH_CONCERNS", "NEEDS_CONTEXT", "BLOCKED", "DONE"]
 
+// A path as a worker writes one in its report: project-relative, absolute, or a bare file name with an extension. The
+// reports are prose, so a whitespace-separated list cannot be taken at face value: "experimentell/x.py (nothing to
+// change; scheduling only)" must yield one path, not five pseudo-paths. Splitting on comma/semicolon first keeps the
+// list shape; only tokens that look like paths survive a prose segment.
+const PATH_SHAPE = /^(?:\/[A-Za-z0-9_@+~./-]+|~\/[A-Za-z0-9_@+~./-]+|\.{1,2}\/[A-Za-z0-9_@+~./-]+|[A-Za-z0-9_@+~-]+(?:\/[A-Za-z0-9_@+~.-]+)+|[A-Za-z0-9_@+~-]+\.[A-Za-z0-9]{1,8})$/
+
+function pathToken(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^[`"'*]+|[`"'*]+$/g, "")
+    .replace(/[,;:!?]+$/g, "")
+    .replace(/\.$/, "")
+    .trim()
+}
+
+export function reportPaths(text: string, trusted = false): string[] {
+  const out: string[] = []
+  const skip = (p: string) => !p || /^(none|nothing|n\/a|-)$/i.test(p)
+  for (const part of text.split(/[,;]/)) {
+    const cleaned = part.trim()
+    if (!cleaned) continue
+    const one = pathToken(cleaned)
+    if (one && !/\s/.test(one)) {
+      // The FILES line is controlled by the brief: a bare name such as "Makefile" is a file even without an extension.
+      // The FOLLOWUP paths segment is prose and must look like a path.
+      if (!skip(one) && (trusted || PATH_SHAPE.test(one))) out.push(one)
+      continue
+    }
+    // A prose segment: keep the path-shaped tokens and drop the words around them.
+    for (const token of cleaned.split(/\s+/)) {
+      const p = pathToken(token)
+      if (!skip(p) && PATH_SHAPE.test(p)) out.push(p)
+    }
+  }
+  return [...new Set(out)]
+}
+
 export function parseReport(text: string): Report {
   const field = (name: string) => text.match(new RegExp(`^\\s*\\**${name}\\**\\s*:\\**\\s*(.*)$`, "im"))?.[1]?.trim() ?? ""
   const statusText = field("STATUS").toUpperCase()
@@ -103,12 +140,12 @@ export function parseReport(text: string): Report {
     .map(([what, why, paths]): FollowUp => ({
       what: what!,
       why: why ?? "",
-      files: !paths || /^none$/i.test(paths) ? [] : paths.split(/[,\s]+/).map((f) => f.replace(/[`*]/g, "")).filter(Boolean),
+      files: !paths || /^none$/i.test(paths) ? [] : reportPaths(paths, false),
     }))
   const learned = [...text.matchAll(/^\s*\**LEARNED\**\s*:\**\s*(.+)$/gim)].map((m) => m[1]!.trim()).filter((l) => l && !/^(none|nothing|-)$/i.test(l))
   return {
     status,
-    files: !files || /^none$/i.test(files) ? [] : files.split(/[,\s]+/).map((f) => f.replace(/[`*]/g, "")).filter(Boolean),
+    files: !files || /^none$/i.test(files) ? [] : reportPaths(files, true),
     evidence: field("EVIDENCE"),
     open: field("OPEN"),
     followUps,

@@ -25,7 +25,7 @@ import {
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
 } from "./worktree/git.ts"
-import { addDelegated, checkSetProblems, parseFiles } from "./plan.ts"
+import { addDelegated, checkCwdProblem, checkSetProblems, parseFiles, stripTaskWorktreeCwd } from "./plan.ts"
 import { WRITERS } from "./profile.ts"
 import { FIX_ROUNDS } from "./watchdog.ts"
 import { ROLES, roleByAgent, roleById, type Role, type RoleId } from "./roles.ts"
@@ -51,6 +51,7 @@ export class DelegationError extends Error {}
 
 export interface Delegation {
   readonly body: string // the prompt without the Files, Checks, Replaces and Task lines
+  readonly goal?: string // the job's goal, when the prompt carries a Goal line
   readonly files: string // as written, parsed by parseFiles
   readonly checks: string[]
   readonly replaces: string[] // tasks this one deliberately starts over ("Replaces: T5")
@@ -72,6 +73,7 @@ export function parseDelegation(prompt: string): Delegation {
   const replaces: string[] = []
   let files = ""
   let frozen = ""
+  let goal = ""
   let planned: Delegation["planned"]
   let attempt: Delegation["attempt"]
   let contract: string | undefined
@@ -132,10 +134,14 @@ export function parseDelegation(prompt: string): Delegation {
       inChecks = false
       continue
     }
+    const g = line.match(/^\s*goal:\s*(.*)$/i)
     const f = line.match(/^\s*files:\s*(.*)$/i)
     const c = line.match(/^\s*checks:\s*(.*)$/i)
     const r = line.match(/^\s*replaces:\s*(.*)$/i)
-    if (r) {
+    if (g) {
+      goal = g[1]!.trim()
+      inChecks = false
+    } else if (r) {
       replaces.push(...replaceIds(r[1]))
       inChecks = false
     } else if (f) {
@@ -150,7 +156,7 @@ export function parseDelegation(prompt: string): Delegation {
       body.push(line)
     }
   }
-  return { body: body.join("\n").trim(), files, checks, replaces, ...(frozen ? { frozen } : {}), ...(planned ? { planned } : {}), ...(attempt ? { attempt } : {}), ...(contract ? { contract } : {}), ...(redteam ? { redteam } : {}), ...(method ? { method } : {}), ...(pick ? { pick } : {}), ...(preview ? { preview } : {}) }
+  return { body: body.join("\n").trim(), files, checks, replaces, ...(goal ? { goal } : {}), ...(frozen ? { frozen } : {}), ...(planned ? { planned } : {}), ...(attempt ? { attempt } : {}), ...(contract ? { contract } : {}), ...(redteam ? { redteam } : {}), ...(method ? { method } : {}), ...(pick ? { pick } : {}), ...(preview ? { preview } : {}) }
 }
 
 // How much two task texts are about the same thing: the share of their words they have in common (Jaccard over the
@@ -169,9 +175,9 @@ export function similarity(a: string, b: string): number {
   return shared / (x.size + y.size - shared)
 }
 const SAME_WORK = 0.5 // a writer on the same files with a title or brief this close is the same work
+const SAME_PENDING = 0.8 // two todos that have not started are only duplicates when they are this close
 const SAME_QUESTION = 0.8 // a reader with a brief this close asks the same question
 const LIVE = new Set(["running", "gating", "fixing"])
-const UNFINISHED = new Set(["blocked", "escalated", "cancelled"])
 
 interface Entry {
   readonly project: string
@@ -190,6 +196,7 @@ interface Entry {
   frozen?: Map<string, string> // project-relative path -> content hash when the writer started (task.frozen)
   graph?: boolean // an explorer with a code graph of its directory (the code_graph tool)
   ended?: boolean // its session ended; a writer that did not merge stays "running" until it is continued or swept
+  nudged?: boolean // one "call finish_task" prompt was sent after it went idle with an uncommitted change
 }
 
 export interface NativeDeps {
@@ -229,6 +236,10 @@ export interface NativeDeps {
   // How long one of a job's checks may run: the job's own setting where it has one, else this (the "checkTimeout"
   // setting), else the default of 300 s (src/worktree/git.ts).
   readonly checkTimeoutMs?: number
+  // A writer whose session goes idle without finish_task gets one prompt to finish or report what remains, instead of
+  // being abandoned and redone. The plugin owns the session prompt and the live-session set; Native only asks.
+  readonly nudge?: (session: string, text: string) => void
+  readonly onNudge?: (session: string) => void
 }
 
 export const TRIAL_DEADLINE_MS = 20 * 60_000
@@ -268,7 +279,13 @@ export function replaceIds(value: unknown): string[] {
 
 // The todo tool's one argument: a JSON list of todos, with {"drop": [...]} entries for the ones to remove. A string
 // when it cannot be read: the answer to the micromanager.
-export function parseTodo(items: string): { list: TodoItem[]; ids: string[] } | string {
+export interface ParsedTodo {
+  readonly list: TodoItem[]
+  readonly ids: string[]
+  readonly goal?: string // the job's goal, set once with the first todo
+}
+
+export function parseTodo(items: string): ParsedTodo | string {
   const list: TodoItem[] = []
   const ids: string[] = []
   if (!items.trim()) return { list, ids }
@@ -278,7 +295,12 @@ export function parseTodo(items: string): { list: TodoItem[]; ids: string[] } | 
   } catch (err) {
     return `items is not a JSON list: ${err instanceof Error ? err.message : String(err)}. Nothing was changed.`
   }
-  for (const x of Array.isArray(parsed) ? parsed : [parsed]) {
+  // Either the historic JSON list, or { "goal": "...", "items": [...] } so the session's job learns its real goal.
+  const root = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined
+  const goal = typeof root?.goal === "string" && root.goal.trim() ? root.goal.trim() : undefined
+  if (root && Array.isArray(root.drop)) ids.push(...taskIds(root.drop))
+  const entries = root && Array.isArray(root.items) ? root.items : Array.isArray(parsed) ? parsed : [parsed]
+  for (const x of entries) {
     const o = (x ?? {}) as Record<string, unknown>
     if (o.drop !== undefined) {
       ids.push(...taskIds(o.drop))
@@ -297,7 +319,7 @@ export function parseTodo(items: string): { list: TodoItem[]; ids: string[] } | 
       ...(text(o.frozen, ", ") ? { frozen: text(o.frozen, ", ")! } : {}),
     })
   }
-  return { list, ids }
+  return { list, ids, ...(goal ? { goal } : {}) }
 }
 
 // A worker's task as its session ended.
@@ -344,8 +366,12 @@ export class Native {
     this.#evolverCallCost = deps.evolverCallCost ?? (() => 0.004)
     this.#evolverMax = deps.evolverMaxEvalSeconds ?? (() => EVOLVER_MAX_EVAL_S)
     this.#checkTimeoutMs = deps.checkTimeoutMs
+    this.#nudge = deps.nudge
+    this.#onNudge = deps.onNudge
   }
 
+  readonly #nudge?: NativeDeps["nudge"]
+  readonly #onNudge?: NativeDeps["onNudge"]
   readonly #evolverMax: () => number
 
   readonly #checkTimeoutMs: number | undefined
@@ -541,15 +567,22 @@ export class Native {
     // nothing behind, and this runs before addDelegated and prepareTaskWorktree, so it does.
     const checks = checkSetProblems(d.checks, writer)
     if (checks) throw new DelegationError(`Not started: ${checks}`)
+    const cwdProblem = d.checks.map((c) => checkCwdProblem(c, project, project, project)).find(Boolean)
+    if (cwdProblem) throw new DelegationError(`Not started: ${cwdProblem}`)
     if (!d.body) throw new DelegationError("Not started: the prompt has no task.")
 
     const job = this.job(project, parent)
+    this.#setGoal(project, job, d.goal)
     const c = this.#contractFor(job, writer, d.contract, assess)
     this.#offerEvolver(project, job, c, parsed.files, input.description.trim() || d.body.split("\n")[0]!, d.checks, d, assess)
     if (d.method === "trial") assess = { ...(assess ?? {}), trials: Math.max(2, assess?.trials ?? 1) }
-    await this.#replace(project, job, d.replaces)
+    // Check before replacing: a refusal must not have discarded the worktree of a task named in Replaces. The replace
+    // check itself mutates nothing, so it runs first and keeps the more specific "still runs" message.
+    const cannotReplace = this.#replaceable(project, job, d.replaces)
+    if (cannotReplace.length) throw new DelegationError(`Not started: ${cannotReplace.join("; ")}`)
     const duplicate = this.#duplicate(job, role, input.description.trim(), d.body, parsed.files, d.replaces)
     if (duplicate) throw new DelegationError(duplicate)
+    await this.#replace(project, job, d.replaces)
     if (WRITERS.has(role.id)) {
       const [rel, working] = await Promise.all([repoRel(project), dirtyPaths(project)])
       const blocked = working.dirty ? dirtyDeclared(parsed.files, rel, working.paths) : []
@@ -1150,7 +1183,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       return ""
     }
     if (job.integrationWorktree) {
-      const v = await validateIntegration(job, this.#exec)
+      const v = await validateIntegration(job, this.#exec, project)
       if (!v.ok) throw new IntegrationError(`integration worktree invalid: ${v.message}`)
     }
     if (!job.integrationWorktree) {
@@ -1256,16 +1289,26 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     const elsewhere = (id: string) => { const [owner, taskId] = this.#owner(project, job, id); return owner?.tasks.find((t) => t.id === taskId)?.status }
     const waits = task.dependsOn.filter((id) => { const dep = byId.get(id); return !dep || !settled(job, dep, elsewhere) })
     if (waits.length) throw new DelegationError(`Not started: ${task.id} waits for ${waits.join(", ")}; start it when ${waits.length > 1 ? "they are" : "it is"} merged.`)
-    const checks = d.checks.length ? d.checks : [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-    if (d.checks.length) {
-      const problem = checkSetProblems(d.checks, WRITERS.has(role.id))
-      if (problem) throw new DelegationError(`Not started: ${problem}`)
-    }
+    const derived = d.checks.length ? d.checks : [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
+    const writerTask = WRITERS.has(role.id)
+    // A verify command can come from an earlier run whose worktree no longer exists; only a provably stale task-worktree
+    // prefix is removed (and only for a root project). Everything else must stay inside this task's worktree.
+    const checks = derived.map((c) => stripTaskWorktreeCwd(c, job.integrationRel ?? ""))
+    const problem = writerTask ? checkSetProblems(checks, true) : checks.length ? checkSetProblems(checks, false) : undefined
+    if (problem) throw new DelegationError(`Not started: ${problem}`)
+    const cwdProblem = checks.map((c) => checkCwdProblem(c, project, project, project)).find(Boolean)
+    if (cwdProblem) throw new DelegationError(`Not started: ${cwdProblem}`)
     const contract = d.contract ?? task.contract?.id
     const c = this.#contractFor(job, WRITERS.has(role.id), contract, assess)
     this.#offerEvolver(project, job, c, task.files, task.title, checks, d, assess)
     if (d.method === "trial") assess = { ...(assess ?? {}), trials: Math.max(2, assess?.trials ?? 1) }
     this.#jobs.set(key(project, job.id), job)
+    // Before any worktree is dropped: a refusal must leave everything as it was. The task itself is exempt (a restart
+    // reuses its id), and a replanned task replaces the cancelled tasks on purpose.
+    const cannotReplace = this.#replaceable(project, job, task.replaces ?? [])
+    if (cannotReplace.length) throw new DelegationError(`Not started: ${cannotReplace.join("; ")}`)
+    const duplicate = this.#duplicate(job, role, task.title, task.description, task.files, task.replaces ?? [], { selfId: task.id, replan: task.origin === "replan" })
+    if (duplicate) throw new DelegationError(duplicate)
     if (old) {
       await this.#dropWorktree(old, task)
       this.#entries.delete(k)
@@ -1379,32 +1422,49 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   // slide, because the first two stopped before their merge and the micromanager started over instead of continuing).
   // A writer on files another writer of this job is changing, or left unfinished with its change still in its worktree,
   // and whose title or brief is about the same thing, is refused with what to do instead; a reader is refused when one
-  // with nearly the same brief still runs. Returns the refusal, or undefined.
-  #duplicate(job: Job, role: Role, title: string, body: string, files: readonly string[], replaced: readonly string[]): string | undefined {
+  // with nearly the same brief still runs. It reads the job's task history, not only the live #entries: the todo path
+  // has no entry yet, and a cancelled task's entry is deleted when its worktree goes. selfId: the task being started,
+  // which is not a duplicate of itself. replan: applyReplan cancelled the old tasks on purpose; their replacements need
+  // no Replaces line.
+  #duplicate(job: Job, role: Role, title: string, body: string, files: readonly string[], replaced: readonly string[], o: { selfId?: string; replan?: boolean } = {}): string | undefined {
     const writer = WRITERS.has(role.id)
     for (const task of job.tasks) {
+      if (task.id === o.selfId) continue
       if (replaced.includes(task.id)) continue
       const entry = this.#entries.get(`${job.id}/${task.id}`)
-      // A task whose worker has not started yet counts as running: two equal calls in one message come one after the
-      // other, before either child exists.
-      if (!entry || entry.writer !== writer) continue
-      const session = entry.session ? `session ${entry.session}` : "its worker is starting"
+      const session = task.session ?? entry?.session
       if (!writer) {
-        if (LIVE.has(task.status) && !entry.ended && task.role === role.id && similarity(body, task.description) >= SAME_QUESTION) {
-          return `Not started: ${task.id} "${task.title}" asks this already (${session}); its report comes to you when it ends.`
+        if (LIVE.has(task.status) && (!entry || !entry.ended) && task.role === role.id && similarity(body, task.description) >= SAME_QUESTION) {
+          return `Not started: ${task.id} "${task.title}" asks this already (${session ? `session ${session}` : "its worker is starting"}); its report comes to you when it ends.`
         }
         continue
       }
       const shared = files.filter((f) => task.files.includes(f))
       if (!shared.length) continue
-      if (similarity(title, task.title) < SAME_WORK && similarity(body, task.description) < SAME_WORK) continue
-      if (LIVE.has(task.status) && !entry.ended) {
-        return `Not started: ${task.id} "${task.title}" is doing this already (it changes ${shared.join(", ")}; ${session}). Send it a note with steer_task, or wait for its report. To replace it, stop it with stop_task, then delegate again with a line "Replaces: ${task.id}".`
+      // Done work is a base for new work, not a duplicate.
+      if (task.status === "merged" || task.status === "passed") continue
+      if (o.replan && task.status === "cancelled") continue
+      // A task that has not started is a duplicate only when its text is nearly the same: "implement parser" and
+      // "implement parser tests" share a file and enough words, but are two steps. A stopped or running task is
+      // different: a parallel restart of it loses work, so the lower SAME_WORK threshold applies.
+      const open = task.status === "pending" || task.status === "ready" || task.status === "planned"
+      const same = Math.max(similarity(title, task.title), similarity(body, task.description))
+      if (same < (open ? SAME_PENDING : SAME_WORK)) continue
+      if (LIVE.has(task.status) && (!entry || !entry.ended)) {
+        return `Not started: ${task.id} "${task.title}" is doing this already (it changes ${shared.join(", ")}; ${session ? `session ${session}` : "its worker is starting"}). Send it a note with steer_task, or wait for its report. To replace it, stop it with stop_task, then delegate again with a line "Replaces: ${task.id}".`
       }
-      if ((UNFINISHED.has(task.status) || (LIVE.has(task.status) && entry.ended)) && !entry.removed && entry.session) {
-        const last = task.stages[task.stages.length - 1]
-        return `Not started: ${task.id} "${task.title}" did this work and stopped before its merge${last ? ` (${last.stage}: ${last.evidence ?? last.result})` : ""}; its change is still in its worktree. Continue it with the subagent tool and sessionID ${entry.session}, saying what is left, so the change is kept. To start over instead, add a line "Replaces: ${task.id}": its worktree is discarded.`
+      const last = task.stages[task.stages.length - 1]
+      const stillThere = Boolean((entry && !entry.removed) || (task.worktree && existsSync(task.worktree)))
+      if (session && stillThere) {
+        return `Not started: ${task.id} "${task.title}" did this work and stopped before its merge${last ? ` (${last.stage}: ${last.evidence ?? last.result})` : ""}; its change is still in ${task.worktree ?? "its worktree"}. Continue it with the subagent tool and sessionID ${session}, saying what is left, so the change is kept. To start over instead, add a line "Replaces: ${task.id}": its worktree is discarded.`
       }
+      if (session && (task.status === "blocked" || task.status === "escalated")) {
+        return `Not started: ${task.id} "${task.title}" is ${task.status}${last ? ` (${last.stage}: ${last.evidence ?? last.result})` : ""}. Continue it with the subagent tool and sessionID ${session}, or add "replaces": ["${task.id}"] to start over on purpose.`
+      }
+      if (task.status === "cancelled") {
+        return `Not started: ${task.id} "${task.title}" was cancelled and its worktree is gone. If this is the same work, add "replaces": ["${task.id}"]; otherwise drop it with the todo tool or choose a different title/files.`
+      }
+      return `Not started: ${task.id} "${task.title}" is already on the todo list (${task.status}). Start it, drop it with the todo tool, or add "replaces": ["${task.id}"] if this task does the same work.`
     }
     return undefined
   }
@@ -1451,6 +1511,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     let task = job?.tasks.find((t) => t.id === entry!.taskId)
     if (!entry || !job || !task) return undefined
     entry.ended = false
+    entry.nudged = false
     const wasTerminal = task.status === "merged" || task.status === "cancelled"
     if (task.status === "cancelled") restart(task)
     if (task.status === "merged") moveTask(task, "running") // continued: next change on top of the merged one
@@ -1633,7 +1694,15 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     // they were, and the worker hears what it may not do.
     const frozen = entry.frozen ? await frozenChanged(entry.worktree, entry.frozen, this.#exec, entry.dir) : []
     if (frozen.length) await revertFiles(entry.worktree, frozen, this.#exec, entry.dir)
-    const results = await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)
+    // The checks are persisted and survive a restart, so they are validated again here, where the real worktree is
+    // known: a check that cds to the user's checkout must not run and pass against files the worker never changed.
+    const cwdProblems = entry.checks.map((c) => checkCwdProblem(c, entry.dir, entry.worktree, entry.project))
+    const safeChecks = entry.checks.filter((_, i) => !cwdProblems[i])
+    const blockedChecks: GateResult[] = entry.checks.flatMap((command, i) => {
+      const why = cwdProblems[i]
+      return why ? [{ command, passed: false, code: 1, output: why }] : []
+    })
+    const results = [...(await runGate(entry.worktree, safeChecks, this.#exec, this.#checkTimeout(job), entry.dir)), ...blockedChecks]
     if (frozen.length) results.push({ command: "frozen files unchanged", passed: false, code: 1, output: `You changed ${frozen.join(", ")}, which you may read and run but not change; they are restored to how they were. Change the code instead. If one of them is wrong, ask for the change with request_check_change, with the line that shows it.` })
     const graded = gradedOf(results)
     if (graded) task.graded = graded
@@ -1731,6 +1800,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     stage(task, "gate", "pass", entry.checks.length ? entry.checks.join(", ") : "no checks given")
     if (fitness.evidence) stage(task, "fitness", "pass", fitness.evidence)
     const commit = await commitTask(entry.worktree, `${task.id}: ${task.title}`, `Job: ${job.id}\nWorker: ${task.model ?? "?"} (${task.role}), session ${session}${task.summary ? `\n\n${task.summary}` : ""}`, this.#exec)
+    if (commit) task.commit = commit
     if (task.redteam) return this.#redteamDone(entry, job, task)
     moveTask(task, "passed")
     const scored = task.trial && entry.contract ? job.contracts?.find((x) => x.id === entry.contract) : undefined
@@ -1746,6 +1816,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     const won = task.trial ? await this.#settleTrial(entry, job, task) : undefined
     // The commit as merged: a rebase onto other tasks' commits gave it a new id (live test).
     const head = commit && (await this.#exec("git", ["rev-parse", "--short", "HEAD"], { cwd: entry.worktree })).stdout.trim()
+    if (head) task.commit = head
     const checks = `${entry.checks.length ? `checks passed: ${entry.checks.join("; ")}` : "no checks were given"}${fitness.evidence ? `; measured: ${fitness.evidence}` : ""}`
     return {
       text: `Merged into ${job.integrationBranch}${head ? ` as ${head}` : " (nothing to commit)"}; ${checks}. Now end with your short report.`,
@@ -2131,44 +2202,60 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // Rebase onto the session branch, the checks again when it moved, then the fast-forward.
   async #merge(entry: Entry, job: Job, task: Task): Promise<{ ok: true } | { ok: false; text: string }> {
-    const v = await validateIntegration(job, this.#exec)
+    const v = await validateIntegration(job, this.#exec, entry.project)
     if (!v.ok) {
       moveTask(task, "escalated")
       stage(task, "merge", "fail", v.message)
       return { ok: false, text: `The integration worktree is not usable: ${v.message}. Fix it (or recreate it) and call finish_task again.` }
     }
     const w = { worktree: entry.worktree, branch: entry.branch! }
-    const step = await rebaseTask(w, job.integrationBranch!, this.#exec)
-    if (!step.ok) {
-      moveTask(task, "escalated")
-      stage(task, "merge", "fail", step.conflict)
-      return { ok: false, text: `Your commit does not apply on top of ${job.integrationBranch}, which other tasks moved on meanwhile (${step.conflict}). Run git rebase ${job.integrationBranch} in your directory, resolve the conflict keeping both changes, run the checks, and call finish_task again.` }
-    }
-    if (step.moved) {
-      const failed = (await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)).filter((r) => !r.passed)
-      if (failed.length) {
+    // A merge is serialized per job in this process, but the integration branch can still move between the rebase and
+    // the fast-forward (another plugin instance, the user, a second job). A fast-forward that fails while the branch
+    // tip moved is a race, not a conflict: rebase again and retry, at most twice. Anything else escalates unchanged.
+    const tipOf = async (): Promise<string> => (await this.#exec("git", ["rev-parse", job.integrationBranch!], { cwd: job.integrationWorktree! })).stdout.trim()
+    let tip = await tipOf()
+    for (let round = 0; round < 3; round++) {
+      const step = await rebaseTask(w, job.integrationBranch!, this.#exec)
+      if (!step.ok) {
         moveTask(task, "escalated")
-        stage(task, "merge", "fail", `checks fail on top of the newer commits: ${failed.map((f) => f.command).join(", ")}`)
-        return { ok: false, text: failText(`Your change is rebased onto ${job.integrationBranch}, which other tasks moved on meanwhile, and there the checks fail`, failed, entry.dir) }
+        stage(task, "merge", "fail", step.conflict)
+        return { ok: false, text: `Your commit does not apply on top of ${job.integrationBranch}, which other tasks moved on meanwhile (${step.conflict}). Run git rebase ${job.integrationBranch} in your directory, resolve the conflict keeping both changes, run the checks, and call finish_task again.` }
       }
-      // Other tasks' commits can change what the evaluator measures as much as what the checks see.
-      const fitness = await this.#measure(entry, job, task)
-      if (fitness.failed) {
-        moveTask(task, "escalated")
-        stage(task, "merge", "fail", `the fitness contract does not hold on top of the newer commits: ${fitness.failed.output.split("\n")[0]}`)
-        return { ok: false, text: failText(`Your change is rebased onto ${job.integrationBranch}, which other tasks moved on meanwhile, and there the fitness contract does not hold`, [fitness.failed], entry.dir) }
+      if (step.moved) {
+        const failed = (await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)).filter((r) => !r.passed)
+        if (failed.length) {
+          moveTask(task, "escalated")
+          stage(task, "merge", "fail", `checks fail on top of the newer commits: ${failed.map((f) => f.command).join(", ")}`)
+          return { ok: false, text: failText(`Your change is rebased onto ${job.integrationBranch}, which other tasks moved on meanwhile, and there the checks fail`, failed, entry.dir) }
+        }
+        // Other tasks' commits can change what the evaluator measures as much as what the checks see.
+        const fitness = await this.#measure(entry, job, task)
+        if (fitness.failed) {
+          moveTask(task, "escalated")
+          stage(task, "merge", "fail", `the fitness contract does not hold on top of the newer commits: ${fitness.failed.output.split("\n")[0]}`)
+          return { ok: false, text: failText(`Your change is rebased onto ${job.integrationBranch}, which other tasks moved on meanwhile, and there the fitness contract does not hold`, [fitness.failed], entry.dir) }
+        }
+        if (fitness.evidence) stage(task, "fitness", "pass", `after the rebase: ${fitness.evidence}`)
       }
-      if (fitness.evidence) stage(task, "fitness", "pass", `after the rebase: ${fitness.evidence}`)
-    }
-    const ff = await fastForward(job.integrationWorktree!, entry.branch!, this.#exec)
-    if (!ff.ok) {
+      const ff = await fastForward(job.integrationWorktree!, entry.branch!, this.#exec)
+      if (ff.ok) {
+        moveTask(task, "merged")
+        stage(task, "merge", "pass", `merged into ${job.integrationBranch}`)
+        return { ok: true }
+      }
+      const now = await tipOf()
+      if (round < 2 && now !== tip) {
+        tip = now
+        stage(task, "merge", "pass", `the branch moved during the merge; rebasing again (${round + 1} of 2)`)
+        continue
+      }
       moveTask(task, "escalated")
       stage(task, "merge", "fail", ff.conflict)
       return { ok: false, text: `The merge into ${job.integrationBranch} failed (${ff.conflict}). Call finish_task again; if it fails the same way, report it.` }
     }
-    moveTask(task, "merged")
-    stage(task, "merge", "pass", `merged into ${job.integrationBranch}`)
-    return { ok: true }
+    moveTask(task, "escalated")
+    stage(task, "merge", "fail", "the integration branch kept moving during the merge")
+    return { ok: false, text: `The merge into ${job.integrationBranch} kept losing the race with other work on the branch; rebase and call finish_task again.` }
   }
 
   // Waits once per run for a worker's end (wait resolves when its session goes idle).
@@ -2183,17 +2270,33 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       const entry = this.#entry(session)
       const job = entry && this.#job(entry)
       const task = job?.tasks.find((t) => t.id === entry!.taskId)
-      if (r && entry && job && task) ended(r.note, r.parent, { project: entry.project, job, task, writer: entry.writer })
+      // A nudge is not an end: the session goes on and its next end is watched again. Do not record an outcome, release
+      // its helpers or mark the session dead here.
+      if (r && !r.nudge && entry && job && task) ended(r.note, r.parent, { project: entry.project, job, task, writer: entry.writer })
     })
   }
 
   // A worker's run ended: a merged writer's worktree goes, a reader's task is done, and a writer that did not get
   // through finish_task is reported, with its change still in its worktree. reason: why the watchdog stopped it.
-  async ended(session: string, reason?: string): Promise<{ note?: string; parent: string } | undefined> {
+  async ended(session: string, reason?: string): Promise<{ note?: string; parent: string; nudge?: true } | undefined> {
     const entry = this.#entry(session)
     const job = entry && this.#job(entry)
     const task = job?.tasks.find((t) => t.id === entry!.taskId)
     if (!entry || !job || !task) return undefined
+    // A writer that goes idle with a change and never called finish_task is not necessarily finished, but it is not
+    // abandoned either: one reminder keeps the worktree in play. Only when the plugin can prompt and the stop was not
+    // the watchdog or the user; a second end takes the normal failure path.
+    if (entry.writer && this.#nudge && !entry.nudged && !reason && !task.trial && ["running", "gating", "fixing"].includes(task.status)) {
+      const changed = await changedFiles(entry.worktree, this.#exec, entry.rel)
+      if (changed.length) {
+        entry.nudged = true
+        stage(task, "nudge", "pass", "ended without finish_task; one reminder sent")
+        this.#onNudge?.(session)
+        saveJob(entry.project, job)
+        this.#nudge(session, "[micromanager] You ended your turn without calling finish_task. If the task is complete, call finish_task now; otherwise report what remains. Do not start over.")
+        return { parent: entry.parent, nudge: true }
+      }
+    }
     entry.ended = true
     let note: string | undefined
     if (!entry.writer) {
@@ -2226,8 +2329,20 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   // The todo tool: the micromanager writes down the tasks it means to start, as open tasks of its session's job, so the
   // job file holds the whole list (the sidebar shows it; the continuation names the ready ones). v2 has no todowrite,
   // and a list kept in the model's context was lost on compaction. Each is started later with "Task: T… · job-…".
-  todo(project: string, parent: string, items: readonly TodoItem[], drop: readonly string[]): { job: Job; added: Task[]; dropped: string[]; errors: string[] } {
+  // The session's rolling job starts with a placeholder goal ("the delegated tasks of micromanager session …"), which
+  // is then copied into every brief and the digest. The first todo or delegation that knows the real goal replaces it;
+  // a goal already set by the user or a plan is never overwritten.
+  #setGoal(project: string, job: Job, goal?: string): void {
+    const text = goal?.trim().replace(/\s+/g, " ")
+    if (!text) return
+    if (job.goal && !job.goal.startsWith("the delegated tasks of micromanager session")) return
+    job.goal = text.slice(0, 2000)
+    saveJob(project, job)
+  }
+
+  todo(project: string, parent: string, items: readonly TodoItem[], drop: readonly string[], goal?: string): { job: Job; added: Task[]; dropped: string[]; errors: string[] } {
     const job = this.job(project, parent)
+    this.#setGoal(project, job, goal)
     const errors: string[] = []
     const added: Task[] = []
     const dropped: string[] = []
@@ -2252,14 +2367,20 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       if (writer && !parsed.files.length) { errors.push(`${title}: a ${role.agent} changes files; give the files it may change`); continue }
       if (!writer && parsed.files.length) { errors.push(`${title}: ${role.agent} only reads; leave out files`); continue }
       const checks = (item.checks ?? "").split("\n").map((c) => c.trim()).filter(Boolean)
-      const bad = checks.length ? checkSetProblems(checks, writer) : undefined
+      // A writer without checks merges on an empty gate (live evidence: job-20261105 T8/T17/T19/T20 merged with no
+      // checks). The rule was enforced on the delegation path only; apply it here too.
+      const bad = writer ? checkSetProblems(checks, true) : checks.length ? checkSetProblems(checks, false) : undefined
       if (bad) { errors.push(`${title}: ${bad}`); continue }
-      const after = (item.after ?? []).map((id) => id.trim().toUpperCase()).filter(Boolean)
-      const unknown = after.filter((id) => !job.tasks.some((t) => t.id === id))
-      if (unknown.length) { errors.push(`${title}: no task ${unknown.join(", ")} to wait for`); continue }
+      const cwdProblem = checks.map((c) => checkCwdProblem(c, project, project, project)).find(Boolean)
+      if (cwdProblem) { errors.push(`${title}: ${cwdProblem}`); continue }
       const replaces = item.replaces ?? []
       const cannot = this.#replaceable(project, job, replaces)
       if (cannot.length) { errors.push(`${title}: ${cannot.join("; ")}`); continue }
+      const duplicate = this.#duplicate(job, role, title, item.brief?.trim() || title, parsed.files, replaces)
+      if (duplicate) { errors.push(`${title}: ${duplicate.replace(/^Not started: /, "")}`); continue }
+      const after = (item.after ?? []).map((id) => id.trim().toUpperCase()).filter(Boolean)
+      const unknown = after.filter((id) => !job.tasks.some((t) => t.id === id))
+      if (unknown.length) { errors.push(`${title}: no task ${unknown.join(", ")} to wait for`); continue }
       if (item.contract && !writer) { errors.push(`${title}: ${role.agent} only reads; a fitness contract measures a writer's work`); continue }
       if (item.contract && !job.contracts?.some((c) => c.id === item.contract)) { errors.push(`${title}: job ${job.id} has no contract ${item.contract}; define it with the contract tool first`); continue }
       const result = addDelegated(job, { title, prompt: item.brief?.trim() || title, files: parsed.files, dependsOn: after, checks })
@@ -2349,8 +2470,30 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   #brief(job: Job, task: Task, role: Role, model: string, d: Delegation, entry: Entry, graph?: Graph): string {
     const skills = [...(entry.writer ? ["verification-before-completion"] : []), ...(role.id === "research" ? ["research"] : [])].filter((s) => this.#skills.has(s))
     const others = job.tasks.filter((t) => t.id !== task.id && ["running", "gating", "fixing"].includes(t.status))
+    // The context a worker needs to reuse instead of rewriting: why the job exists, what is already merged, what earlier
+    // workers learned, and what "done" means for this task. Planned jobs get goal/decisions/acceptance from
+    // #plannedBody; rolling jobs (the todo path) got none of it.
+    const finished = job.tasks.filter((t) => t.id !== task.id && (t.status === "merged" || t.status === "passed"))
+    const doneLine = finished.length
+      ? `Already done (${finished.length}): ${finished.slice(-8).map((t) => `${t.id} ${t.title}${t.commit ? ` (${t.commit})` : ""}${t.status === "passed" ? " [read-only]" : ""}`).join("; ")}${finished.length > 8 ? `; … and ${finished.length - 8} more` : ""}`
+      : ""
+    const lessonsLine = job.lessons.length ? `Learned earlier in this job: ${job.lessons.slice(-5).join("; ")}` : ""
+    const acceptance = taskAcceptance(job, task).slice(0, 4)
+    const rollingContext = job.rolling
+      ? [
+          `The job: ${job.goal}`,
+          "",
+          `Your task (${task.id}): ${task.title}`,
+          job.decisions.length ? `Decisions that apply: ${job.decisions.slice(-5).map((x) => x.text).join("; ")}` : "",
+          acceptance.length ? `Acceptance points: ${acceptance.map((a) => `${a.id}: ${a.text}${a.verify ? ` (checked with: ${a.verify})` : ""}`).join("; ")}` : "",
+        ]
+      : []
     return [
       `${HEADER} task ${task.id} · job ${job.id} · role ${role.id} · model ${model}`,
+      "",
+      ...rollingContext,
+      doneLine,
+      lessonsLine,
       "",
       d.body,
       "",

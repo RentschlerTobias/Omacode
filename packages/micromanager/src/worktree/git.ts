@@ -10,7 +10,7 @@
 
 import { execFile } from "node:child_process"
 import { existsSync, mkdirSync } from "node:fs"
-import { join, relative, resolve, sep } from "node:path"
+import { basename, join, relative, resolve, sep } from "node:path"
 
 import { measuredOf, median, parseScoreLines, type Contract, type Measured } from "../contract.ts"
 import { scrub } from "../redact.ts"
@@ -165,23 +165,52 @@ export async function prepareIntegration(project: string, jobId: string, run: Ex
   return { branch, worktree, base: head.stdout.trim(), rel, dirty, dirtySummary: summary }
 }
 
-// Validates the job's integration worktree before it is created or reused: it must exist, be a git work tree, and sit on
-// the job's integration branch. Returns an actionable message instead of leaving a cryptic git error for the merge.
-export async function validateIntegration(job: Job, run: Exec = exec): Promise<{ ok: true } | { ok: false; message: string }> {
+// Validates the job's integration worktree before it is created or reused: it must exist, be a registered git work
+// tree, sit on the job's integration branch, and point at that branch's tip. project is optional only for callers that
+// predate the path checks (tests); the real callers pass it. Returns an actionable message instead of leaving a
+// cryptic git error for the merge.
+export async function validateIntegration(job: Job, run: Exec = exec, project?: string): Promise<{ ok: true } | { ok: false; message: string }> {
   if (!job.integrationWorktree || !job.integrationBranch) {
     return { ok: false, message: "the job has no integration worktree or branch recorded" }
   }
   const wt = job.integrationWorktree
+  const resolved = resolve(wt)
   if (!existsSync(wt)) {
     return { ok: false, message: `the integration worktree ${wt} does not exist` }
+  }
+  // Without git, the project folder itself is the integration worktree (src/native.ts, isolation: "none").
+  const noGit = job.isolation === "none"
+  if (!noGit && project && resolve(project) === resolved) {
+    return { ok: false, message: `the integration worktree ${wt} is the project checkout; it must be the job's own worktree` }
+  }
+  // A task worktree is named "<job>--T…"; it must never become the integration worktree (live run: this is how the
+  // job worktree was destroyed and every merge became a no-op).
+  if (!noGit && basename(wt).startsWith(`${job.id}--`)) {
+    return { ok: false, message: `the integration worktree ${wt} is a task worktree, not the job's worktree` }
   }
   const inside = await run("git", ["rev-parse", "--is-inside-work-tree"], { cwd: wt })
   if (inside.code !== 0 || inside.stdout.trim() !== "true") {
     return { ok: false, message: `the integration worktree ${wt} is not a git work tree (${inside.stderr.trim() || "git rev-parse failed"})` }
   }
+  // Registered with git, not merely a directory that happens to be there: a stale or copied checkout would otherwise
+  // pass the checks below and then fail the merge with "not a work tree".
+  const list = await run("git", ["worktree", "list", "--porcelain"], { cwd: wt })
+  const registered = list.code === 0
+    ? list.stdout.split("\n").filter((line) => line.startsWith("worktree ")).map((line) => resolve(line.slice("worktree ".length).trim()))
+    : []
+  if (!registered.includes(resolved)) {
+    return { ok: false, message: `the integration worktree ${wt} is not registered with git (run git worktree prune and recreate it)` }
+  }
   const head = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: wt })
   if (head.code !== 0 || head.stdout.trim() !== job.integrationBranch) {
     return { ok: false, message: `the integration worktree ${wt} is on ${head.stdout.trim() || "unknown"}, expected ${job.integrationBranch}` }
+  }
+  // The branch name is not enough: a renamed or stale ref can leave the worktree on a commit that is not the branch's
+  // tip. A merge from there silently loses the other tasks' commits.
+  const headSha = await run("git", ["rev-parse", "HEAD"], { cwd: wt })
+  const tipSha = await run("git", ["rev-parse", "--verify", job.integrationBranch], { cwd: wt })
+  if (headSha.code !== 0 || tipSha.code !== 0 || headSha.stdout.trim() !== tipSha.stdout.trim()) {
+    return { ok: false, message: `the integration worktree ${wt} is at ${headSha.stdout.trim() || "unknown"}, but ${job.integrationBranch} is at ${tipSha.stdout.trim() || "unknown"}; reset it to the branch before merging` }
   }
   return { ok: true }
 }
@@ -339,6 +368,16 @@ export interface TaskWorktree {
 // offset inside the worktree.
 export async function prepareTaskWorktree(project: string, jobId: string, taskId: string, from: string, run: Exec = exec, at?: string, rel = ""): Promise<TaskWorktree> {
   const branch = taskBranch(jobId, taskId)
+  if (at) {
+    // A continued worker keeps its session's directory (src/native.ts resume), but that directory must never be the
+    // project checkout or the job's integration worktree: creating a task branch there is how the job worktree was
+    // destroyed in a live run (job-20261030, T44).
+    const integration = join(project, stateDir(project), "worktrees", jobId)
+    if (resolve(at) === resolve(project)) throw new IntegrationError(`refusing to make a task worktree at the project checkout ${at}`)
+    if (resolve(at) === resolve(integration) || resolve(at).startsWith(`${resolve(integration)}${sep}`)) {
+      throw new IntegrationError(`refusing to make a task worktree at the job's integration worktree ${at}`)
+    }
+  }
   const worktree = at ?? join(project, stateDir(project), "worktrees", `${jobId}--${taskId}`)
   await removeTaskWorktree(project, { branch, worktree }, run) // a leftover of an interrupted run
   // Before the checkout exists, so the plugin never reports its own worktree as the user's uncommitted work.
