@@ -4,7 +4,7 @@ import { test } from "node:test"
 import type { Asked } from "../packages/micromanager/src/backends.ts"
 import type { Answer } from "../packages/micromanager/src/jev.ts"
 import { choosePipeline, citationCheck, parseReview, readerCount, researchPath, TEST_FILE } from "../packages/micromanager/src/pipelines.ts"
-import { classifyQuestions, combine, narrowing, profileText, type Skill } from "../packages/micromanager/src/profile.ts"
+import { classifyQuestions, combine, narrowing, profileText, WRITERS, type Skill } from "../packages/micromanager/src/profile.ts"
 import type { Acceptance, Task } from "../packages/micromanager/src/state.ts"
 
 const task = (over: Partial<Task> = {}): Task => ({
@@ -61,6 +61,13 @@ test("a task that needs shell never stays with a role that has none (live test: 
   // A writer has a shell of its own now (its worktree is its sandbox), so it keeps its role.
   const writer = combine(task({ role: "write", files: ["README.md"] }), acc, asked({ "tool.shell": noul(0.9) }), {})
   assert.equal(writer.role, "write")
+})
+
+test("an investigator counts as a writer: it gets a plan worktree and a sandbox, and keeps its role when it needs the shell", () => {
+  assert.ok(WRITERS.has("investigator"))
+  const t = task({ role: "investigator", files: ["docs/findings.md"] })
+  const p = combine(t, acc, asked({ "tool.shell": noul(0.9) }), {})
+  assert.equal(p.role, "investigator")
 })
 
 test("user presets beat the model", () => {

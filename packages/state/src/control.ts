@@ -22,8 +22,24 @@ export interface Control extends Partial<JobOptions> {
   // What the user or Jev granted the job's workers beyond the allowlist (src/grants.ts), and what the user refused:
   // variable names and hosts only, never values.
   readonly sandbox?: string // "on", or "off: <why>": whether the job's worker commands run in the sandbox (src/shell/sandbox.ts)
+  // D23: what the user (or the config's `unsandboxed: "allow"`) granted this job when no sandbox can run here. The score
+  // is the deterministic one the form showed (src/riskscore.ts), kept with the grant so the job says on what it ran
+  // unwrapped. The gate and the plan writer read only `granted`.
+  readonly unsandboxed?: UnsandboxedGrant
   readonly grants?: Names
   readonly refused?: Names
+}
+
+// The user's (or the config's) confirmation that this job may run without a sandbox (D23, A1-T14): when it was given,
+// by whom, and the score the form showed. by: "user" is the answer on the sandbox form; "config" is the "unsandboxed":
+// "allow" setting, stored here so the job carries the same grant a user's answer does.
+export interface UnsandboxedGrant {
+  readonly granted: boolean
+  readonly at: string // ISO time of the answer
+  readonly by: "user" | "config"
+  readonly score: number
+  readonly band: string
+  readonly findings: readonly string[]
 }
 
 export interface Names {

@@ -41,7 +41,7 @@ export interface JobView {
   readonly title: string // the job's goal, as the sidebar heads it
   readonly phase: Job["phase"]
   readonly facilitator?: string
-  readonly isolation?: "none" // no git: writers change the folder directly, one at a time
+  readonly isolation?: "none" | "plan" // no git (writers change the folder directly) or a plan job (its own plan worktree)
   readonly done: number
   readonly running: number
   readonly failed: number

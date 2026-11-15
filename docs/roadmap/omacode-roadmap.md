@@ -29,7 +29,7 @@ These decisions are binding for this plan. D1–D18 come from the working sessio
 | D7 | Remotion is rejected (license). |
 | D8 | Code review and the MCP server manager are **skipped** for now. |
 | D9 | The UI redesign is deferred; **Rulebook is the first UI item**. No localhost web UI; use a TUI panel. |
-| D10 | Plan mode is a **hard boundary**, not a prompt: plan worktrees, plan-only tool set, write guard, sandbox. **It fails closed**, and **every execution path — including task checks and the host runner — is inside the boundary**. |
+| D10 | Plan mode is a **hard boundary**, not a prompt: plan worktrees, plan-only tool set, write guard, sandbox. **It fails closed**, and **every execution path — including task checks and the host runner — is inside the boundary**. The one exception is D23: a job the user explicitly confirmed may run unsandboxed, recorded with its risk score. |
 | D11 | The decider has exactly **two modes: `local` and `cloud`**. There is no hybrid. A missing backend is a *state*, not a mode. |
 | D12 | `refusal_likely` is removed. Guards are `injection`, `harmful`, `sensitive`. The rulebook version is bumped and re-benchmarked in the same job. |
 | D13 | Cloud sends only after deterministic redaction, **enforced inside the client** so no call site can bypass it. With no local NER every cloud call is previewed and confirmed. |
@@ -42,6 +42,7 @@ These decisions are binding for this plan. D1–D18 come from the working sessio
 | D20 | **Contracts before adapters.** Spec, checks, provenance and adapter interface land first; `artifactd` (daemon, queue, GPU lock) is deferred until a GPU render needs it. **The deck is the first vertical slice.** |
 | D21 | `local` is the **mode from day one** — nothing leaves the machine. What the bench gates is **per-node floors**: until a node passes, its floors stay conservative and low confidence asks the user; once it passes, its calibrated floors apply and the ask-rate drops. Never a silent cloud call. |
 | D22 | **Two tracks.** Safety (A) and artifacts (B) do not wait for each other, except where a schema is genuinely shared. The first artifact job starts after A1, not after A6. |
+| D23 | **Unsandboxed is a user decision, never a default.** When no sandbox can run, a job's commands and checks run unwrapped **only after the user confirmed it for that job** in a form, with a deterministic risk score shown first. The grant is journaled with the score; `never` keeps the fail-closed path, `allow` stores the grant without asking (also journaled). Without an answer nothing runs. |
 
 ### Assumptions
 
@@ -227,9 +228,9 @@ merge / hooks     ──► user checkout, backup + policy (A3)
 
 | Mode | Writes | Workers | Merge | Checks |
 |---|---|---|---|---|
-| **Plan** | only `<stateDir>/plan/<job>/` | readers + investigators (writers refused without a sandbox) | never | sandboxed, or skipped |
-| **Build** | task worktrees only | writers + readers | manual or policy | sandboxed |
-| **Auto** | task worktrees only | writers + readers | autoMerge policy, backup + undo | sandboxed |
+| **Plan** | only `<stateDir>/plan/<job>/` | readers + investigators (writers refused without a sandbox) | never | sandboxed, or (D23) unsandboxed after the user's confirmation, or skipped |
+| **Build** | task worktrees only | writers + readers | manual or policy | sandboxed, or (D23) unsandboxed after the user's confirmation |
+| **Auto** | task worktrees only | writers + readers | autoMerge policy, backup + undo | sandboxed, or (D23) unsandboxed after the user's confirmation |
 
 ### Decider modes
 
@@ -311,26 +312,39 @@ B6 waits for a real GPU render. C1 waits for A2 because the question set and the
 **Goal:** Plan mode cannot modify the project, and **no code path outside the sandbox can execute text a worker
 wrote** — including task checks. If the sandbox is unavailable, plan jobs run reader-only and say so.
 
-**Internal order:** T0 → T1 → T2 → T3a → T3b → T4 → T5 → T6 → T7 → T10 → T11 → T12 → T13 → T8 → T9.
+**Internal order:** T0 → T1 → T2 → T3a → T3b → T4 → T5 → T6 → T7 → T10 → T11 → T12 → T13 → T14 → T8 → T9.
 
 **Tasks**
 
-- [ ] **A1-T0 — Path single source.** One helper answers "state dir / user state / config". `stateDir(project)` exists;
+- [x] **A1-T0 — Path single source.** One helper answers "state dir / user state / config". `stateDir(project)` exists;
   this makes it the only way to ask. A5-T0 later replaces the consumers, but every job from A1 on uses the helper.
-- [ ] **A1-T1 — Plan worktree.** `preparePlanWorktree(project, job, task)`:
+  - *Reality:* the helper is `packages/core/src/paths.ts` (core is the dependency leaf; state depends on it and
+    re-exports `stateDir`/`DIR`/`LEGACY_DIR` unchanged). Test: `test/paths.test.ts`.
+- [x] **A1-T1 — Plan worktree.** `preparePlanWorktree(project, job, task)`:
   - path `<stateDir>/plan/<job>/worktrees/<task>` via `stateDir(project)` — never a literal;
   - throwaway branch `plan/<job>/<task>` off `HEAD`;
   - no-git fallback: a **copy** of the project with exclusions — `<stateDir>`, `.git`, `.env*`, key material, files
     over a size cap — that **does not follow symlinks**, plus a test that the copy does not recurse and does not carry
     secrets.
-- [ ] **A1-T2 — Plan job isolation.** `isolation: "plan"`: no integration branch, no integration worktree, no merge;
+  - *Reality:* a project without a commit cannot branch, so `preparePlanWorktree` throws `IntegrationError` and the
+    caller falls back to `copyForPlan`; `.env.example` stays excluded because the existing `SECRET` rule matches it.
+- [x] **A1-T2 — Plan job isolation.** `isolation: "plan"`: no integration branch, no integration worktree, no merge;
   `#merge` refuses plan jobs; `finish_task` marks `passed`, never `merged`.
-- [ ] **A1-T3a — Promotion validation.** For every `Artifacts:` path: `lstat` — reject symlinks, devices, sockets
+  - *Reality:* the plan finish branch returns no note to the micromanager (the next-task note comes from `ended`); a
+    plan task keeps its worktree until T3a promotes and discards it. `tui/src/progress.ts`'s `isolation` type widened.
+- [x] **A1-T3a — Promotion validation.** For every `Artifacts:` path: `lstat` — reject symlinks, devices, sockets
   **including nested ones when the artifact is a directory**; reject absolute paths and `..` after normalisation;
   reject paths resolving outside the plan worktree; size cap; secret scan; copy into
   `<stateDir>/plan/<job>/artifacts/<task>/` **without following symlinks**.
-- [ ] **A1-T3b — Promotion record.** `patches/<task>.patch` (`git diff base..HEAD`), `findings/<task>.md`, manifest.
-- [ ] **A1-T4 — Plan agent profile.** Primary `micromanager-plan`:
+  - *Reality:* `promoted` records one entry per file (a directory has no single hash); the copy opens each source with
+    `O_NOFOLLOW` **and** checks the descriptor's dev/ino against the `lstat`, so a parent swapped for a symlink between
+    check and copy is refused too. Plan worktrees of a sub-directory project are entered at the project offset
+    (<worktree>/<rel>), else every report path would resolve one level wrong.
+- [x] **A1-T3b — Promotion record.** `patches/<task>.patch` (`git diff base..HEAD`), `findings/<task>.md`, manifest.
+  - *Reality:* the plan finish commits on the throwaway plan branch first, so `base..HEAD` is literally the patch; the
+    manifest adds `patchBytes` and, without git, `patch: null` plus a note. The plan worktree is discarded once the
+    record is on disk (T9's end state arrives a task early).
+- [x] **A1-T4 — Plan agent profile.** Primary `micromanager-plan`:
   - `edit` deny outside `<stateDir>/plan/**`, with **explicit allow** rules for that root (`roles.ts` `noStateDir`
     otherwise denies the agent its own artifacts);
   - **read allow for `<stateDir>/plan/**` on the agents that consume a plan** — the Build-mode micromanager cannot
@@ -338,41 +352,89 @@ wrote** — including task checks. If the sandbox is unavailable, plan jobs run 
   - subagent allowlist: `explore`, `researcher`, `plan`, `oracle`, `investigator`;
   - deny the **real** tool ids: `todo`, `run_job`, `merge_job`, `discard_job`, `rewind_job`, `take_over_job`,
     `undo_merge` (there is no `auto_merge`).
-- [ ] **A1-T5 — Investigator role.** Writer-class role that writes only its plan worktree, may run tests/builds, and
+  - *Reality:* the allowlist names the agents (`explorer`, `planner`, …) as the subagent tool does, with the role-id
+    mapping in a comment; `noStateDir` comes before the plan allows because the last match wins. The plan agent also
+    gets the read allow for its own root (write-but-not-read was an oversight in the wording).
+- [x] **A1-T5 — Investigator role.** Writer-class role that writes only its plan worktree, may run tests/builds, and
   reports `Artifacts:` / `Findings:`.
-- [ ] **A1-T6 — Write guard.** In `tool.execute.before`:
+  - *Reality:* it is in both writer sets (`profile.ts` for the worktree/sandbox, `plan.ts` so its task must declare the
+    draft files it writes). "May run builds" goes through the permission fast path for commands that stay in the
+    worktree (T10), not the static allow list, which carries only test runners and linters. `planModeRoles()` was added
+    to the planner prompt: without it the planner never names the role and a plan job could not be planned.
+- [x] **A1-T6 — Write guard.** In `tool.execute.before`:
   - resolve targets with **`realpath` of the nearest existing ancestor**, not lexical `resolve`;
   - deny outside the plan root, including via symlink;
   - shell blacklist (advisory): `cd ..`, `rm`, `git checkout`, `git stash`, `git branch`, `git worktree`,
     `git config`, `git gc`, `git update-ref`, absolute paths outside the root.
-- [ ] **A1-T7 — Sandbox profile, fail-closed.** Plan investigator: `rulesFor({ writer: true, worktree: planRoot, temp })`,
+  - *Reality:* the list is refused, not merely logged, where it leaves the plan root: `cd`/`rm` with `..` or an
+    outside absolute path, the seven ref-moving git subcommands, any absolute path outside both the plan root and the
+    session's own directory (streams and the temp dir excepted); `rm`/`cd` inside are advisory (journalled). A write
+    tool whose target this layer cannot read (the `patch` tool's targets live in the patch text) is refused too —
+    fail closed — with a message to use `edit`/`write`.
+- [x] **A1-T7 — Sandbox profile, fail-closed.** Plan investigator: `rulesFor({ writer: true, worktree: planRoot, temp })`,
   project read-only. **If `available === false`:** the job starts **reader-only** — no writers or investigators are
   delegated — and the restriction is visible in the job status **and** in `plan.md` ("this job ran reader-only: no
   sandbox on this machine"). This is the single fail-closed rule; A1-T11 implements it.
-- [ ] **A1-T10 — Path rules for plan worktrees.** `decide.ts` `taskWorktree` / `inJobArea` / `staysInWorktree` do not
+  - *Reality:* the plan agent is a root session, so the shell plugin's child rule would leave its commands unwrapped;
+    its session is now marked (`SHARED.planSessions`) and sanded with the same plan profile, or the barrier would hold
+    for every agent except the one that types the most commands. A writer refused for lack of a sandbox sets
+    `job.planReaderOnly` and names the reason; `readerOnlyNote()` feeds the job status (plan.md is T8).
+- [x] **A1-T10 — Path rules for plan worktrees.** `decide.ts` `taskWorktree` / `inJobArea` / `staysInWorktree` do not
   recognise `<stateDir>/plan/<job>/worktrees/<task>`, so every investigator command falls to the decider. Teach the
   path rules the plan layout; test that inside-tree commands run **without** per-command asks.
-- [ ] **A1-T11 — Start condition.** `startJob` in Plan mode checks the sandbox and, when it is off, proceeds
+  - *Reality:* one regex carries both layouts; `inJobArea` accepts the plan area as well as `worktrees/`. The
+    no-ask test calls `decide(undefined, …)` (no decider at all) and still gets `allow`; `sandboxed: false` does not
+    take the fast path. The reader fixture is `explorer` (the plugin's role agent), not OpenCode's `explore`.
+- [x] **A1-T11 — Start condition.** `startJob` in Plan mode checks the sandbox and, when it is off, proceeds
   reader-only **with an explicit warning** (A1-T7) rather than failing silently or failing hard. The warning names the
   fix (`omacode doctor`). A6-T10 later surfaces the same check in the doctor.
-- [ ] **A1-T12 — Plan-mode check execution.** Two host-side `sh -c` paths exist and both are outside the sandbox:
+  - *Reality:* a job started from the plan agent (`run_job` in a `micromanager-plan` session) becomes a plan job;
+    `nextStep` takes an optional task predicate, so a reader-only job never names an investigator (both call sites
+    pass it). The warning is returned with the job, not thrown.
+- [x] **A1-T12 — Plan-mode check execution.** Two host-side `sh -c` paths exist and both are outside the sandbox:
   `worktree/git.ts:285` runs the task's `Checks:` (`nice -n 15 sh -c <command>`), and `:307` runs the same way for a
   contract's `evaluator`. A check line is worker-authored, and in a plan job it is promoted from an untrusted
   worktree. Therefore:
   - in Plan mode, checks run **inside** the same `rulesFor({ worktree: planRoot })` wrapper, or are **skipped** with a
-    stated reason when the sandbox is off;
+    stated reason when the sandbox is off, **or** — D23 — run unsandboxed after the user confirmed it for that job;
   - in Build/Auto mode the same rule applies: a check runs in the sandboxed scope of its own worktree;
   - a sandboxed gate run **inherits the job's grants** (domains, env): `npm test` and `uv run pytest` need registries,
     and a naive sandbox would break every existing check;
   - a test asserts that a hostile `Checks:` line (`rm -rf ../..`, `/etc/passwd` write) cannot touch the project
     **at gate time**.
-- [ ] **A1-T13 — No new literals.** A scan test, wired from A1 on, that fails on state-path literals outside an
+  - *Reality:* both host paths now take a `Gate` (`gatebox.ts`): its rules, its cleaned env and the job's grants, or
+    `skip` with the reason and no execution. A skipped check blocks the task without consuming a fix round. Contract
+    *baseline* evaluators have no task, so their gate uses role `code` and the integration worktree. The hostile test
+    runs for real under bubblewrap on this machine.
+- [x] **A1-T13 — No new literals.** A scan test, wired from A1 on, that fails on state-path literals outside an
   allowlist. The allowlist is **path + literal pairs**, not a bare literal list: the legacy detectors in A5-T2 are
   allowed to name `.micromanager` *in that file*, and nothing else may. A bare list would let a stale consumer hide
   behind a legacy detector's exception.
-- [ ] **A1-T8 — Plan contract.** `plan.md` schema: goal, findings, decisions, open questions, recommended tasks,
+  - *Reality:* the scan reads the names from `paths.ts` and the allowlist entries from those constants too, so the scan
+    file spells no literal and needs no entry of its own (an entry there could have shielded a stray one). A test
+    asserts both names still occur in the tree, so a renamed constant cannot make the scan vacuous.
+    Allowlist: 47 pairs over 25 files; both directions proven by hand (stray literal, stale entry).
+- [x] **A1-T14 — Unsandboxed run, by the user's word (D23).** When no sandbox can run, nothing starts until the user
+  says so for that job:
+  - `unsandboxed: "ask" | "never" | "allow"` in the config, default `ask`; `never` keeps today's fail-closed path;
+  - a **deterministic** risk score (0–100, band and one plain-language finding per rule) over the job's checks:
+    destructive, privilege, network-execute, keys/secrets, writes outside the project, git ref moves, obfuscation,
+    plain builds; a plan job scores higher because its checks come from an untrusted worktree;
+  - the question is a form the plugin hands the micromanager, answered **by the user** (the answer reaches the plugin
+    through `tool.execute.after`, never through the orchestrator's word): "Start without a sandbox" / "read-only" /
+    "Cancel", with the score, its findings and the check lines;
+  - the grant is stored per job in the control file and journaled with the score; a second start does not ask again;
+  - worker shells and checks then run unwrapped, and every gate result and stage says `unsandboxed (confirmed)`.
+  - *Reality:* the band follows the **worst rule**, not the arithmetic — a destructive or key-reading command reads
+    `high` even when its number is 56, because the number ranks and must not reassure. The rolling-job gate fires at
+    the first ungranted delegation, including a job that lost its sandbox after starting. `never` closes a stored
+    grant; `allow` stores one with `by: "config"`. Contract baselines and the runner's own gate read the same field.
+- [x] **A1-T8 — Plan contract.** `plan.md` schema: goal, findings, decisions, open questions, recommended tasks,
   artifacts, risks, plus `mode: reader-only` when T7 applied. Build mode reads it and starts at `execute` or re-plans.
-- [ ] **A1-T9 — Tests.**
+  - *Reality:* the plugin always writes a `plan.md` from the job (no `plan.md` can be missing), so a reader-only start
+    carries its mode line; a richer document the plan agent wrote itself is kept at later rewrites. `job_status` names
+    the file. Build mode reads it with its ordinary read tool (the T4 rule), no new tool.
+- [x] **A1-T9 — Tests.**
   - host refuses project edits by the plan agent; subagent allowlist refuses `coder`;
   - **Build-mode agent can read `plan.md`** (T4's read allow);
   - **symlinked (including nested) artifact rejected**; `..` rejected; absolute path rejected;
@@ -380,16 +442,26 @@ wrote** — including task checks. If the sandbox is unavailable, plan jobs run 
   - shell cannot write outside the plan worktree, including `node -e` / `sed -i` with the sandbox on;
   - investigator's own commands cause **no** per-command asks (T10);
   - **a hostile `Checks:` line cannot write the project at gate time** (T12);
-  - artifacts promoted, worktree discarded; `merge_job` absent; no-git copy excludes secrets; scan test (T13).
+  - artifacts promoted, worktree discarded; `merge_job` absent; no-git copy excludes secrets; scan test (T13);
+  - **without a recorded confirmation, no check runs unsandboxed**; with one, it runs, is marked `unsandboxed`, and
+    the score and the grant are journaled (T14).
+  - *Reality:* three cases were added where the task-by-task work left a gap: a real-bubblewrap test that a plan worktree
+    cannot write the project through `node -e`/`sed -i`; `discard_job` removing a **live** plan worktree (lost when T3b
+    began discarding at finish); and the end-to-end acceptance test (plan.md + artifacts + byte-identical project + no
+    merge path + worktree gone). Two bullets rest on a pair of tests because their hook bodies are inline in
+    `plugin.ts`: the plan agent's edit refusal (`PLAN_AGENT.rules` + `writeGuard`) and `merge_job` absence (tool-id
+    denies + `mergeJobInto`). The T14 addition is covered by `sandboxgate.test.ts` (decision, form, and the grant
+    written to the control file and the journal).
 
-**Files:** `packages/micromanager/src/{agents,tools,plugin,native,decide}.ts`, `worktree/git.ts`,
+**Files:** `packages/micromanager/src/{agents,tools,plugin,native,decide,forms,config,riskscore}.ts`, `worktree/git.ts`,
 `packages/sandbox/src/sandbox.ts`, `packages/state/src/roles.ts`, `test/{native,integration,plan,permissions}.test.ts`.
 
 **Checks:** `npm run typecheck`, `npm test`, `npm run test:all`; integration test on a temp git repo; one test with the
 sandbox forced off; one with a hostile check line.
 
 **Acceptance:** a plan job produces `plan.md` + artifacts, touches no project file, has no merge path, runs no check
-outside the sandbox, and is explicitly reader-only when the sandbox is unavailable.
+outside the sandbox **unless the user confirmed it for that job (D23, recorded with its risk score)**, and is
+explicitly reader-only when the sandbox is unavailable and no confirmation was given.
 
 **Risks:** shell writes bypass path parsing — the sandbox is the barrier. Gate checks and the host runner are the two
 places where the harness itself executes worker text; both are owned (T12, B1-T5).
@@ -953,7 +1025,7 @@ Any place where the harness runs text a worker wrote is a boundary:
 | Path | Rule | Task |
 |---|---|---|
 | Worker shell | sandbox, fail-closed | A1-T7 |
-| Task checks / gate | sandboxed per worktree, or skipped | A1-T12 |
+| Task checks / gate | sandboxed per worktree; skipped, or — D23 — unsandboxed after the user's recorded confirmation | A1-T12, A1-T14 |
 | Adapter render | allowlisted executable, argv only, `cleanEnv` | B1-T5 |
 | Merge | backup, policy, user-answered asks, hook-aware | A3 |
 | Daemon | socket auth, path validation | B6-T6 |
@@ -1033,6 +1105,7 @@ Any place where the harness runs text a worker wrote is a boundary:
 |---|---|
 | Plan mode bypass via shell or interpreter | Sandbox is the barrier; **fail closed**; interpreter tests |
 | **Harness executes worker text outside the sandbox** | A1-T12 (checks), B1-T5 (host runner), B6-T6 (daemon) |
+| **An unsandboxed run is approved without the user seeing the risk** | D23/A1-T14: the score, its findings and the check lines are in the form; the grant is per job, journaled, and only the user's answer opens it |
 | Plan worktree paths not recognised by `decide.ts` | A1-T10; test that inside-tree commands do not ask |
 | Symlinked (incl. nested) artifact escapes | `lstat` + `realpath` + `..` rejection + secret scan |
 | Cloud decider leaks | Two modes; redaction inside the client; preview enforced; refused when unredactable |

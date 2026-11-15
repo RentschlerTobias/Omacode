@@ -15,6 +15,7 @@ import {
 } from "./catalog.ts"
 import { n7Questions, n7State, triage, type N7Context, type Verdict } from "./followups.ts"
 import { checkGuards, flagsWithoutUser, gateAnswer, gateQuestion, injected, injectionScore, type Unchecked } from "./gate.ts"
+import { gateFor, unsandboxedNote, type Gate, type GateDeps } from "./gatebox.ts"
 import { brief, fixPrompt, handoffText, lastAssistantText, parseReport, refused, skillLine, taskAcceptance, usage } from "./brief.ts"
 import {
   changedFiles, commitTask, exec as defaultExec, fastForward, frozenCheck, hashFiles, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, revertFiles,
@@ -30,7 +31,7 @@ import {
   standardsPrompt, synthesisPrompt, TEST_FILE, type Review, type ReviewAxis,
 } from "./pipelines.ts"
 import {
-  addDelegated, addDiscovered, applyPlan, applyReplan, applySplits, MAX_SPLIT_LEVEL, parsePlan, PLAN_FORMAT, replanFormat, splitFormat, waves,
+  addDelegated, addDiscovered, applyPlan, applyReplan, applySplits, MAX_SPLIT_LEVEL, parsePlan, PLAN_FORMAT, planModeRoles, replanFormat, splitFormat, waves,
   type Delegation, type Parsed, type Plan, type PlannedTask,
 } from "./plan.ts"
 import { classifyQuestions, classifyState, combine, narrowing, profileText, type Profile, type Skill } from "./profile.ts"
@@ -86,6 +87,8 @@ export interface RunnerDeps {
   readonly taskEnded?: (job: Job, task: Task) => void // a task of a rolling job merged, escalated or waits for the user
   readonly waiting?: (sessionID: string) => boolean // a permission request of the session is paused for an answer (src/ask.ts)
   readonly checkTimeoutMs?: number // how long one check may run (default 300 s); the job may override it
+  // The sandbox a check runs in (src/gatebox.ts, A1-T12). Without it the checks run unwrapped, as they did before.
+  readonly gate?: GateDeps
 }
 
 // Thrown out of a session turn when the user stopped the job; run() pauses the job, and the next run resumes it.
@@ -141,6 +144,15 @@ export class Runner {
   // How long one of this job's checks may run: the job's own setting where it has one, else the config's, else 300 s.
   #checkTimeout(job: Job | undefined): number {
     return checkTimeoutOf(job, this.#d.checkTimeoutMs)
+  }
+
+  // The sandbox a check runs in (src/gatebox.ts, A1-T12): its own task's worktree, the job's grants, and its role
+  // where a task is known (this runner predates plan jobs).
+  #gate(job: Job, task: Task | undefined, worktree: string, dir: string): Promise<Gate | undefined> {
+    const deps = this.#d.gate
+    return deps
+      ? gateFor(deps, { project: this.#d.project, jobId: job.id, plan: job.isolation === "plan", writer: true, role: task?.role || "code", worktree, dir })
+      : Promise.resolve(undefined)
   }
 
   // A model's family as the registry knows it ("qwen" for qwen3.8-flash and qwen3.8-u alike), so "another family"
@@ -715,7 +727,7 @@ export class Runner {
     let step = await rebaseTask(w, job.integrationBranch!, this.#exec)
     if (step.ok && step.moved) {
       const checks = [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-      const failed = (await runGate(w.worktree, checks, this.#exec, this.#checkTimeout(job), this.#dir(job, task))).filter((r) => !r.passed)
+      const failed = (await runGate(w.worktree, checks, this.#exec, this.#checkTimeout(job), this.#dir(job, task), {}, await this.#gate(job, task, w.worktree, this.#dir(job, task)))).filter((r) => !r.passed)
       if (failed.length) step = { ok: false, conflict: `checks fail on top of the newer commits (in ${this.#dir(job, task)}): ${failed.map((f) => f.command).join(", ")}` }
     }
     if (step.ok) step = await fastForward(job.integrationWorktree!, w.branch, this.#exec)
@@ -1082,11 +1094,11 @@ export class Runner {
         return undefined
       }
       moveTask(task, "gating")
-      const results = [...(await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir, { cancelled: () => Boolean(this.#d.cancelled?.()) })), ...(await frozenCheck(worktree, frozen, this.#exec))]
+      const results = [...(await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir, { cancelled: () => Boolean(this.#d.cancelled?.()) }, await this.#gate(job, task, worktree, dir))), ...(await frozenCheck(worktree, frozen, this.#exec))]
       const failed = results.filter((r) => !r.passed)
       const changed = await changedFiles(worktree, this.#exec, task.worktreeRel ?? job.integrationRel ?? "")
       const outside = task.files.length ? changed.filter((f) => !task.files.includes(f) && !frozen.has(f)) : changed
-      stage(task, "gate", failed.length ? "fail" : "pass", results.length ? results.map((r) => `${r.command}: exit ${r.code}`).join("; ") : "no checks defined")
+      stage(task, "gate", failed.length ? "fail" : "pass", `${results.length ? results.map((r) => `${r.command}: exit ${r.code}`).join("; ") : "no checks defined"}${unsandboxedNote(results)}`)
       saveNote(this.#d.project, job.id, task.id, noteText(task, report.text, results, outside))
       if (failed.length === 0) {
         // A gate that only reads exits 0 on an untouched tree, so passing it proves nothing: a worker that wrote
@@ -1185,7 +1197,7 @@ export class Runner {
       this.#say(`${task.id}: no red stage (${tests.length === 0 ? "no tests written" : "no checks"}), going on as P2`)
       return new Map()
     }
-    const results = await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir)
+    const results = await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir, {}, await this.#gate(job, task, worktree, dir))
     if (results.every((r) => r.passed)) {
       stage(task, "red", "skip", "the new tests pass before the change, so they do not show the missing behaviour")
       this.#say(`${task.id}: the tests pass before the change; not frozen, going on as P2`)
@@ -1288,7 +1300,7 @@ export class Runner {
     }
     moveTask(task, "gating")
     const checks = [...new Set(taskAcceptance(job, task).map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-    const failed = (await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir)).filter((r) => !r.passed)
+    const failed = (await runGate(worktree, checks, this.#exec, this.#checkTimeout(job), dir, {}, await this.#gate(job, task, worktree, dir))).filter((r) => !r.passed)
     if (failed.length) return await this.#escalate(job, task, `checks fail after the research (in ${dir}): ${failed.map((f) => f.command).join(", ")}`)
     moveTask(task, "passed")
     task.summary = `research written to ${path}`
@@ -1390,7 +1402,7 @@ export class Runner {
   async #verify(job: Job): Promise<void> {
     moveJob(job, "verify")
     const checks = [...new Set(job.acceptance.map((a) => a.verify).filter((v): v is string => Boolean(v)))]
-    const results = await runGate(job.integrationWorktree!, checks, this.#exec, this.#checkTimeout(job), taskDir(job.integrationWorktree!, job.integrationRel ?? ""))
+    const results = await runGate(job.integrationWorktree!, checks, this.#exec, this.#checkTimeout(job), taskDir(job.integrationWorktree!, job.integrationRel ?? ""), {}, await this.#gate(job, undefined, job.integrationWorktree!, taskDir(job.integrationWorktree!, job.integrationRel ?? "")))
     const failed = results.filter((r) => !r.passed)
     if (failed.length > 0) {
       moveJob(job, "execute")
@@ -1417,7 +1429,7 @@ Read as much of the project as you need (read, glob, grep); change nothing.
 Verify commands run from the project root in a fresh checkout of the current commit; use only commands that
 work there, such as the project's own test script.
 
-${PLAN_FORMAT}`
+${PLAN_FORMAT}${planModeRoles(job)}`
 }
 
 // Back to running from wherever a task's last stage left it, for a fresh session (N9 rung 2).

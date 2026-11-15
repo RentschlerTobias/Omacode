@@ -8,6 +8,7 @@
 // (when to use it, what it refuses, what it leaves behind) in the line the model always sees.
 
 import type { Job } from "./state.ts"
+import { readerOnlyNote } from "./plan.ts"
 import type { ToolContext, ToolDraft } from "@omacode/core/tools"
 export type { ToolContext, ToolDraft }
 
@@ -476,5 +477,5 @@ export function planText(job: Job): string {
     `- ${t.id} [${t.role}] ${t.title}${t.dependsOn.length ? ` (after ${t.dependsOn.join(", ")})` : ""}` +
     `${t.files.length ? `\n  files: ${t.files.join(", ")}` : ""}\n  covers: ${t.acceptance.join(", ")}${t.description ? `\n  ${t.description}` : ""}`,
   )
-  return [`job ${job.id} (${job.phase})`, `goal: ${job.goal}`, "", "acceptance:", ...acceptance, "", "tasks:", ...tasks].join("\n")
+  return [`job ${job.id} (${job.phase})`, `goal: ${job.goal}`, "", "acceptance:", ...acceptance, "", "tasks:", ...tasks].join("\n") + readerOnlyNote(job)
 }

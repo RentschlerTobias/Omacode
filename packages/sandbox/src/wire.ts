@@ -10,7 +10,7 @@
 // The decision lives in decide.ts, so it can be tested without a host: a delegated child (a session with a parent)
 // is wrapped, a root session (the user's own) never is.
 
-import { cleanEnv, rulesFor, withTemp, type Rules, type Wrapper } from "./sandbox.ts"
+import { cleanEnv, planRules, rulesFor, withTemp, type Rules, type Wrapper } from "./sandbox.ts"
 import { isChildShell, type SessionFacts, type ShellCall } from "./decide.ts"
 
 /** What the shell hook gets (opencode 2.0.18: "create.before" gets the shell to start). */
@@ -58,6 +58,10 @@ export interface SessionExtra {
   readonly temp?: string
   /** The project the session works in, when the plugin knows one. */
   readonly project?: string
+  /** The session works for a plan job: it writes in the plan area only, never in the project (A1-T7). */
+  readonly plan?: boolean
+  /** The plan root of that job, the one place a plan writer may write. */
+  readonly planRoot?: string
   /** The job the session works for, when the plugin knows one. */
   readonly jobId?: string
 }
@@ -102,9 +106,23 @@ export interface ShellDeps {
 /**
  * The rules of a command, when the plugin knows nothing more about the session: a writer writes its own
  * directory, a reader nowhere, and the network reaches the registries and whatever was granted.
+ *
+ * A plan job's worker is the exception: it writes in the plan area and its own temp directory only, so the project
+ * stays read-only (A1-T7).
  */
 export function defaultRules(facts: SessionFacts & SessionExtra, input: ShellInput): Rules {
   const dir = facts.dir ?? input.cwd ?? process.cwd()
+  if (facts.plan && facts.planRoot) {
+    return planRules({
+      role: facts.role ?? "investigator",
+      writer: true,
+      dir,
+      worktree: facts.planRoot,
+      domains: facts.domains ?? [],
+      frozen: [],
+      temp: facts.temp,
+    })
+  }
   return rulesFor({
     role: facts.role ?? "code",
     writer: facts.writer ?? true,

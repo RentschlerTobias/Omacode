@@ -7,7 +7,11 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join } from "node:path"
 
+import { LEGACY_PROJECT_STATE as LEGACY_DIR, PROJECT_STATE as DIR, stateDir } from "@omacode/core/paths"
+
 import type { Job } from "./state.ts"
+
+export { DIR, LEGACY_DIR, stateDir }
 
 export {
   reconcileJob,
@@ -17,16 +21,6 @@ export {
   type ReconcileOptions,
   type ReconcileResult,
 } from "./state.ts"
-
-export const DIR = ".micromanager"
-// The directory's name before 2026-10-19. A project that has it keeps using it: its jobs, notes and git worktrees live
-// there, and moving a worktree under a running worker would pull the directory out from under it.
-export const LEGACY_DIR = ".jev-micromanager"
-
-// The project's state directory: the old one while the project has it and not the new one.
-export function stateDir(project: string): string {
-  return existsSync(join(project, LEGACY_DIR)) && !existsSync(join(project, DIR)) ? LEGACY_DIR : DIR
-}
 
 export function jobsDir(project: string): string {
   return join(project, stateDir(project), "jobs")

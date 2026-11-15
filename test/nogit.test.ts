@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
+import { stateDir, statePath } from "../packages/core/src/paths.ts"
 import { gitForm, readForm } from "../packages/micromanager/src/forms.ts"
-import { gitState, initRepo, MAX_FILE_BYTES, surveyFolder } from "../packages/micromanager/src/nogit.ts"
+import { copyForPlan, gitState, initRepo, MAX_FILE_BYTES, surveyFolder } from "../packages/micromanager/src/nogit.ts"
 import { tempDir } from "./harness.ts"
 
 const folder = () => tempDir("mm-nogit-")
@@ -74,4 +75,53 @@ test("the no-git form puts the recommended way first and reads the answer", () =
   assert.match(form[0]!.options[1]!.description, /left out: \.env/)
   assert.deepEqual(readForm(form, [["Without isolation (Recommended)"]]), { kind: "git", decision: "none" })
   assert.deepEqual(readForm(form, [["Create a git repository"]]), { kind: "git", decision: "init" })
+})
+
+// Every entry, not just the top level: a link deep in the copy would be followed by whatever reads the plan later.
+function linksIn(dir: string, out: string[] = []): string[] {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    const st = lstatSync(path)
+    if (st.isSymbolicLink()) out.push(path)
+    else if (st.isDirectory()) linksIn(path, out)
+  }
+  return out
+}
+
+test("a plan copy leaves secrets, generated folders and huge files out (as .env.example too: SECRET matches it), never follows a symlink, and does not copy the state directory it writes into", () => {
+  const project = tempDir("mm-plan-copy-")
+  const outside = tempDir("mm-plan-outside-")
+  try {
+    writeFileSync(join(project, "normal.txt"), "hello\n")
+    writeFileSync(join(project, ".env"), "TOKEN=x\n")
+    writeFileSync(join(project, ".env.example"), "TOKEN=\n")
+    mkdirSync(join(project, "node_modules"))
+    writeFileSync(join(project, "node_modules", "x.js"), "x\n")
+    writeFileSync(join(project, "id_rsa"), "k\n")
+    writeFileSync(join(project, "big.bin"), Buffer.alloc(MAX_FILE_BYTES + 1))
+    writeFileSync(join(outside, "leak.txt"), "outside\n")
+    symlinkSync(outside, join(project, "outside-link"))
+    symlinkSync(".", join(project, "loop")) // a link to the project itself, which a following copy would chase forever
+
+    const dest = statePath(project, "plan", "j", "worktrees", "t")
+    const copy = copyForPlan(project, dest) // returned: a followed "loop" would not have
+
+    assert.equal(readFileSync(join(dest, "normal.txt"), "utf8"), "hello\n")
+    for (const name of [".env", ".env.example", "id_rsa", "big.bin", "outside-link", "loop", "node_modules"]) {
+      assert.equal(existsSync(join(dest, name)), false, `${name} is not copied`)
+    }
+    assert.equal(existsSync(join(dest, "leak.txt")), false, "a symlink out of the project carries nothing in")
+    assert.deepEqual(linksIn(dest), [], "the copy holds no symlink")
+    assert.equal(existsSync(join(dest, "plan")), false, "the state directory is not copied into itself")
+    assert.deepEqual(readdirSync(dest), ["normal.txt"])
+    assert.equal(copy.files, 1)
+    assert.equal(copy.bytes, 6)
+    assert.deepEqual(
+      [...copy.excluded].sort(),
+      [".env", ".env.example", "big.bin", "id_rsa", "loop", "node_modules/", "outside-link", `${stateDir(project)}/`].sort(),
+    )
+  } finally {
+    rmSync(project, { recursive: true, force: true })
+    rmSync(outside, { recursive: true, force: true })
+  }
 })

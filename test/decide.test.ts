@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { decide, hardRule, judge, type PermissionRequest } from "../packages/micromanager/src/decide.ts"
+import { DEFAULT_FLOORS, decide, hardRule, judge, type PermissionRequest } from "../packages/micromanager/src/decide.ts"
 import { Jev, JevError, parseAnswers, redact, type Decision } from "../packages/micromanager/src/jev.ts"
 
 const req = (
@@ -619,4 +619,64 @@ test("a reader's command that changes something is refused with the reason, with
   // a read outside its root is still Jev's call, as before
   await decide(jev, req("shell", ["ls /home/u/other"], "explorer"), undefined, undefined, undefined, root)
   assert.equal(jev.calls.length, 1)
+})
+
+// Plan mode works in <project>/<stateDir>/plan/<job>/worktrees/<task> (worktree/git.ts planArea), a layout the path
+// rules did not know: every investigator command fell through to Jev and, with no decider, to the user.
+const PLAN = "/p/.micromanager/plan"
+const PLAN_WT = `${PLAN}/job-1/worktrees/T1`
+
+test("a plan worktree is told from the plan's artifacts and from a sibling of its directory", async () => {
+  const { taskWorktree } = await import("../packages/micromanager/src/decide.ts")
+  assert.equal(taskWorktree(`${PLAN_WT}/src`), PLAN_WT, "a directory inside the plan worktree")
+  assert.equal(taskWorktree(PLAN_WT), PLAN_WT, "the plan worktree root itself")
+  assert.equal(taskWorktree(`${PLAN_WT}/src/main.ts`), PLAN_WT, "a file inside it is inside it")
+  assert.equal(taskWorktree(`${PLAN}/job-1/worktrees/T1.2`), `${PLAN}/job-1/worktrees/T1.2`, "a dotted task id")
+  const legacy = "/p/.jev-micromanager/plan/job-2/worktrees/investigate-a"
+  assert.equal(taskWorktree(`${legacy}/docs/notes.md`), legacy, "the old state directory name, and a task id that is not T<n>")
+  // the build-task form is unchanged
+  assert.equal(taskWorktree(WT), WT)
+  assert.equal(taskWorktree("/p/.micromanager/worktrees/job-1--T3"), "/p/.micromanager/worktrees/job-1--T3")
+  assert.equal(taskWorktree("/p"), undefined, "a plain project directory")
+  assert.equal(taskWorktree("/p/.micromanager/plan/job-1/worktrees-other/T1"), undefined, "a sibling that merely starts the same")
+})
+
+test("a plan's drafts are the job's own area, next to its worktrees", async () => {
+  const { inJobArea } = await import("../packages/micromanager/src/decide.ts")
+  assert.equal(inJobArea("/p", `${PLAN}/job-1/artifacts/T1/notes.md`), true)
+  assert.equal(inJobArea("/p", PLAN_WT), true)
+  assert.equal(inJobArea("/p", "/p/.micromanager/worktrees/job-1--T3"), true, "the task worktree form is unchanged")
+  assert.equal(inJobArea("/p", "/p"), false, "the project itself")
+  assert.equal(inJobArea("/p", "/p/.micromanager/jobs/x.json"), false)
+})
+
+test("an investigator's commands inside its plan worktree need no per-command ask", async () => {
+  const plan = (action: string, resources: string[], agent = "investigator"): PermissionRequest => ({
+    sessionID: "ses_1",
+    agent,
+    action,
+    resources,
+    directory: PLAN_WT,
+    task: "Investigate why the cache never hits.",
+  })
+  // No decider at all: were the fast path to miss, the only possible answer is the user.
+  const fast = (request: PermissionRequest, sandboxed = true) =>
+    decide(undefined, request, DEFAULT_FLOORS, () => [], undefined, PLAN_WT, [], sandboxed)
+  for (const commands of [["npm test", "touch out.txt"], ["cd sub && npm test"], ["sed -i s/a/b/ src/main.ts"]]) {
+    const out = await fast(plan("shell", [...commands]))
+    assert.equal(out.verdict, "allow", commands.join(" | "))
+    assert.match(out.reason, /task's own worktree/)
+  }
+  // Without the sandbox there is no fast path: the program is unchecked, so the answer cannot be that allow.
+  const bare = await fast(plan("shell", ["npm test"]), false)
+  assert.equal(bare.verdict, "user")
+  assert.doesNotMatch(bare.reason, /task's own worktree/)
+  // Leaving the tree is not inside it, however the command is spelled.
+  const escapes = await fast(plan("shell", ["cp out.txt ../../../../src/main.ts"]))
+  assert.equal(escapes.verdict, "user")
+  assert.doesNotMatch(escapes.reason, /task's own worktree/)
+  // A reader is not a writer: the plan worktree is no licence for it to change anything.
+  const reader = await fast(plan("shell", ["npm test"], "explorer"))
+  assert.equal(reader.verdict, "deny")
+  assert.doesNotMatch(reader.reason, /task's own worktree/)
 })

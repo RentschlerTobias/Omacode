@@ -1,14 +1,18 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
+import { stateDir, statePath } from "../packages/core/src/paths.ts"
 import { segments } from "../packages/micromanager/src/decide.ts"
 import { exec as realExec } from "../packages/micromanager/src/integration.ts"
 import { CHILD_PREFIX, DelegationError, Native, NoGitError, namedFiles, parseDelegation, parseTodo, replaceIds, similarity } from "../packages/micromanager/src/native.ts"
 import { nextStep, settled } from "../packages/micromanager/src/continuation.ts"
 import { outcomeOf } from "../packages/micromanager/src/outcomes.ts"
+import { planDocPath, readPlanDoc, writePlanDoc, type PlanDoc } from "../packages/micromanager/src/plandoc.ts"
+import { WRITERS } from "../packages/micromanager/src/profile.ts"
 import { roleByAgent } from "../packages/micromanager/src/roles.ts"
 import { moveJob, newJob, type Task } from "../packages/micromanager/src/state.ts"
 import { loadJob, saveJob } from "../packages/micromanager/src/store.ts"
@@ -123,6 +127,400 @@ test("run_job runs a planned job on native workers: its tasks start by their Tas
   assert.ok(again.task.stages.some((s) => s.stage === "restart"))
   assert.equal(loadJob(project, job.id)?.tasks[2]!.status, "running", "saved")
 })
+
+test("a plan job works only in its own plan worktree: never committed, merged or branched", async () => {
+  const project = repo()
+  const native = new Native()
+  const job = newJob("job-20261115-090000-ab12", "find out how add.js is built")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.isolation = "plan"
+  job.acceptance = [{ id: "A1", text: "the note is written", verify: "test -f note.md" }]
+  job.tasks = [{
+    id: "T1", title: "work out how add.js is built", description: "read the code, then write note.md",
+    role: "code", acceptance: ["A1"], dependsOn: [], files: ["note.md"], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [],
+  }]
+  saveJob(project, job)
+  const before = git(project, "rev-parse", "HEAD")
+
+  const run = native.runPlanned(project, job.id, "ses_mm")
+  assert.equal(run.job?.phase, "execute")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  const plan = statePath(project, "plan", job.id, "worktrees", "T1")
+  assert.equal(claimed.dir, plan, "the writer works in the plan area, not in a task worktree")
+  assert.equal(d.task.worktree, plan)
+  assert.equal(d.task.branch, `plan/${job.id}/T1`, "a plan worktree is its own throwaway branch")
+
+  writeFileSync(join(claimed.dir, "note.md"), "add.js adds two numbers.\n")
+  const done = await native.finish("ses_w1", "wrote the note")
+  assert.match(done.text, /nothing is committed or merged/)
+  const owned = native.jobOf("ses_w1")!.job
+  assert.equal(owned.tasks[0]!.status, "passed", "a plan task passes; it is never merged")
+  assert.equal(owned.integrationBranch, undefined, "a plan job has no integration branch")
+  assert.equal(owned.integrationWorktree, undefined, "a plan job has no integration worktree")
+  assert.equal(git(project, "branch", "--list", `micromanager/${job.id}`), "", "no job branch was made")
+  assert.equal(existsSync(plan), false, "the record is durable, so the plan worktree goes with the finish")
+  assert.equal(git(project, "worktree", "list").includes(plan), false, "and git no longer knows it")
+
+  const { mergeJobInto, discardJob } = await import("../packages/micromanager/src/plugin.ts")
+  const merged = await mergeJobInto(project, owned, "merge it")
+  assert.equal(merged.wrote, false)
+  assert.match(merged.text, /plan job/)
+  assert.equal(git(project, "rev-parse", "HEAD"), before, "the checkout did not move")
+
+  // Nothing is left of the plan but its record, so discard has no worktree or branch to remove.
+  const discarded = await discardJob(project, owned, "discard it")
+  assert.match(discarded.text, /no worktree and no branch left/)
+  assert.equal(git(project, "branch", "--list", `plan/${job.id}/T1`), "", "its plan branch is gone")
+})
+
+// A plan worktree the user discards while its task is still running: the finish path drops it once, and the user's
+// discard has to drop a live one too (the case A1-T3b's discard-at-finish could have hidden).
+test("discard_job removes a live plan worktree and its throwaway branch", async () => {
+  const project = repo()
+  const { native, job } = await planJob(project, "job-20261115-100030-ab12")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  const plan = statePath(project, "plan", job.id, "worktrees", "T1")
+  assert.equal(claimed.dir, plan, "the writer works in the plan worktree")
+  assert.equal(existsSync(plan), true, "the plan worktree exists while the task runs")
+  assert.match(git(project, "branch", "--list", `plan/${job.id}/T1`), new RegExp(`plan/${job.id}/T1`), "its throwaway branch exists")
+  writeFileSync(join(plan, "draft.md"), "unfinished work\n")
+
+  const live = native.jobOf("ses_w1")!.job
+  assert.equal(live.tasks[0]!.status, "running", "the task is not finished")
+  const { discardJob } = await import("../packages/micromanager/src/plugin.ts")
+  const out = await discardJob(project, live, "discard it")
+  assert.match(out.text, /Deleted:/)
+  assert.equal(existsSync(plan), false, "the live plan worktree is gone")
+  assert.equal(git(project, "branch", "--list", `plan/${job.id}/T1`), "", "the throwaway branch is gone with it")
+  assert.equal(git(project, "worktree", "list").includes(plan), false, "and git no longer names it")
+  assert.equal(readFileSync(join(project, "README.md"), "utf8"), "demo\n", "the checkout is untouched")
+})
+
+test("without a sandbox a plan job runs reader-only: its writer does not start, its reader does", async () => {
+  const project = repo()
+  const job = newJob("job-20261115-093000-ab12", "find out how add.js is built")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.isolation = "plan"
+  job.acceptance = [{ id: "A1", text: "it is written down", verify: "test -f draft.md" }]
+  job.tasks = [
+    { id: "T1", title: "draft it", description: "read the code, then write draft.md", role: "investigator", acceptance: ["A1"], dependsOn: [], files: ["draft.md"], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [] },
+    { id: "T2", title: "look around", description: "read the code", role: "explore", acceptance: ["A1"], dependsOn: [], files: [], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [] },
+  ]
+  saveJob(project, job)
+
+  // No sandbox, no plan writer: the job says why, and a reader is delegated as usual.
+  const off = new Native({ sandboxAvailable: () => false, sandboxReason: () => "no bubblewrap here" })
+  assert.equal(off.runPlanned(project, job.id, "ses_mm").job?.phase, "execute")
+  await assert.rejects(
+    off.delegate(project, "ses_mm", { agent: "investigator", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL),
+    /Not started: plan job job-20261115-093000-ab12 runs reader-only because there is no sandbox on this machine \(no bubblewrap here\)/,
+  )
+  assert.equal(loadJob(project, job.id)?.planReaderOnly, "no sandbox on this machine", "the saved job carries the reason")
+  assert.equal(existsSync(statePath(project, "plan", job.id, "worktrees", "T1")), false, "no plan worktree was made for a writer that did not start")
+  const read = await off.delegate(project, "ses_mm", { agent: "explorer", description: "T2", prompt: `Task: T2 · ${job.id}` }, MODEL)
+  assert.equal(read.task.status, "running", "a reader still investigates")
+
+  // With a sandbox the investigator starts, in its plan worktree.
+  const on = new Native({ sandboxAvailable: () => true })
+  const started = await on.delegate(project, "ses_mm", { agent: "investigator", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  assert.equal(started.task.status, "running")
+  assert.equal(started.task.worktree, statePath(project, "plan", job.id, "worktrees", "T1"))
+})
+
+test("a plan writer starts without a sandbox once the job's control file grants it, and not before", async () => {
+  const project = repo()
+  const startedJob = (id: string) => {
+    const job = newJob(id, "find out how add.js is built")
+    for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+    job.isolation = "plan"
+    job.acceptance = [{ id: "A1", text: "it is written down", verify: "test -f draft.md" }]
+    job.tasks = [
+      { id: "T1", title: "draft it", description: "read the code, then write draft.md", role: "investigator", acceptance: ["A1"], dependsOn: [], files: ["draft.md"], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [] },
+    ]
+    saveJob(project, job)
+    return job
+  }
+  const denied = startedJob("job-20261115-093100-ab12")
+  const granted = startedJob("job-20261115-093101-ab12")
+  const noBox = { sandboxAvailable: () => false, sandboxReason: () => "no bubblewrap here" }
+
+  // No grant: A1's fail-closed rule, unchanged.
+  const off = new Native(noBox)
+  off.runPlanned(project, denied.id, "ses_mm")
+  await assert.rejects(
+    off.delegate(project, "ses_mm", { agent: "investigator", description: "T1", prompt: `Task: T1 · ${denied.id}` }, MODEL),
+    /reader-only/,
+  )
+
+  // D23: the user's word for this job, as its control file keeps it. The writer starts, in its plan worktree.
+  const on = new Native({ ...noBox, unsandboxedAllowed: (p, id) => p === project && id === granted.id })
+  const r = on.runPlanned(project, granted.id, "ses_mm")
+  assert.equal(r.warning, undefined, "a granted job is not reader-only")
+  assert.equal(r.job?.planReaderOnly, undefined)
+  const started = await on.delegate(project, "ses_mm", { agent: "investigator", description: "T1", prompt: `Task: T1 · ${granted.id}` }, MODEL)
+  assert.equal(started.task.status, "running")
+  assert.equal(started.task.worktree, statePath(project, "plan", granted.id, "worktrees", "T1"))
+})
+
+// A started plan job with one task, saved and run: the scaffolding the artifact tests below share.
+async function planJob(project: string, id: string, file = "note.md"): Promise<{ native: Native; job: ReturnType<typeof newJob> }> {
+  const native = new Native()
+  const job = newJob(id, "write down how it works")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.isolation = "plan"
+  job.acceptance = [{ id: "A1", text: `${file} is there`, verify: `test -f ${file}` }]
+  job.tasks = [{
+    id: "T1", title: "work it out", description: `read the code, then write ${file}`,
+    role: "code", acceptance: ["A1"], dependsOn: [], files: [file], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [],
+  }]
+  saveJob(project, job)
+  assert.equal(native.runPlanned(project, job.id, "ses_mm").job?.phase, "execute")
+  return { native, job }
+}
+
+test("a plan worker's Artifacts: line is promoted under the plan area, and the task passes", async () => {
+  const project = repo()
+  const { native, job } = await planJob(project, "job-20261115-100000-ab12")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "note.md"), "add.js adds two numbers.\n")
+  const done = await native.finish("ses_w1", "wrote the note\nArtifacts: `note.md`")
+  assert.match(done.text, /nothing is committed or merged/)
+  assert.match(done.text, /1 artifact file\(s\) promoted/)
+  const dest = statePath(project, "plan", job.id, "artifacts", "T1", "note.md")
+  assert.equal(readFileSync(dest, "utf8"), "add.js adds two numbers.\n", "the artifact lands under the plan area")
+  assert.equal(native.jobOf("ses_w1")!.job.tasks[0]!.status, "passed")
+})
+
+test("a finished plan task leaves a patch that applies at its base, its findings, and a manifest", async () => {
+  const project = repo()
+  const { native, job } = await planJob(project, "job-20261115-100003-ab12", "notes.md")
+  const before = git(project, "rev-parse", "HEAD")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "notes.md"), "add.js adds two numbers.\n")
+  const report = "wrote the note\n\nFindings: add.js has one line and adds two numbers.\nArtifacts: notes.md"
+  const done = await native.finish("ses_w1", report)
+  assert.match(done.text, /nothing is committed or merged/)
+  assert.match(done.text, /The record is under/)
+
+  const area = statePath(project, "plan", job.id)
+  const manifestPath = join(area, "artifacts", "T1", "manifest.json")
+  assert.ok(existsSync(manifestPath), "the manifest is under the task's artifacts")
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    artifacts: { path: string; bytes: number; sha256: string }[]
+    git: { base: string; head: string } | null
+    patch: string | null
+    findings: string
+  }
+  const promoted = join(area, "artifacts", "T1", "notes.md")
+  assert.equal(manifest.artifacts[0]!.path, "notes.md")
+  assert.equal(manifest.artifacts[0]!.sha256, createHash("sha256").update(readFileSync(promoted)).digest("hex"), "the manifest hashes the promoted file")
+  assert.equal(native.jobOf("ses_w1")!.job.tasks[0]!.promoted?.[0]!.sha256, manifest.artifacts[0]!.sha256, "and the task keeps it too")
+
+  // The patch is the worktree's own diff, and it applies in a fresh checkout of the base commit it names.
+  const patchPath = join(area, "patches", "T1.patch")
+  const patch = readFileSync(patchPath, "utf8")
+  assert.match(patch, /^\+add\.js adds two numbers\.$/m, "the added line is in the patch")
+  assert.ok(manifest.git, "a git plan records its base and head")
+  assert.equal(manifest.git!.base, before, "the base is the commit the plan worktree branched from")
+  assert.notEqual(manifest.git!.head, before, "and the work was committed on the throwaway branch")
+  const base = manifest.git!.base
+  const fresh = join(tempDir("mm-plan-apply-"), "checkout")
+  try {
+    git(project, "worktree", "add", "-q", fresh, base)
+    execFileSync("git", ["-C", fresh, "apply", "--check", patchPath])
+    assert.equal(existsSync(join(fresh, "notes.md")), false, "it applies because the base does not have the note yet")
+  } finally {
+    try {
+      execFileSync("git", ["-C", project, "worktree", "remove", "--force", fresh])
+    } catch {}
+  }
+
+  assert.match(readFileSync(join(area, "findings", "T1.md"), "utf8"), /add\.js has one line and adds two numbers\./)
+
+  // The record is durable; the throwaway worktree it came from is gone.
+  const plan = statePath(project, "plan", job.id, "worktrees", "T1")
+  assert.equal(existsSync(plan), false, "the plan worktree is gone after finish")
+  assert.equal(git(project, "worktree", "list").includes(plan), false, "and git no longer names it")
+  assert.equal(native.jobOf("ses_w1")!.job.tasks[0]!.status, "passed")
+})
+
+test("an artifact path that leaves the worktree keeps the plan task open and names why", async () => {
+  const project = repo()
+  const { native, job } = await planJob(project, "job-20261115-100001-ab12")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "note.md"), "the note\n")
+  const refused = await native.finish("ses_w1", "wrote the note\nArtifacts: note.md, ../../etc/passwd")
+  assert.match(refused.text, /cannot be promoted/)
+  assert.match(refused.text, /\.\.\/\.\.\/etc\/passwd: escapes the worktree with `\.\.`/)
+  assert.notEqual(native.jobOf("ses_w1")!.job.tasks[0]!.status, "passed", "a refused path is not a passed task")
+  assert.equal(existsSync(statePath(project, "plan", job.id, "artifacts", "T1", "etc")), false, "nothing of it was copied")
+
+  // The worker fixes its report and finishes again: the same task passes, with the file it actually named.
+  const again = await native.finish("ses_w1", "wrote the note\nArtifacts: note.md")
+  assert.match(again.text, /1 artifact file\(s\) promoted/)
+  assert.equal(native.jobOf("ses_w1")!.job.tasks[0]!.status, "passed")
+})
+
+test("a plan job below the repository root works in the project directory inside its plan worktree", async () => {
+  const { project } = subRepo()
+  const { native, job } = await planJob(project, "job-20261115-100002-ab12", "references.bib")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  assert.equal(claimed.dir, join(statePath(project, "plan", job.id, "worktrees", "T1"), "DFG_SPP2335/2026/H"), "the offset travels to the plan worktree")
+  assert.ok(claimed.dir.endsWith("DFG_SPP2335/2026/H"), "the worker's directory ends with the project offset")
+  assert.equal(d.task.worktreeRel, "DFG_SPP2335/2026/H")
+  assert.ok(existsSync(join(claimed.dir, "references.bib")), "the project is there, not at the worktree root")
+
+  const done = await native.finish("ses_w1", "read it\nArtifacts: references.bib")
+  assert.match(done.text, /1 artifact file\(s\) promoted/)
+  assert.equal(readFileSync(statePath(project, "plan", job.id, "artifacts", "T1", "references.bib"), "utf8"), "@article{a,\n")
+})
+
+// --- The plan document Build mode reads (A1-T8) ----------------------------------------------------------------
+
+test("starting a plan job writes the plan document Build mode reads", async () => {
+  const project = repo()
+  const { job } = await planJob(project, "job-20261115-100020-ab12")
+  const read = readPlanDoc(project, job.id)
+  assert.deepEqual(read.errors, [])
+  assert.equal(read.path, planDocPath(project, job.id))
+  assert.equal(read.doc?.goal, job.goal, "the goal is the job's own")
+  assert.deepEqual(read.doc?.tasks.map((t) => [t.id, t.role, t.files]), [["T1", "code", ["note.md"]]])
+  assert.match(readFileSync(read.path, "utf8"), /^## Recommended tasks$/m)
+})
+
+test("a reader-only plan start says so in its plan.md, before any task runs", () => {
+  const project = repo()
+  const job = newJob("job-20261115-100021-ab12", "find out how add.js is built")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.isolation = "plan"
+  job.tasks = [{
+    id: "T1", title: "draft it", description: "read the code, then write draft.md", role: "investigator",
+    acceptance: [], dependsOn: [], files: ["draft.md"], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [],
+  }]
+  saveJob(project, job)
+  const off = new Native({ sandboxAvailable: () => false, sandboxReason: () => "no bubblewrap here" })
+  assert.match(off.runPlanned(project, job.id, "ses_mm", true).warning ?? "", /reader-only/)
+  const read = readPlanDoc(project, job.id)
+  assert.equal(read.doc?.readerOnly, "no sandbox on this machine")
+  assert.match(readFileSync(read.path, "utf8"), /^\*\*Mode:\*\* reader-only — no sandbox on this machine$/m)
+})
+
+test("a finished plan task updates plan.md's artifacts, and a plan agent's richer document is kept", async () => {
+  const project = repo()
+  const { native, job } = await planJob(project, "job-20261115-100022-ab12")
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  writeFileSync(join(claimed.dir, "note.md"), "the note\n")
+  await native.finish("ses_w1", "wrote the note\nArtifacts: note.md")
+  const read = readPlanDoc(project, job.id)
+  assert.deepEqual(read.doc?.artifacts.map((a) => `${a.task}:${a.path}`), ["T1:note.md"])
+  assert.match(readFileSync(read.path, "utf8"), /^- T1: note\.md \(9 B, sha256 [0-9a-f]{64}\)$/m)
+
+  // A plan agent that wrote its own, richer plan.md: the plugin keeps it rather than replacing it at a task's finish.
+  const { native: other, job: second } = await planJob(project, "job-20261115-100023-ab12")
+  const rich: PlanDoc = {
+    goal: "know how add.js is built",
+    findings: ["add.js adds two numbers"],
+    decisions: ["read the code first"],
+    openQuestions: ["which module owns the parser?"],
+    tasks: [],
+    artifacts: [],
+    risks: ["the parser is generated"],
+  }
+  writePlanDoc(project, second.id, rich)
+  const before = readFileSync(planDocPath(project, second.id), "utf8")
+  const w = await other.delegate(project, "ses_mm", { agent: "coder", description: "T1", prompt: `Task: T1 · ${second.id}` }, MODEL)
+  const where = other.claim("ses_w2", child(w.prompt))!
+  writeFileSync(join(where.dir, "note.md"), "the note\n")
+  await other.finish("ses_w2", "wrote the note\nArtifacts: note.md")
+  assert.equal(readFileSync(planDocPath(project, second.id), "utf8"), before, "the agent's own document wins")
+  assert.deepEqual(readPlanDoc(project, second.id).doc, rich)
+})
+
+// Every file a directory holds, by relative path, hashed: the acceptance test compares the project before and after a
+// plan job and can then say "not one byte moved". `.git` is the repository's own bookkeeping (a worktree add writes
+// there) and the state directory is where the job itself lives and writes its record, so neither is a project file.
+function snapshot(dir: string, skip: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  const walk = (at: string, rel: string) => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      if (!rel && skip.includes(entry.name)) continue
+      const path = join(at, entry.name)
+      const key = rel ? `${rel}/${entry.name}` : entry.name
+      if (entry.isDirectory()) walk(path, key)
+      else if (entry.isFile()) out[key] = createHash("sha256").update(readFileSync(path)).digest("hex")
+      else out[key] = `not a regular file: ${entry.isSymbolicLink() ? "symlink" : "other"}`
+    }
+  }
+  walk(dir, "")
+  return out
+}
+
+// A1-T9's acceptance case, in one test: a plan job with a check produces plan.md and its artifact, touches no project
+// file (byte for byte, nothing added or deleted), has no merge path, and leaves no plan worktree behind.
+test("a plan job promotes its artifacts and leaves the project byte-identical, with no merge path left", async () => {
+  const project = repo()
+  const head = git(project, "rev-parse", "HEAD")
+  const before = snapshot(project, [".git", stateDir(project)])
+  assert.deepEqual(Object.keys(before), ["README.md"], "the snapshot sees the project's file, so the comparison below is not vacuous")
+
+  const native = new Native()
+  const job = newJob("job-20261115-100040-ab12", "find out how add.js is built")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.isolation = "plan"
+  job.acceptance = [{ id: "A1", text: "the draft is there", verify: "test -f draft.md" }]
+  job.tasks = [{
+    id: "T1", title: "work out how add.js is built", description: "read the code, then write draft.md",
+    role: "investigator", acceptance: ["A1"], dependsOn: [], files: ["draft.md"], wave: 0,
+    status: "pending", attempts: 0, stages: [], signatures: [],
+  }]
+  saveJob(project, job)
+
+  const run = native.runPlanned(project, job.id, "ses_mm", true)
+  assert.equal(run.job?.phase, "execute")
+  assert.equal(run.job?.isolation, "plan", "the planned run is a plan job")
+  const d = await native.delegate(project, "ses_mm", { agent: "investigator", description: "T1", prompt: `Task: T1 · ${job.id}` }, MODEL)
+  const claimed = native.claim("ses_w1", child(d.prompt))!
+  assert.deepEqual(native.jobOf("ses_w1")?.job.tasks[0]?.checks, ["test -f draft.md"], "the acceptance point's verify is the task's check")
+  const plan = statePath(project, "plan", job.id, "worktrees", "T1")
+  assert.equal(claimed.dir, plan, "the investigator works in the plan worktree")
+  writeFileSync(join(claimed.dir, "draft.md"), "add.js adds two numbers.\n")
+  const done = await native.finish("ses_w1", "read the code and wrote it down\nFindings: add.js adds two numbers.\nArtifacts: draft.md")
+  assert.match(done.text, /nothing is committed or merged/)
+  assert.match(done.text, /1 artifact file\(s\) promoted/)
+
+  // plan.md exists, parses, names the job's goal and the file that was promoted.
+  const read = readPlanDoc(project, job.id)
+  assert.deepEqual(read.errors, [])
+  assert.equal(read.doc?.goal, job.goal)
+  assert.deepEqual(read.doc?.artifacts.map((a) => [a.task, a.path]), [["T1", "draft.md"]])
+  assert.equal(readFileSync(join(statePath(project, "plan", job.id, "artifacts"), "T1", "draft.md"), "utf8"), "add.js adds two numbers.\n")
+
+  // The project is exactly as it was: the same paths with the same bytes, nothing added and nothing deleted.
+  assert.deepEqual(snapshot(project, [".git", stateDir(project)]), before)
+
+  // There is no merge path at all: no integration branch, no integration worktree, no job branch, and merge_job refuses.
+  const closed = native.jobOf("ses_w1")!.job
+  assert.equal(closed.integrationBranch, undefined)
+  assert.equal(closed.integrationWorktree, undefined)
+  assert.equal(git(project, "branch", "--list", `micromanager/${job.id}`), "")
+  assert.equal(git(project, "rev-parse", "HEAD"), head, "the checkout did not move")
+  const { mergeJobInto } = await import("../packages/micromanager/src/plugin.ts")
+  const merged = await mergeJobInto(project, closed, "merge it")
+  assert.equal(merged.wrote, false)
+  assert.match(merged.text, /plan job/)
+
+  // The plan worktree was discarded with the finish; only the record is left.
+  assert.equal(existsSync(plan), false, "the plan worktree is gone")
+  assert.equal(git(project, "worktree", "list").includes(plan), false, "and git no longer names it")
+})
+
 
 test("the todo tool keeps the micromanager's list in its job; a todo is started by its Task line and the next ones follow", async () => {
   const project = repo()
@@ -436,6 +834,27 @@ test("a writer works in its own worktree; failing checks go back to it, passing 
   assert.equal(saved.tasks[0]!.status, "merged")
   assert.equal(saved.tasks[0]!.session, "ses_w1")
   assert.deepEqual(saved.tasks[0]!.stages.map((s) => `${s.stage}:${s.result}`), ["delegate:pass", "gate:fail", "gate:pass", "merge:pass"])
+})
+
+test("with no sandbox a check does not run: the task is blocked instead of handed back for a fix round", async () => {
+  const project = repo()
+  const native = new Native({
+    gate: {
+      box: async () => ({ available: false, reason: "off", wrap: async (c: string) => c, stop: async () => undefined }),
+      grants: () => ({ domains: [], env: [] }),
+    },
+  })
+  const d = await native.delegate(project, "ses_mm", { agent: "coder", description: "add add.js", prompt: "Create add.js.\nFiles: add.js\nChecks: true" }, MODEL)
+  const w = native.claim("ses_w1", child(d.prompt))!
+  assert.equal(d.task.status, "running")
+  writeFileSync(join(w.dir, "add.js"), "export const add = (a, b) => a + b\n")
+  const r = await native.finish("ses_w1", "wrote add.js")
+  assert.match(r.text, /\[not run: no sandbox on this machine/)
+  const task = loadJob(project, d.job.id)!.tasks.find((t) => t.id === d.task.id)!
+  assert.equal(task.status, "blocked", "a check that never ran cannot be fixed by the worker")
+  assert.equal(task.attempts, 0, "no fix round is counted")
+  assert.match(task.summary!, /\[not run: no sandbox on this machine/)
+  assert.ok(!existsSync(join(d.job.integrationWorktree!, "add.js")), "nothing merged")
 })
 
 test("two writers run side by side; the second is rebased onto the first and checked again", async () => {
@@ -1495,4 +1914,56 @@ test("the merge retries when the integration branch moves between the rebase and
   const log = execFileSync("git", ["-C", integration, "log", "--oneline"]).toString()
   assert.match(log, /other work/)
   assert.match(log, /T1: a/)
+})
+
+// A job waiting at its gate with one investigator and one reader: what A1-T11's start condition looks at.
+function gatedJob(id: string): ReturnType<typeof newJob> {
+  const job = newJob(id, "work out how add.js is built")
+  for (const p of ["triage", "plan", "plan_gate"] as const) moveJob(job, p)
+  job.tasks = [
+    { id: "T1", title: "draft it", description: "read the code, then write draft.md", role: "investigator", acceptance: [], dependsOn: [], files: ["draft.md"], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [] },
+    { id: "T2", title: "look around", description: "read the code", role: "explore", acceptance: [], dependsOn: [], files: [], wave: 0, status: "pending", attempts: 0, stages: [], signatures: [] },
+  ]
+  return job
+}
+
+test("a plan job started without a sandbox starts reader-only, and its start says so", () => {
+  const project = repo()
+  const job = gatedJob("job-20261115-120000-ab12")
+  saveJob(project, job)
+
+  const off = new Native({ sandboxAvailable: () => false, sandboxReason: () => "no bubblewrap here" })
+  const r = off.runPlanned(project, job.id, "ses_mm", true)
+  assert.equal(r.job?.phase, "execute")
+  assert.equal(r.job?.isolation, "plan", "a job started from the plan agent is a plan job")
+  assert.equal(r.job?.planReaderOnly, "no sandbox on this machine")
+  assert.equal(loadJob(project, job.id)?.planReaderOnly, "no sandbox on this machine", "the saved job carries it too")
+  assert.match(r.warning ?? "", /reader-only/)
+  assert.match(r.warning ?? "", /no bubblewrap here/, "the warning names the machine's reason")
+  assert.match(r.warning ?? "", /omacode doctor/, "and the fix")
+
+  // The plan still holds the investigator; the plugin is what stops naming it.
+  assert.match(nextStep(r.job!, 3)!.text, /T1/, "without a predicate the task is still in the plan")
+  const step = nextStep(r.job!, 3, (t) => !(r.job!.planReaderOnly && WRITERS.has(t.role)))!
+  assert.equal(step.kind, "start", "the reader still starts")
+  assert.deepEqual(step.kind === "start" && step.tasks.map((t) => t.id), ["T2"], "the investigator is not named")
+  assert.doesNotMatch(step.text, /investigator/, "and none is suggested")
+})
+
+test("a plan start with a sandbox has no warning, and a start without plan is no plan job", () => {
+  const project = repo()
+  const plan = gatedJob("job-20261115-120001-ab12")
+  saveJob(project, plan)
+  const withBox = new Native({ sandboxAvailable: () => true }).runPlanned(project, plan.id, "ses_mm", true)
+  assert.equal(withBox.job?.isolation, "plan")
+  assert.equal(withBox.job?.planReaderOnly, undefined)
+  assert.equal(withBox.warning, undefined)
+
+  const plain = gatedJob("job-20261115-120002-ab12")
+  saveJob(project, plain)
+  const normal = new Native({ sandboxAvailable: () => false }).runPlanned(project, plain.id, "ses_mm")
+  assert.equal(normal.job?.phase, "execute")
+  assert.equal(normal.job?.isolation, undefined, "without plan the job stays what it was planned as")
+  assert.equal(normal.job?.planReaderOnly, undefined, "and the missing sandbox is plan mode's business")
+  assert.equal(normal.warning, undefined)
 })

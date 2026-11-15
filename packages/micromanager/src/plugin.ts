@@ -22,9 +22,12 @@ import { DEFAULT_LABELS, gitAuthor, knownSecrets, mapStrings, PLACEHOLDER_NOTE, 
 import { matchShortcut, resolvePolicy } from "./policy.ts"
 import { probe, type Availability } from "./registry.ts"
 import { chooseModel, unknown as allAvailable, withPicks, type Available } from "./routing.ts"
-import { family, MICROMANAGER, ROLES, roleByAgent, roleById, type RoleId, type Rule } from "./roles.ts"
+import { family, MICROMANAGER, PLAN_AGENT, ROLES, roleByAgent, roleById, type RoleId, type Rule } from "./roles.ts"
 import { WRITERS } from "./profile.ts"
 import { recentFailure, Runner, summary, taskReport, toModel, type SessionApi } from "./runner.ts"
+import type { GateDeps } from "./gatebox.ts"
+import { SANDBOX_FORM_HEADER, sandboxAnswer, sandboxDecision, sandboxForm, writeUnsandboxedGrant } from "./sandboxgate.ts"
+import { scoreCommands, type RiskScore } from "./riskscore.ts"
 import { checkGuards } from "./gate.ts"
 import { Compactor, stub as compactStub } from "./compact.ts"
 import { ContextManager, contextDir } from "./context/manager.ts"
@@ -42,7 +45,7 @@ import { lastAssistantText } from "./brief.ts"
 import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
 import { board } from "./board.ts"
 import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
-import { looksSecret, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
+import { looksSecret, planRules, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
 import sandboxPlugin from "./shell/index.ts"
 import type { SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
@@ -55,15 +58,18 @@ import { registerSkills, SKILLS, type SkillEditor } from "./skills.ts"
 import { backlogIgnored, listJobs, loadJob, notesDir, reconcileJob, saveJob, stateDir } from "./store.ts"
 import { backlogDir, backlogTool, githubIssue, githubIssues, githubRepo, goalOf, localBackend, publishForm, publishIssue, readPublish, type BacklogItem } from "./backlog.ts"
 import { moveJob, moveTask, stage, type Job, type Task, type TaskStatus } from "./state.ts"
-import { BRANCH_PREFIX, exec, jobBranch, LEGACY_BRANCH_PREFIX, repoRel, type Exec } from "./integration.ts"
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname, extname, join, relative, resolve } from "node:path"
+import { BRANCH_PREFIX, exec, jobBranch, LEGACY_BRANCH_PREFIX, planArea, repoRel, type Exec } from "./integration.ts"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname, extname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
   BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, installWaitTool, LOOK_ID, planText,
   TOOL_IDS, WAIT_ID, type ToolDraft,
 } from "./tools.ts"
 import { waitFor, waitTimeoutMs, watchAsk, watchFile, watchPid } from "./wait.ts"
+import { readerOnlyNote } from "./plan.ts"
+import { planDocPath } from "./plandoc.ts"
+import { insidePath, planRoot, realish, writeGuard, writePaths, type GuardScope } from "./writeguard.ts"
 import { readBaseline, readLoopholes, readPrefs, roundFormOf, roundHeader } from "./contractround.ts"
 import { ChangeRequests, changeNote, changeResult, normalTarget, readChange, route, validateRequest, type ChangeAnswer, type ChangeKind } from "./checkchange.ts"
 import { HELPER_STEPS, Helpers } from "./helpers.ts"
@@ -192,6 +198,16 @@ interface Shared {
   asked: Map<string, Asked> // job -> the question waiting for an answer, so it is never asked twice at once
   native?: Native // the micromanager's workers on OpenCode's subagent tool, made by the first instance
   sandbox?: Promise<Wrapper> // worker commands' sandbox (src/shell/sandbox.ts), started once per server
+  // Whether that sandbox can run, and why not: plan mode is fail-closed on it (A1-T7), so the answer is kept where the
+  // Native deps can read it without waiting for the first wrapped command.
+  sandboxOn?: boolean
+  sandboxWhy?: string
+  // The plan agent's sessions. They are root sessions, so the shell plugin's child-session rule would leave their
+  // commands unwrapped; plan mode is fail-closed, so they are named here and the shell plugin sands them (A1-T7).
+  planSessions?: Set<string>
+  // A job whose commands would run without a sandbox waits for the user's answer (D23, A1-T14): what the form showed,
+  // kept until the answer comes back through tool.execute.after, which is the only place a grant is opened.
+  sandboxAsk?: { project: string; jobId: string; checks: readonly string[]; plan: boolean; score: RiskScore }
   // A wrapped command -> the command the worker wrote. OpenCode evaluates a shell's permission after the shell hook
   // wrapped it (live run, 2026-10-20: the rules and Jev saw a page of bwrap instead of `./probe.sh`), so the
   // permission hook puts the worker's own command back before anything judges it.
@@ -428,6 +444,7 @@ const done = (text: string): GitOutcome => ({ wrote: true, text })
 // checkout with uncommitted changes and a job with work left unfinished, and merges fast-forward only, so its own
 // checkout can never be left half merged, reset or behind.
 export async function mergeJobInto(project: string, job: Job, ack: string, run: Exec = exec): Promise<GitOutcome & { merge?: { from: string; to: string; at: string } }> {
+  if (job.isolation === "plan") return said(`Job ${job.id} is a plan job: it works only in its plan worktree, has no branch, and there is nothing to merge. Nothing was written.`)
   const branch = job.integrationBranch ?? jobBranch(job.id)
   const git = (...args: string[]) => run("git", ["-C", project, ...args], { cwd: project, timeoutMs: 15_000 })
   const there = await git("rev-parse", "--verify", "--quiet", `refs/heads/${branch}`)
@@ -496,12 +513,26 @@ export async function discardJob(project: string, job: Job, ack: string, run: Ex
   for (const t of targets) {
     let ok = true
     if (t.worktree) {
-      const removed = await run("git", ["-C", project, "worktree", "remove", "--force", t.worktree], { cwd: project, timeoutMs: 15_000 })
-      if (removed.code === 0) gone.push(t.worktree)
-      else if (/not a working tree|does not exist|no such file/i.test(`${removed.stderr}${removed.stdout}`)) gone.push(`${t.worktree} (already gone)`)
-      else {
-        ok = false
-        kept.push(`${t.worktree} (${removed.stderr.trim().split("\n").pop() ?? "could not be removed"})`)
+      if (job.isolation === "plan" && !t.branch) {
+        // A plan job without git has a copy, not a git worktree: it is a directory of the job's plan area, and only a
+        // directory that really lies there is removed.
+        const area = resolve(planArea(project, job.id))
+        const target = resolve(t.worktree)
+        if (target === area || !target.startsWith(`${area}${sep}`)) {
+          ok = false
+          kept.push(`${t.worktree} (not inside the job's plan area)`)
+        } else {
+          rmSync(t.worktree, { recursive: true, force: true })
+          gone.push(t.worktree)
+        }
+      } else {
+        const removed = await run("git", ["-C", project, "worktree", "remove", "--force", t.worktree], { cwd: project, timeoutMs: 15_000 })
+        if (removed.code === 0) gone.push(t.worktree)
+        else if (/not a working tree|does not exist|no such file/i.test(`${removed.stderr}${removed.stdout}`)) gone.push(`${t.worktree} (already gone)`)
+        else {
+          ok = false
+          kept.push(`${t.worktree} (${removed.stderr.trim().split("\n").pop() ?? "could not be removed"})`)
+        }
       }
     }
     if (t.branch) {
@@ -517,6 +548,9 @@ export async function discardJob(project: string, job: Job, ack: string, run: Ex
     // session, or every new session asks the user about it again (live run, 2026-10-30).
     if (ok) t.clear()
   }
+  // A plan worktree removed by directory leaves its git metadata behind; pruning it keeps the repository's worktree
+  // list honest. Nothing of the checkout is touched.
+  if (job.isolation === "plan") await run("git", ["-C", project, "worktree", "prune"], { cwd: project, timeoutMs: 15_000 })
   if (!kept.length) {
     job.phase = "done"
     job.rolling = false
@@ -884,11 +918,41 @@ const plugin = {
       const g = loadControl(project, jobId).grants
       return { env: g?.env ?? [], network: g?.network ?? [] }
     }
+    // The checks a job carries: its tasks' own, or the acceptance points' verify where a task kept none. D23's score
+    // and the form that shows it read exactly what would run, nothing more.
+    const jobChecks = (job: Job): string[] =>
+      job.tasks.flatMap((t) => {
+        const own = t.checks ?? []
+        if (own.length) return own
+        return job.acceptance.filter((a) => t.acceptance.includes(a.id)).flatMap((a) => (a.verify ? [a.verify] : []))
+      })
+    // D23: whether the config's "unsandboxed": "allow" or the user's answer on the sandbox form granted this job. The
+    // control file is the one place both are written, so the gate, the plan writer and the next run read one answer.
+    // "never" closes even an older grant: the grant stays on record, but nothing runs on it any more.
+    const unsandboxedGrant = (project: string, jobId: string): boolean =>
+      settings.unsandboxed !== "never" && loadControl(project, jobId).unsandboxed?.granted === true
+    // The grant the config gives without a question ("unsandboxed": "allow"): stored in the job's control file like the
+    // user's answer and journalled with the score, so the two look the same afterwards and the journal says which it was.
+    const grantUnsandboxed = (project: string, jobId: string, score: RiskScore, by: "config" | "user"): void =>
+      writeUnsandboxedGrant({ project, jobId, score, by, control: updateControl, journal: record })
+    // A1-T11: a plan job that started without a sandbox runs reader-only, so nextStep must name no writer task of it:
+    // its investigator would be refused. Readers stay in the plan, as do every task of a job with a sandbox.
+    const taskAllowed = (job: Job) => (t: Task) => !(job.planReaderOnly && WRITERS.has(t.role))
     // Worker commands run in the sandbox (src/shell/sandbox.ts); one per server, shared by every instance.
     const sandbox = (SHARED.sandbox ??= startSandbox(settings.sandbox).then((box) => {
+      SHARED.sandboxOn = box.available
+      SHARED.sandboxWhy = box.reason
       if (!box.available) log("warn", `worker commands run without a sandbox: ${box.reason}`)
       return box
     }))
+    // The same sandbox for the checks and evaluators the host runs itself (src/gatebox.ts, A1-T12), with the job's
+    // grants, so `npm test` and `uv run pytest` reach their registries and nobody's check runs outside it.
+    const gate: GateDeps = {
+      box: () => sandbox,
+      grants: (project, jobId) => { const g = jobGrants(project, jobId); return { domains: g.network, env: g.env } },
+      // D23: a confirmed job's checks run unwrapped and say so; every other job's are skipped while no box can run.
+      unsandboxed: (project, jobId) => unsandboxedGrant(project, jobId),
+    }
     // Private data in requests to cloud models (src/redact.ts): one vault per server, so a value keeps its placeholder in
     // every session. The git author is the user, who is no secret to their own models.
     const redacting = settings.redact.secrets || settings.redact.pii || settings.redact.names
@@ -1076,6 +1140,13 @@ const plugin = {
     const native = (SHARED.native ??= new Native({
       installedSkills, planFirst: true, noGit: (dir) => noGitNote(dir), evolverReady: () => evolverReady, evolverCallCost, evolverMaxEvalSeconds: () => loadSettings().evolverMaxEvalSeconds,
       checkTimeoutMs: settings.checkTimeoutMs,
+      gate,
+      // A plan job's plan.md that could not be written is logged, never a reason to refuse the job.
+      log,
+      // Plan mode is fail-closed (A1-T7): with no sandbox, a plan job delegates no writers, and the job says why —
+      // unless the user confirmed this job for exactly that (D23, its control file), which is the one exception.
+      sandboxAvailable: () => SHARED.sandboxOn === true, sandboxReason: () => SHARED.sandboxWhy,
+      unsandboxedAllowed: (project, jobId) => unsandboxedGrant(project, jobId),
       // One reminder to a writer that went idle without finish_task; its next turn is watched again by the prompt hook.
       nudge: (session, text) => { void ctx.session.prompt({ sessionID: session, text }).catch((err: unknown) => log("warn", `finish nudge failed: ${String(err)}`)) },
       onNudge: (session) => { SHARED.ended.delete(session) },
@@ -1341,8 +1412,43 @@ const plugin = {
       // A model writes placeholders; the tool gets the real values, as far as the tool may have them (src/redact.ts).
       // Redact first: the http.response hook restores placeholders in the model's answer, so a tool call can arrive with
       // real values already. Redacting again keeps a name out of a web search and a secret out of a shell command.
-      const scope = vault && restoreScope(call.tool)
-      if (vault) mapStrings(call.input, (s) => (scope ? vault.restore(vault.redact(s), scope) : vault.redact(s)))
+      const redaction = vault && restoreScope(call.tool)
+      if (vault) mapStrings(call.input, (s) => (redaction ? vault.restore(vault.redact(s), redaction) : vault.redact(s)))
+      // Plan mode's hard boundary on the tools themselves (src/writeguard.ts, A1-T6), after the redaction so the paths
+      // checked are the ones the tool will use, and before the delegation handling, because a delegation is not a
+      // write. Exactly two sessions are plan mode's: the plan agent and the investigator it delegates to. Every other
+      // agent, the micromanager included, is left exactly as it was.
+      if (project) {
+        // The plan agent's session is remembered here, so the shell plugin sands its commands too (see `extra`).
+        if (call.agent === PLAN_AGENT.agent && call.sessionID) (SHARED.planSessions ??= new Set()).add(call.sessionID)
+        const worker = call.sessionID ? native.workerBySession(call.sessionID) : undefined
+        let scope: GuardScope | undefined
+        if (call.agent === PLAN_AGENT.agent) {
+          scope = { root: planRoot(project), directory: project }
+        } else if (roleByAgent(call.agent ?? "")?.id === "investigator") {
+          // The worker's own facts say which project it works for and where it works; a session this instance does not
+          // hold falls back to its recorded directory and this instance's project, and the plan-root test then decides.
+          const directory = worker?.dir ?? (call.sessionID ? (await childOf(call.sessionID))?.directory : undefined)
+          const root = planRoot(worker?.project ?? project)
+          if (directory !== undefined && insidePath(realish(directory), realish(root))) scope = { root, directory }
+        }
+        if (scope) {
+          const guardedCall = { tool: call.tool, input: call.input }
+          const verdict = writeGuard(guardedCall, scope)
+          // What the journal says was named: the write's paths, or the command a shell would run.
+          const paths = call.tool === "shell" ? [String(call.input.command ?? "")] : writePaths(guardedCall)
+          if (!verdict.ok) {
+            record({ kind: "plan-guard", sessionID: call.sessionID, agent: call.agent, tool: call.tool, paths, reason: verdict.reason })
+            log("warn", `${call.agent} refused a ${call.tool} in plan mode: ${verdict.reason}`)
+            // A throw here becomes the tool's error, as a DelegationError does, so the model reads the reason.
+            throw new Error(verdict.message)
+          }
+          if (verdict.advisory) {
+            record({ kind: "plan-guard", sessionID: call.sessionID, agent: call.agent, tool: call.tool, paths, advisory: verdict.advisory })
+            log("info", `${call.agent} in plan mode: ${verdict.advisory}`)
+          }
+        }
+      }
       // A worker's shell is noted by the shell plugin (src/shell/wire.ts), which wraps this one and no other agent's.
       // The note comes after the redaction, so the command the shell hook wraps is the one the tool will run.
       // A delegation the plugin cannot isolate. From the micromanager this is still a refusal that names the name it
@@ -1439,6 +1545,27 @@ const plugin = {
       if (guard.flagged.some((g) => g === "injection" || g === "harmful")) {
         throw new DelegationError(`The local check flagged this task (${guard.flagged.join(", ")}). Ask the user whether it should run before you start it again.`)
       }
+      // D23: a rolling job's first delegation starts only once the user said how it may run without a sandbox. A planned
+      // task is gated at run_job, and a job with an answer already is not asked again. The score reads the delegation's
+      // Checks: lines; the answer on the form — never the micromanager's words — opens the grant.
+      const box = await sandbox
+      if (!box.available) {
+        const delegation = parseDelegation(asked)
+        if (!delegation.planned) {
+          const job = native.job(project, call.sessionID)
+          // Asked once per job, at the first delegation that has no grant — including a running job whose sandbox has
+          // gone away since it started, which would otherwise run on unwrapped with nobody's word for it.
+          if (job.rolling && !job.planReaderOnly) {
+            const decision = sandboxDecision({ available: box.available, setting: settings.unsandboxed, granted: unsandboxedGrant(project, job.id), reason: box.reason, jobId: job.id, checks: delegation.checks, plan: false })
+            if (decision.kind === "ask") {
+              SHARED.sandboxAsk = { project, jobId: job.id, checks: delegation.checks, plan: false, score: decision.score }
+              throw new DelegationError(`${decision.text}\n\nAsk the user with the question tool, with exactly this input (a form that waits for their answer; it reaches the plugin by itself), then end your turn:\n${formInput(sandboxForm({ jobId: job.id, ...(box.reason ? { reason: box.reason } : {}), score: decision.score, checks: delegation.checks }))}`)
+            }
+            if (decision.kind === "refuse") throw new DelegationError(decision.text)
+            if (decision.unsandboxed && settings.unsandboxed === "allow") grantUnsandboxed(project, job.id, scoreCommands(delegation.checks, { plan: false }), "config")
+          }
+        }
+      }
       const d = await native.delegate(project, call.sessionID, { agent: String(call.input.agent ?? ""), description: String(call.input.description ?? ""), prompt: asked }, routed.model, assess)
       call.input.prompt = d.prompt
       // What the memory knows that helps this task (src/context/recall.ts), after the Files/Checks lines and a blank line,
@@ -1473,11 +1600,30 @@ const plugin = {
       env: settings.env,
       domains: settings.network,
       // A session of the plugin's own: a native worker or one of the older runner's.
-      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID),
+      isWorker: (sessionID) => runnerSessions.has(sessionID) || native.isWorker(sessionID) || (SHARED.planSessions ??= new Set()).has(sessionID),
       // The private temp directory of a command that runs in a directory the plugin knows nothing about: one per
       // directory, so two children in different directories do not share one.
       temp: (key) => tempDirFor(key),
       extra: (sessionID, cwd) => {
+        // The plan agent itself: a root session, so only this plugin knows it belongs to plan mode. Its commands run in
+        // the plan profile too, with the project read-only, or plan mode would be a barrier for everyone but the one
+        // agent that plans (A1-T7).
+        if ((SHARED.planSessions ??= new Set()).has(sessionID) && project) {
+          const root = planRoot(project)
+          return {
+            known: true,
+            worker: true,
+            plan: true,
+            planRoot: root,
+            role: "plan",
+            writer: true,
+            dir: cwd ?? project,
+            worktree: root,
+            frozen: [],
+            temp: tempDirFor(`plan\0${project}`),
+            project,
+          }
+        }
         // The micromanager's own worker: the one whose directory the command runs in, exactly as before the shell
         // plugin took the wiring over. Its role, its worktree, its frozen files and its job's grants.
         const found = native.workerAt(String(cwd ?? ""))
@@ -1496,6 +1642,8 @@ const plugin = {
             temp: tempDirFor(`${found.jobId}\0${found.writer ? found.worktree : found.dir}`),
             project: found.project,
             jobId: found.jobId,
+            // A plan job's worker writes in the plan area only (A1-T7): the sandbox keeps it out of the project.
+            ...(found.plan ? { plan: true, planRoot: planRoot(found.project) } : {}),
           }
         }
         // A worker of the older runner path: known only by its directory, and it writes there.
@@ -1510,12 +1658,18 @@ const plugin = {
       },
       rules: (facts, input) => {
         const dir = facts.dir ?? input.cwd ?? process.cwd()
+        const domains = [...settings.network, ...(facts.domains ?? [])]
+        // A plan job's worker writes in the plan area and its own temp directory only; the project stays read-only
+        // (A1-T7). Every other worker keeps the rule it had.
+        if (facts.plan && facts.planRoot) {
+          return planRules({ role: facts.role ?? "investigator", writer: true, dir, worktree: facts.planRoot, domains, frozen: [], temp: facts.temp })
+        }
         return rulesFor({
           role: facts.role ?? "code",
           writer: facts.writer ?? true,
           dir,
           worktree: facts.worktree ?? dir,
-          domains: [...settings.network, ...(facts.domains ?? [])],
+          domains,
           frozen: facts.frozen ?? [],
           temp: facts.temp,
         })
@@ -1526,8 +1680,9 @@ const plugin = {
       },
     })
 
-    // The micromanager's own agents only: build, plan and every other agent are never touched.
-    const ours = new Set([MICROMANAGER.agent, ...ROLES.map((role) => role.agent)])
+    // The micromanager's own agents only: build, plan and every other agent are never touched. The plan agent is one
+    // of ours, so its permission asks are decided here instead of waiting for a user who is not at its session.
+    const ours = new Set([MICROMANAGER.agent, PLAN_AGENT.agent, ...ROLES.map((role) => role.agent)])
 
     // Who started this session, and whether this plugin owns the one that did. Resolved once per session: the
     // permission hook runs on every single tool call, and Session.get is a round trip to the host.
@@ -2060,6 +2215,7 @@ const plugin = {
         parallel,
         perModel,
         checkTimeoutMs: settings.checkTimeoutMs,
+        gate,
         onWorker: (sessionID, task, rules) => {
           workerTasks.set(sessionID, task)
           if (rules.length) workerRules.set(sessionID, rules)
@@ -2102,6 +2258,54 @@ const plugin = {
       const answers = answersOf(call.result)
       // A change request only the user decides (src/checkchange.ts): its own header, its own labels.
       const asked = (call.input.questions ?? []) as Partial<Question>[]
+      // D23 (A1-T14): the user's answer on the sandbox form. Only this form's own result opens the grant — nothing the
+      // micromanager writes is taken for it — and the grant goes into the job's control file and the journal with the
+      // score the form showed, so a second start is not asked again.
+      const sandboxAt = answers ? asked.findIndex((q) => q.header === SANDBOX_FORM_HEADER) : -1
+      if (answers && sandboxAt >= 0) {
+        const tell = (text: string) => rewriteResult(call.result, (was) => `${was}\n[micromanager] ${text}`)
+        const pending = SHARED.sandboxAsk
+        SHARED.sandboxAsk = undefined
+        const choice = sandboxAnswer(answers[sandboxAt] ?? [])
+        if (!pending) {
+          tell("That sandbox question was no longer waiting, so nothing was granted; ask again if a job still needs an answer.")
+          return
+        }
+        const job = native.current(pending.project, pending.jobId) ?? loadJob(pending.project, pending.jobId)
+        // Only the micromanager the plugin asked answers for the user: a worker's tool result is not their word, and
+        // the question stays open until the orchestrator's own session puts it (src/forms.ts: workers may not ask).
+        if (native.isWorker(sessionID) || runnerSessions.has(sessionID)) {
+          SHARED.sandboxAsk = pending
+          return
+        }
+        const findings = pending.score.findings.map((f) => f.what)
+        if (choice === "allow") {
+          grantUnsandboxed(pending.project, pending.jobId, pending.score, "user")
+          // The grant overrides an earlier reader-only marker (the fail-closed path, or a read-only answer given before):
+          // this answer says the job may write, unwrapped.
+          if (job?.planReaderOnly) {
+            job.planReaderOnly = undefined
+            saveJob(pending.project, job)
+          }
+          tell(`The user confirmed that job ${pending.jobId} may run without a sandbox (risk ${pending.score.band} ${pending.score.score}/100; the grant is stored in its control file and journalled). Nothing has started yet: ${pending.plan ? `call run_job ${pending.jobId} again` : "start the same delegation again"}.`)
+        } else if (choice === "read-only") {
+          record({ kind: "sandbox.override", project: pending.project, jobId: pending.jobId, granted: false, by: "user", answer: "read-only", score: pending.score.score, band: pending.score.band, findings })
+          if (pending.plan) {
+            if (job) native.readerOnly(pending.project, job, "the user chose read-only: no sandbox can run on this machine")
+            tell(`${pending.jobId} runs read-only: nothing of the project is touched and no check runs. Call run_job ${pending.jobId} again and it starts that way.`)
+          } else {
+            tell(`Nothing can run read-only here: job ${pending.jobId} is a build job, and building changes files. Fix the sandbox first (omacode doctor), or start it without a sandbox with the user's word for it.`)
+          }
+        } else if (choice === "cancel") {
+          record({ kind: "sandbox.override", project: pending.project, jobId: pending.jobId, granted: false, by: "user", answer: "cancel", score: pending.score.score, band: pending.score.band, findings })
+          tell(`The user cancelled: nothing of job ${pending.jobId} started, and no grant was recorded. Ask them what to do instead.`)
+        } else {
+          // Not one of the form's answers and no short yes or no: the question is still open.
+          SHARED.sandboxAsk = pending
+          tell(`"${(answers[sandboxAt] ?? []).join(", ")}" is no answer to the form, so nothing was granted and the question still waits. Ask with the same form again.`)
+        }
+        return
+      }
       const change = answers && asked[0]?.header ? readChange(asked[0].header, answers[0] ?? []) : undefined
       if (change && project) {
         const changes = (SHARED.changeRequests ??= new ChangeRequests(record))
@@ -2435,19 +2639,61 @@ const plugin = {
             if (!swept) return `no job ${id.trim()}`
             if (!tctx.sessionID) return "run_job needs the micromanager's session."
             if (scheduler.snapshot().running === swept.id) return `job ${swept.id} still runs on the plugin's own workers from before; stop_job ${swept.id} first, then run_job again.`
-            const r = native.runPlanned(project, swept.id, tctx.sessionID)
+            const planJob = tctx.agent === PLAN_AGENT.agent || swept.isolation === "plan"
+            const checks = jobChecks(swept)
+            // D23: with no sandbox, nothing of the job starts until the user said how it may run — and the user alone
+            // opens the grant, through the form. A job the user chose read-only is not asked again: runPlanned keeps it
+            // reader-only and nextStep names no writer of it. A marker left by the fail-closed path is not that choice,
+            // so a later "ask" or "allow" still has its say.
+            const chosenReadOnly = swept.planReaderOnly?.startsWith("the user chose read-only") === true
+            let refusal = ""
+            if (!chosenReadOnly) {
+              const box = await sandbox
+              const decision = sandboxDecision({ available: box.available, setting: settings.unsandboxed, granted: unsandboxedGrant(project, swept.id), reason: box.reason, jobId: swept.id, checks, plan: planJob })
+              if (decision.kind === "ask") {
+                SHARED.sandboxAsk = { project, jobId: swept.id, checks, plan: planJob, score: decision.score }
+                return `${decision.text}\n\nAsk the user with the question tool, with exactly this input (a form that waits for their answer; it reaches the plugin by itself), then end your turn:\n${formInput(sandboxForm({ jobId: swept.id, ...(box.reason ? { reason: box.reason } : {}), score: decision.score, checks }))}`
+              }
+              if (decision.kind === "refuse") {
+                // Fail closed as before: a plan job still runs reader-only and says why; any other job does not start.
+                if (!planJob) return decision.text
+                refusal = `${decision.text}\n\n`
+              } else if (decision.unsandboxed) {
+                if (settings.unsandboxed === "allow") {
+                  // The config's standing word: stored and journalled like the user's answer, so the job carries one grant.
+                  grantUnsandboxed(project, swept.id, scoreCommands(checks, { plan: planJob }), "config")
+                }
+                // With a grant, an older reader-only marker (set when there was no box and no word) is no longer true.
+                if (swept.planReaderOnly) {
+                  swept.planReaderOnly = undefined
+                  saveJob(project, swept)
+                }
+              }
+            }
+            const r = native.runPlanned(project, swept.id, tctx.sessionID, tctx.agent === PLAN_AGENT.agent)
             if (!r.job) return `job ${swept.id}: ${r.problem}`
-            const step = nextStep(r.job, optionsFor(r.job).parallel ? parallel : 1)
+            // A1-T11: a plan job without a sandbox starts reader-only; the warning goes first, before any task it names.
+            const warned = r.warning ? `${refusal}${r.warning}\n\n` : refusal
+            const step = nextStep(r.job, optionsFor(r.job).parallel ? parallel : 1, taskAllowed(r.job))
             const answer = note.trim() ? `The user's answer for this job: ${note.trim()}\n\n` : ""
-            if (!step) return `${answer}job ${r.job.id} runs: its workers are still at work; the next tasks follow in a note when they end. Tell the user and end your turn.`
-            return `${answer}${step.text}`
+            if (!step) return `${warned}${answer}job ${r.job.id} runs: its workers are still at work; the next tasks follow in a note when they end. Tell the user and end your turn.`
+            return `${warned}${answer}${step.text}`
           },
           status: async (id) => {
             const job = id.trim() ? loadSwept(id.trim()) : listSwept()[0]
             const q = scheduler.snapshot()
             const queue = `queue: ${q.running ? `running ${q.running}` : "nothing running"}${q.queued.length ? `; waiting: ${q.queued.join(", ")}` : ""}`
+            if (!job) return `${queue}\nno job yet`
             // The board first: what runs, waits and is done, at a glance (show it to the user as it is).
-            return job ? `${queue}\n\n${board(job, 110, Date.now(), SHARED.code ? `${SHARED.code.commit}${SHARED.code.dirty === true ? "+dirty" : ""}` : undefined)}\n\n${job.rolling ? "" : planText(job)}`.trim() : `${queue}\nno job yet`
+            const text = `${queue}\n\n${board(job, 110, Date.now(), SHARED.code ? `${SHARED.code.commit}${SHARED.code.dirty === true ? "+dirty" : ""}` : undefined)}\n\n${job.rolling ? "" : planText(job)}`.trim()
+            // A plan job without a sandbox ran reader-only (A1-T7): say it before the board, not only in the plan.
+            const readerOnly = readerOnlyNote(job).trim()
+            // A plan job's own document: the micromanager may read it (the plan agent's read allow, A1-T4), so its path
+            // belongs here where it looks for the next task.
+            const doc = existsSync(planDocPath(project, job.id))
+              ? `job ${job.id}'s plan is written down in ${planDocPath(project, job.id)}; read it before the next task.`
+              : ""
+            return [readerOnly, doc, text].filter(Boolean).join("\n\n")
           },
           stop: async (id, tctx) => {
             const r = scheduler.stop(id.trim() || undefined)
@@ -3187,7 +3433,7 @@ const plugin = {
       if (planned && input.sessionID) {
         continuing.delete(input.sessionID)
         const job = native.current(project, planned) ?? loadJob(project, planned)
-        const step = job && nextStep(job, optionsFor(job).parallel ? parallel : 1)
+        const step = job && nextStep(job, optionsFor(job).parallel ? parallel : 1, taskAllowed(job))
         if (step) {
           tail(input, step.text)
           record({ kind: "continuation", sessionID: input.sessionID, job: planned, step: step.kind, tasks: step.kind === "start" ? step.tasks.map((t) => t.id) : [] })

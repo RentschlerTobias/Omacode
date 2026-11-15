@@ -141,6 +141,8 @@ export interface Task {
   worktree?: string // its own worktree while it runs in a parallel batch (Phase F)
   branch?: string
   commit?: string // the short sha of its merged change, for the next worker's brief
+  planBase?: string // the commit a plan worktree branched from: the base of the patch it records (src/promote.ts)
+  promoted?: { path: string; bytes: number; sha256: string }[] // what a plan task handed back (src/promote.ts)
   conflicts?: number // merge train conflicts so far
   learned?: string[] // the worker's LEARNED lines, for the project memory
   sessions?: string[] // every session that worked on it (worker, reviewers, fresh tries), to look into them
@@ -185,7 +187,11 @@ export interface Job {
   facilitator?: string // the micromanager session that runs this job's planning session
   // "none": the project is no git repository and the user chose to work without one: writers change the project
   // directly, one at a time, checked but not committed or merged (src/nogit.ts).
-  isolation?: "none"
+  // "plan": a plan job, which works only in <stateDir>/plan/<job>/ and never commits or merges.
+  isolation?: "none" | "plan"
+  // A plan job that started without a sandbox (A1-T7): no writers or investigators start, only readers, and the text
+  // is the reason ("no sandbox on this machine"). plan.md and job_status say so.
+  planReaderOnly?: string
   pins?: PolicySet // job-level policies from the user's shortcuts ("always local", "pipeline P1", …)
   taskPins?: Record<string, PolicySet> // task-level ones ("T3 use llamaswap/oss-u")
   budget: {

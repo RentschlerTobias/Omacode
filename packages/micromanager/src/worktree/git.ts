@@ -12,7 +12,10 @@ import { execFile } from "node:child_process"
 import { existsSync, mkdirSync } from "node:fs"
 import { basename, join, relative, resolve, sep } from "node:path"
 
+import { statePath } from "@omacode/core/paths"
+
 import { measuredOf, median, parseScoreLines, type Contract, type Measured } from "../contract.ts"
+import type { Gate } from "../gatebox.ts"
 import { scrub } from "../redact.ts"
 import { stateDir } from "../store.ts"
 import type { Job, Task } from "../state.ts"
@@ -249,6 +252,11 @@ export interface GateResult {
   // The check's own MM_SCORE line (src/contract.ts), read before the output is cut: an ordinary check may say how many
   // of its cases passed, which grades a build task without deciding it; pass or fail is still its exit code.
   readonly score?: Measured
+  // The check did not run at all: there was no sandbox to run it in (src/gatebox.ts). A skipped check cannot be fixed
+  // by the worker, so the caller blocks the task rather than handing it back.
+  readonly skipped?: boolean
+  // The check ran without a sandbox because the user confirmed this job for it (D23, A1-T14): the stage line says so.
+  readonly unsandboxed?: boolean
 }
 
 // The default cap of one check: five minutes. A check is a command the worker wrote, and a command that hangs
@@ -274,7 +282,9 @@ export interface Cancelled {
 // cancel: checked between checks, not inside one. A single check is bounded by its own timeout (300s by default),
 // because there is nothing to interrupt a shell with once it started; but without this a job with five checks could
 // not be stopped until all five ran, and stop_job looked broken for as long as the first one took.
-export async function runGate(worktree: string, commands: readonly string[], run: Exec = exec, timeoutMs = DEFAULT_CHECK_TIMEOUT_MS, dir?: string, cancel: Cancelled = {}): Promise<GateResult[]> {
+// gate: the sandbox the check runs in (src/gatebox.ts). Without one the behaviour is the old one, unwrapped; with one
+// whose box is unavailable the check is reported as skipped and never run.
+export async function runGate(worktree: string, commands: readonly string[], run: Exec = exec, timeoutMs = DEFAULT_CHECK_TIMEOUT_MS, dir?: string, cancel: Cancelled = {}, gate?: Gate): Promise<GateResult[]> {
   const cwd = dir ?? worktree
   const out: GateResult[] = []
   for (const command of commands) {
@@ -282,12 +292,23 @@ export async function runGate(worktree: string, commands: readonly string[], run
       out.push({ command, passed: false, code: -1, output: "not run: the job was stopped" })
       continue
     }
-    const r = await run("nice", ["-n", "15", "sh", "-c", command], { cwd, timeoutMs })
+    if (gate?.skip) {
+      out.push({ command, passed: false, code: -1, skipped: true, output: `[not run: ${gate.skip}]` })
+      continue
+    }
+    const r = gate
+      ? await run("sh", ["-c", await gate.wrap(`nice -n 15 sh -c ${shellQuote(command)}`)], { cwd, timeoutMs, ...(Object.keys(gate.env).length ? { env: gate.env } : {}) })
+      : await run("nice", ["-n", "15", "sh", "-c", command], { cwd, timeoutMs })
     const text = `${r.stdout}\n${r.stderr}`.trim()
     const score = parseScoreLines(r.stdout)
-    out.push({ command, passed: r.code === 0 && !r.timedOut, code: r.code, output: (r.timedOut ? "[timed out]\n" : "") + text.slice(-3000), ...(score ? { score } : {}) })
+    out.push({ command, passed: r.code === 0 && !r.timedOut, code: r.code, output: (r.timedOut ? "[timed out]\n" : "") + text.slice(-3000), ...(score ? { score } : {}), ...(gate?.unsandboxed ? { unsandboxed: true } : {}) })
   }
   return out
+}
+
+// One shell word in single quotes: a check's text reaches `sh -c` as one argument, whatever quotes and spaces it has.
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`
 }
 
 // The cases the checks' MM_SCORE lines counted together; undefined when none of them graded anything.
@@ -299,12 +320,19 @@ export function gradedOf(results: readonly GateResult[]): { passed: number; tota
 // A contract's evaluator in the worker's directory, repeated as the contract says; the median of the runs is the
 // measurement, and seconds what all runs took (the contract's cost per evaluation, for its stop rule). The evaluator
 // is told which corpus it measures on; the held-out corpus (P4) comes with its directory.
-export async function runEvaluator(dir: string, contract: Contract, corpus: "visible" | "heldout" = "visible", run: Exec = exec, corpusDir?: string): Promise<{ measured: Measured; seconds: number }> {
+// gate: the sandbox it runs in, like a check (A1-T12). Its MM_* variables are set on the command line, because a
+// wrapped command does not keep the environment the caller passed to `run` alone.
+export async function runEvaluator(dir: string, contract: Contract, corpus: "visible" | "heldout" = "visible", run: Exec = exec, corpusDir?: string, gate?: Gate): Promise<{ measured: Measured; seconds: number }> {
+  if (gate?.skip) return { measured: measuredOf(contract, { code: -1, stdout: "", stderr: `not run: ${gate.skip}`, timedOut: false }), seconds: 0 }
   const started = Date.now()
   const runs: Measured[] = []
   for (let i = 0; i < contract.repeats; i++) {
     const env = { MM_CORPUS: corpus, MM_REPEAT: String(i + 1), ...(corpusDir ? { MM_CORPUS_DIR: corpusDir } : {}) }
-    const m = measuredOf(contract, await run("nice", ["-n", "15", "sh", "-c", contract.evaluator], { cwd: dir, timeoutMs: contract.timeoutMs, env }))
+    const told = `MM_CORPUS=${shellQuote(env.MM_CORPUS)} MM_REPEAT=${shellQuote(env.MM_REPEAT)}${corpusDir ? ` MM_CORPUS_DIR=${shellQuote(corpusDir)}` : ""}`
+    const r = gate
+      ? await run("sh", ["-c", `${told} ${await gate.wrap(`nice -n 15 sh -c ${shellQuote(contract.evaluator)}`)}`], { cwd: dir, timeoutMs: contract.timeoutMs, env: gate.env })
+      : await run("nice", ["-n", "15", "sh", "-c", contract.evaluator], { cwd: dir, timeoutMs: contract.timeoutMs, env })
+    const m = measuredOf(contract, r)
     runs.push(m)
     if (!m.valid) break // one invalid run makes the measurement invalid; the others would only cost time
   }
@@ -414,4 +442,41 @@ export async function rebaseTask(w: Pick<TaskWorktree, "worktree">, integrationB
 export async function fastForward(integrationWorktree: string, taskBranch: string, run: Exec = exec): Promise<TrainStep> {
   const ff = await run("git", ["merge", "-q", "--ff-only", taskBranch], { cwd: integrationWorktree })
   return ff.code === 0 ? { ok: true, moved: false } : { ok: false, conflict: ff.stderr.trim().slice(-500) }
+}
+
+// --- Plan mode: a throwaway worktree of its own -------------------------------------------------------------
+
+// A plan's drafts sit apart from the job's worktrees, under the state directory like everything else the plugin writes,
+// so a throwaway branch is never mistaken for a job's branch when the plan is read later.
+export function planArea(project: string, jobId: string): string {
+  return statePath(project, "plan", jobId)
+}
+
+export interface PlanWorktree {
+  readonly branch: string
+  readonly worktree: string // the git worktree root: what git commands need
+  readonly dir: string // where the planner works: the plan has no project offset, so the two coincide
+  readonly base: string // the commit the branch started from
+}
+
+// A plan is drafted in a worktree off HEAD and thrown away: the user's checkout stays untouched while the planner
+// reads and writes, and nothing it writes can reach a task. The branch name is the plan's own, so no job branch can
+// collide with it.
+export async function preparePlanWorktree(project: string, jobId: string, taskId: string, run: Exec = exec): Promise<PlanWorktree> {
+  const branch = `plan/${jobId}/${taskId}`
+  const worktree = join(planArea(project, jobId), "worktrees", taskId)
+  const head = await run("git", ["rev-parse", "HEAD"], { cwd: project })
+  if (head.code !== 0) throw new IntegrationError("the project has no commit for a plan worktree to start from")
+  const base = head.stdout.trim()
+  await removePlanWorktree(project, { branch, worktree }, run) // a leftover of an interrupted run
+  const added = await run("git", ["worktree", "add", "-q", "-b", branch, worktree, base], { cwd: project })
+  if (added.code !== 0) throw new IntegrationError(`git worktree add failed: ${added.stderr.trim()}`)
+  return { branch, worktree, dir: worktree, base }
+}
+
+// Unlike a task worktree, a plan one is removed both when its task is done and when the plan is: the second removal
+// finds nothing, and that is the expected state, not a failure.
+export async function removePlanWorktree(project: string, w: Pick<PlanWorktree, "branch" | "worktree">, run: Exec = exec): Promise<void> {
+  await run("git", ["worktree", "remove", "--force", w.worktree], { cwd: project })
+  await run("git", ["branch", "-D", w.branch], { cwd: project })
 }

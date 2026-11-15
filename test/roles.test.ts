@@ -65,13 +65,26 @@ test("the web is open to research only; code asks before shell commands", () => 
   assert.equal(effect(ROLES.find((r) => r.id === "test")!.rules, "shell", "python -m pytest*"), "allow")
 })
 
+test("an investigator may run the project's tests and linters in its plan worktree, asks for the rest, and reports artifacts and findings", () => {
+  const role = roleByAgent("investigator")
+  assert.ok(role, "the investigator is a role agent")
+  assert.equal(role.id, "investigator")
+  for (const cmd of ["npm test*", "cargo test*", "npx tsc*"]) assert.equal(effect(role.rules, "shell", cmd), "allow", cmd)
+  assert.equal(effect(role.rules, "shell"), "ask", "the rest of the shell is asked about")
+  assert.equal(effect(role.rules, "subagent"), "deny", "a worker never delegates further")
+  assert.equal(effect(role.rules, "webfetch"), "deny")
+  assert.match(role.system, /plan worktree/)
+  assert.match(role.system, /Artifacts:/)
+  assert.match(role.system, /Findings:/)
+})
+
 test("a coder may run the project's own tests and linters (live test: it could run no type-checker at all)", () => {
   const code = ROLES.find((r) => r.id === "code")!.rules
   for (const cmd of ["npm test*", "uv run pytest*", "uv run pyright*", "npx tsc*", "cargo test*"]) {
     assert.equal(effect(code, "shell", cmd), "allow", cmd)
   }
   // The same set for every other role that may run commands, so no writer is left unable to check its own work.
-  for (const id of ["test", "visual", "debug", "review"]) {
+  for (const id of ["test", "visual", "debug", "investigator", "review"]) {
     const rules = ROLES.find((r) => r.id === id)!.rules
     for (const cmd of ["npm test*", "uv run pyright*", "npx tsc*"]) assert.equal(effect(rules, "shell", cmd), "allow", `${id} ${cmd}`)
   }
@@ -99,7 +112,7 @@ test("a coder may run the readers after a pipe: OpenCode asks about each segment
 })
 
 test("the readers that write are denied, and only because the deny comes after the allow", () => {
-  for (const id of ["code", "test", "visual", "debug", "review"]) {
+  for (const id of ["code", "test", "visual", "debug", "investigator", "review"]) {
     const rules = ROLES.find((r) => r.id === id)!.rules
     for (const cmd of ["sed -i s/a/b/ f.ts", "sed --in-place s/a/b/ f.ts", "sort -o out.txt in.txt", "sort --output=out.txt in.txt", "tee out.txt"]) {
       assert.equal(effectFor(rules, cmd), "deny", `${id}: ${cmd}`)

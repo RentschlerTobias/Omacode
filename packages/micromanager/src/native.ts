@@ -13,19 +13,20 @@
 //
 // Every plugin instance of one server shares this state (a moved worker is served by the instance of its worktree).
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve, sep } from "node:path"
 
 import { Graphs, graphBrief, queryGraph, type Graph } from "./graph.ts"
 import { HEADER } from "./hooks.ts"
 import { better, coarse, contractBrief, describe, guardViolations, heldOutDir, keepHeldOut, median, parseContract, reached, type Contract, type Measured } from "./contract.ts"
 import {
-  changedFiles, checkTimeoutOf, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, prepareIntegration, prepareTaskWorktree, rebaseTask, removeTaskWorktree, validateIntegration,
+  changedFiles, checkTimeoutOf, commitTask, dirtyDeclared, dirtyPaths, exec as defaultExec, fastForward, frozenChanged, gradedOf, hashFiles, IntegrationError, planArea, prepareIntegration, preparePlanWorktree, prepareTaskWorktree, rebaseTask, removePlanWorktree, removeTaskWorktree, validateIntegration,
   repoRel, revertFiles, runEvaluator, runGate, taskDir,
   type Exec, type GateResult,
 } from "./worktree/git.ts"
 import { addDelegated, checkCwdProblem, checkSetProblems, parseFiles, stripTaskWorktreeCwd } from "./plan.ts"
+import { gateFor, unsandboxedNote, type Gate, type GateDeps, type GateInput } from "./gatebox.ts"
 import { WRITERS } from "./profile.ts"
 import { FIX_ROUNDS } from "./watchdog.ts"
 import { ROLES, roleByAgent, roleById, type Role, type RoleId } from "./roles.ts"
@@ -41,7 +42,9 @@ import { settled, startable } from "./continuation.ts"
 import { isStarted, lastOptions, loadControl, optionsOf } from "./control.ts"
 import { formInput, startForm } from "./forms.ts"
 import { estimate, EVOLVER_MAX_EVAL_S, evolverFits, evolverForm } from "./evolver.ts"
-import { gitState } from "./nogit.ts"
+import { copyForPlan, gitState } from "./nogit.ts"
+import { parseArtifacts, promoteArtifacts, writePromotionRecord } from "./promote.ts"
+import { docFromJob, planDocPath, readPlanDoc, renderPlanDoc, writePlanDoc } from "./plandoc.ts"
 import { allFailedText, attemptBrief, attemptFailedText, attempts, DEFAULT_GRACE, DEFAULT_PICK, fanOutText, graceMs, pickFor, pickOf, rankQuality, ranked, standing, wonText, type Assessment, type Grace, type Pick as TrialPick, type Quality, type Review } from "./trials.ts"
 
 // The first line OpenCode puts before a new subagent's prompt; how the prompt hook tells a child's first turn.
@@ -203,6 +206,10 @@ export interface NativeDeps {
   readonly exec?: Exec
   readonly installedSkills?: ReadonlySet<string>
   readonly graphs?: Pick<Graphs, "get"> // the code graph an explorer starts from
+  // Where a failure that must not stop a job is written down. A plan.md that cannot be written is not a reason to refuse
+  // to start a plan job, but it must not vanish either: the plugin wires its own log, a test that does not care passes
+  // nothing and the failure is only ignored.
+  readonly log?: (level: "info" | "warn" | "error", text: string) => void
   // Plan first (the user, 2026-10-20): a writer starts only from a todo of a job the user started with the start form,
   // so the work is planned with its order before anything changes files. Readers still start on the fly. Off in the
   // tests that delegate writers directly.
@@ -240,6 +247,16 @@ export interface NativeDeps {
   // being abandoned and redone. The plugin owns the session prompt and the live-session set; Native only asks.
   readonly nudge?: (session: string, text: string) => void
   readonly onNudge?: (session: string) => void
+  // Whether worker commands can run in a sandbox, and why not (src/shell/sandbox.ts, the plugin's one check per
+  // server). Plan mode is fail-closed (A1-T7): with no sandbox a plan job delegates no writers at all.
+  readonly sandboxAvailable?: () => boolean
+  readonly sandboxReason?: () => string | undefined
+  // D23 (A1-T14): whether the user (or the config) confirmed this job may run without a sandbox. A plan writer starts
+  // only with one of the two: a sandbox, or the user's word for this job (stored in its control file, src/control.ts).
+  readonly unsandboxedAllowed?: (project: string, jobId: string) => boolean
+  // The sandbox a check or an evaluator runs in (src/gatebox.ts, A1-T12). Without it the commands run unwrapped, as
+  // they did before the gate existed (the plugin always wires it).
+  readonly gate?: GateDeps
 }
 
 export const TRIAL_DEADLINE_MS = 20 * 60_000
@@ -337,6 +354,16 @@ export interface Delegated {
   readonly notes: readonly string[] // what the plugin logs at info level: the project offset, uncommitted state
 }
 
+// The job as it was before a plan task's finish: the task's artifacts not yet promoted, its status still open, its
+// summary not yet recorded. The document rendered from it is what the plugin itself wrote at the task's start or at the
+// previous plan finish, which is how a rewrite tells the plugin's own plan.md from a richer one a plan agent wrote.
+function priorToFinish(job: Job, task: Task): Job {
+  return {
+    ...job,
+    tasks: job.tasks.map((t) => (t.id === task.id ? { ...t, status: "pending" as const, promoted: [], summary: undefined } : t)),
+  }
+}
+
 export class Native {
   readonly #exec: Exec
   readonly #skills: ReadonlySet<string>
@@ -351,6 +378,7 @@ export class Native {
   constructor(deps: NativeDeps = {}) {
     this.#exec = deps.exec ?? defaultExec
     this.#skills = deps.installedSkills ?? new Set()
+    this.#log = deps.log
     this.#graphs = deps.graphs ?? new Graphs(this.#exec)
     this.#planFirst = deps.planFirst ?? false
     this.#noGit = deps.noGit
@@ -368,8 +396,17 @@ export class Native {
     this.#checkTimeoutMs = deps.checkTimeoutMs
     this.#nudge = deps.nudge
     this.#onNudge = deps.onNudge
+    this.#sandboxAvailable = deps.sandboxAvailable
+    this.#sandboxReason = deps.sandboxReason
+    this.#unsandboxedAllowed = deps.unsandboxedAllowed
+    this.#gateDeps = deps.gate
   }
 
+  readonly #gateDeps?: GateDeps
+  readonly #log?: NativeDeps["log"]
+  readonly #sandboxAvailable?: NativeDeps["sandboxAvailable"]
+  readonly #sandboxReason?: NativeDeps["sandboxReason"]
+  readonly #unsandboxedAllowed?: NativeDeps["unsandboxedAllowed"]
   readonly #nudge?: NativeDeps["nudge"]
   readonly #onNudge?: NativeDeps["onNudge"]
   readonly #evolverMax: () => number
@@ -379,6 +416,21 @@ export class Native {
   // How long a check of this job may run.
   #checkTimeout(job: Job | undefined): number {
     return checkTimeoutOf(job, this.#checkTimeoutMs)
+  }
+
+  // The sandbox a check or a contract's evaluator runs in, built per run: its rules name the worktree and the job's
+  // grants. Undefined when the plugin wired no gate (a test that runs no sandbox), so the command runs as it did.
+  #gate(job: Job, input: Omit<GateInput, "jobId" | "plan">): Promise<Gate | undefined> {
+    const deps = this.#gateDeps
+    return deps ? gateFor(deps, { ...input, jobId: job.id, plan: job.isolation === "plan" }) : Promise.resolve(undefined)
+  }
+
+  // The gate of a worker's own run: its worktree, its role and its frozen files.
+  #entryGate(entry: Entry, job: Job, role: string): Promise<Gate | undefined> {
+    return this.#gate(job, {
+      project: entry.project, writer: entry.writer, role, worktree: entry.worktree, dir: entry.dir,
+      frozen: entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : [],
+    })
   }
 
   readonly #evolverReady: () => boolean
@@ -423,6 +475,68 @@ export class Native {
     job.isolation = "none"
     saveJob(project, job)
     return job
+  }
+
+  // A1-T7, the one fail-closed rule of plan mode: with no sandbox, no plan writer or investigator starts. The job
+  // keeps the reason, once, so its status and its plan say why it ran reader-only. Returns whether it is set. why is
+  // the user's own choice when they answered "Run read-only" on the sandbox form (D23); otherwise the machine's.
+  readerOnly(project: string, job: Job, why = "no sandbox on this machine"): boolean {
+    if (!job.planReaderOnly) {
+      job.planReaderOnly = why
+      saveJob(project, job)
+    }
+    return Boolean(job.planReaderOnly)
+  }
+
+  // A1-T8: the plan document Build mode reads. The plugin always leaves one — docFromJob is the floor — but a plan
+  // agent's own, richer document wins: an existing document that parses and differs from the generated one is kept as
+  // it is, so a rewrite never clobbers findings, questions or recommendations the agent wrote down itself. To tell the
+  // plugin's own earlier document from the agent's, a finish compares against the render the plugin would have written
+  // before that finish (the job minus the task's just-promoted artifacts, src/plandoc.ts docFromJob): the file equals
+  // it, so it is the plugin's and the new artifacts replace it; it parses but differs, so the agent wrote it and it
+  // stays. The one exception is a reader-only job whose document does not say so: the restriction must be visible where
+  // the user and Build mode look, so that one is rewritten. A failure to write is logged, never thrown — a job does not
+  // fail to start because its plan.md could not be written, and the next finish tries again. Nothing here writes into
+  // the project: plan.md lives in the job's plan area.
+  #ensurePlanDoc(project: string, job: Job, finishing?: Task): void {
+    try {
+      const doc = docFromJob(job)
+      const existing = readPlanDoc(project, job.id)
+      const text = existing.doc ? readFileSync(existing.path, "utf8") : undefined
+      const generated = renderPlanDoc(job, doc)
+      const ours = finishing ? renderPlanDoc(job, docFromJob(priorToFinish(job, finishing))) : undefined
+      const keeps = existing.doc !== undefined && text !== generated && (ours === undefined || text !== ours) &&
+        (job.planReaderOnly === undefined || existing.doc.readerOnly !== undefined)
+      if (!keeps) writePlanDoc(project, job.id, doc)
+    } catch (err) {
+      this.#log?.("warn", `plan.md for ${job.id} could not be written: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  // Whether this delegation must be refused because its plan job has no sandbox: it is then flagged and the job saved,
+  // and the caller throws. Readers are not asked: they investigate as usual. A job the user confirmed for exactly this
+  // (D23, its control file carries the grant) is not refused: the checks then run unwrapped and say so.
+  #refusePlanWriter(project: string, job: Job, role: Role): boolean {
+    if (job.isolation !== "plan" || !WRITERS.has(role.id) || this.#sandboxAvailable?.() !== false) return false
+    if (this.#unsandboxedAllowed?.(project, job.id) === true) return false
+    return this.readerOnly(project, job)
+  }
+
+  // The refusal of a plan writer without a sandbox: what did not start, why, and what to do first.
+  #readerOnlyError(job: Job): DelegationError {
+    const why = this.#sandboxReason?.()
+    return new DelegationError(
+      `Not started: plan job ${job.id} runs reader-only because there is no sandbox on this machine${why ? ` (${why})` : ""}. ` +
+      `Readers still investigate; fix the sandbox first (omacode doctor) and start the task again.`,
+    )
+  }
+
+  // A1-T11: a plan job started without a sandbox goes on reader-only, and the micromanager that started it says so
+  // instead of finding out at the first investigator. The job already carries the reason (readerOnly), this is what
+  // the user reads at the start.
+  #readerOnlyWarning(job: Job): string {
+    const why = this.#sandboxReason?.()
+    return `Job ${job.id} starts reader-only: there is no sandbox on this machine${why ? ` (${why})` : ""}, so no investigator will be delegated and nothing of the project is touched. Readers still look; fix the sandbox first (omacode doctor) to run investigators.`
   }
 
   readonly #planFirst: boolean
@@ -572,6 +686,7 @@ export class Native {
     if (!d.body) throw new DelegationError("Not started: the prompt has no task.")
 
     const job = this.job(project, parent)
+    if (this.#refusePlanWriter(project, job, role)) throw this.#readerOnlyError(job)
     this.#setGoal(project, job, d.goal)
     const c = this.#contractFor(job, writer, d.contract, assess)
     this.#offerEvolver(project, job, c, parsed.files, input.description.trim() || d.body.split("\n")[0]!, d.checks, d, assess)
@@ -670,7 +785,8 @@ export class Native {
     // itself.
     const rel = await this.#integrate(project, job, false)
     const dir = taskDir(job.integrationWorktree ?? project, rel)
-    const { measured, seconds } = await runEvaluator(dir, c, "visible", this.#exec)
+    const gate = await this.#gate(job, { project, writer: true, role: "code", worktree: job.integrationWorktree ?? project, dir })
+    const { measured, seconds } = await runEvaluator(dir, c, "visible", this.#exec, undefined, gate)
     this.#count(job, c, seconds)
     // A guard or a target on a value the evaluator does not print is never checked (live run, 2026-10-26: a drafted
     // guard "cases.passed", which is no score, held nothing): refused while the draft can still be fixed.
@@ -683,7 +799,7 @@ export class Native {
       c.costPerEval = Math.round((seconds / c.repeats) * 10) / 10
       if (c.quick) {
         // The quick stage's own baseline: the cascade compares a candidate there with today's code there.
-        const q = await runEvaluator(dir, { ...c, evaluator: c.quick.evaluator, repeats: 1 }, "visible", this.#exec)
+        const q = await runEvaluator(dir, { ...c, evaluator: c.quick.evaluator, repeats: 1 }, "visible", this.#exec, undefined, gate)
         this.#count(job, c, q.seconds)
         if (q.measured.valid) {
           c.baseline.quick = { ...q.measured.values }
@@ -691,7 +807,7 @@ export class Native {
         }
       }
       if (c.corpus.heldOut) {
-        const held = await runEvaluator(dir, c, "heldout", this.#exec, heldOutDir(project, job.id, c.id))
+        const held = await runEvaluator(dir, c, "heldout", this.#exec, heldOutDir(project, job.id, c.id), gate)
         this.#count(job, c, held.seconds)
         if (held.measured.valid) c.baseline.heldOut = { ...held.measured.values }
       }
@@ -1024,16 +1140,17 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     c.round = { ...(c.round ?? { loopholes: [] }), step: "baseline" }
     const rel = await this.#integrate(project, job, false)
     const dir = taskDir(job.integrationWorktree ?? project, rel)
+    const gate = await this.#gate(job, { project, writer: true, role: "code", worktree: job.integrationWorktree ?? project, dir })
     const once = { ...c, repeats: 1 }
     const visible: Measured[] = []
     const heldOut: Measured[] = []
     let seconds = 0
     for (let i = 0; i < Math.max(3, c.repeats); i++) {
-      const r = await runEvaluator(dir, once, "visible", this.#exec)
+      const r = await runEvaluator(dir, once, "visible", this.#exec, undefined, gate)
       visible.push(r.measured)
       seconds += r.seconds
       if (c.corpus.heldOut) {
-        const h = await runEvaluator(dir, once, "heldout", this.#exec, heldOutDir(project, job.id, c.id))
+        const h = await runEvaluator(dir, once, "heldout", this.#exec, heldOutDir(project, job.id, c.id), gate)
         heldOut.push(h.measured)
         seconds += h.seconds
       }
@@ -1107,7 +1224,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     const used = c.used ?? { evaluations: 0, seconds: 0 }
     const spent = (c.stop.evaluations && used.evaluations >= c.stop.evaluations && `${c.stop.evaluations} evaluations`) || (c.stop.seconds && used.seconds >= c.stop.seconds && `${c.stop.seconds}s of evaluation`)
     if (spent) return { failed: { command: `evaluator of ${c.id}`, passed: false, code: -1, output: `not run: contract ${c.id} allows ${spent}, and they are used up` }, exhausted: true }
-    const { measured, seconds } = await runEvaluator(entry.dir, c, "visible", this.#exec)
+    const { measured, seconds } = await runEvaluator(entry.dir, c, "visible", this.#exec, undefined, await this.#entryGate(entry, job, task.role))
     this.#count(job, c, seconds)
     const broken = measured.valid ? guardViolations(c, measured) : []
     if (!measured.valid || broken.length) {
@@ -1135,6 +1252,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     if (!job) throw new DelegationError(`Not started: there is no job ${attempt.job} in this project.`)
     if (job.facilitator && job.facilitator !== parent) throw new DelegationError(`Not started: job ${job.id} belongs to another micromanager session.`)
     if (loadControl(project, job.id).stopped) throw new DelegationError(`Not started: the user stopped job ${job.id}. Ask them whether to go on; nothing starts until they start it again.`)
+    if (this.#refusePlanWriter(project, job, role)) throw this.#readerOnlyError(job)
     const head = job.tasks.find((t) => t.id === attempt.task)
     if (!head?.trial || head.trial.of !== head.id) throw new DelegationError(`Not started: ${attempt.task} runs no trial; start a task with its own prompt instead.`)
     if (head.role !== role.id) throw new DelegationError(`Not started: ${head.id} is a task for ${roleById(head.role)?.agent ?? head.role}; start its attempts with that agent.`)
@@ -1177,6 +1295,12 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // The job's branch and its worktree, made at its first task. Returns the project's offset inside the repository.
   async #integrate(project: string, job: Job, writer = true): Promise<string> {
+    if (job.isolation === "plan") {
+      // A plan job works only in its plan worktrees: it gets no integration branch and no integration worktree, ever.
+      job.integrationBranch = undefined
+      job.integrationWorktree = undefined
+      return ""
+    }
     if (job.isolation === "none") {
       job.integrationWorktree = project
       job.integrationRel = ""
@@ -1212,7 +1336,33 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     const writer = WRITERS.has(role.id)
     const base = job.integrationWorktree ?? project // a reader in a folder without git reads the folder itself
     const entry: Entry = { project, jobId: job.id, taskId: task.id, parent, writer, dir: taskDir(base, rel), worktree: base, rel, checks, ...(task.contract ? { contract: task.contract.id } : {}) }
-    if (writer && job.isolation === "none") {
+    if (writer && job.isolation === "plan") {
+      // Plan mode: a writer drafts in a plan worktree of its own under the state directory, off HEAD, never in the
+      // project. A project without a repository (or without a commit to start from) gets a copy instead, and no branch.
+      const at = join(planArea(project, job.id), "worktrees", task.id)
+      // git materialises a worktree of the repository ROOT, so a project below it lives at <worktree>/<rel> and the
+      // worker must be put there; a copy of the project is the project, and its offset is empty.
+      let planRel = ""
+      let w: { branch?: string; worktree: string; dir: string }
+      if ((await gitState(project, this.#exec)) === "repo") {
+        const prepared = await preparePlanWorktree(project, job.id, task.id, this.#exec)
+        planRel = await repoRel(project, this.#exec)
+        // The base travels with the task: the record's patch is `git diff base..HEAD`, and this is the process that
+        // knows it (a restart adopts the task from its file).
+        task.planBase = prepared.base
+        w = { branch: prepared.branch, worktree: prepared.worktree, dir: taskDir(prepared.worktree, planRel) }
+      } else {
+        copyForPlan(project, at)
+        w = { worktree: at, dir: at }
+      }
+      entry.dir = w.dir
+      entry.worktree = w.worktree
+      entry.rel = planRel
+      if (w.branch) entry.branch = w.branch
+      task.worktree = w.worktree
+      task.worktreeRel = planRel
+      if (w.branch) task.branch = w.branch
+    } else if (writer && job.isolation === "none") {
       // No git: the project itself, and no branch; the worktree is the project, so adopt and resume keep it.
       task.worktree = project
       task.worktreeRel = ""
@@ -1241,10 +1391,13 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   }
 
   // run_job: a planned job runs on the micromanager's own workers from now on. The job's phase goes to execute and the
-  // session becomes its facilitator; nextStep (src/continuation.ts) then names the tasks to start.
-  runPlanned(project: string, jobId: string, parent: string): { job?: Job; problem?: string } {
+  // session becomes its facilitator; nextStep (src/continuation.ts) then names the tasks to start. Started from the plan
+  // agent (plan = true), the job is a plan job even when it was planned as a normal one, and it then checks the
+  // sandbox: with none it goes on reader-only, with the warning that says why (A1-T11).
+  runPlanned(project: string, jobId: string, parent: string, plan = false): { job?: Job; problem?: string; warning?: string } {
     const job = this.#jobs.get(key(project, jobId)) ?? listJobs(project).find((j) => j.id === jobId)
     if (!job) return { problem: `there is no job ${jobId} in this project` }
+    if (plan) job.isolation = "plan"
     if (job.rolling) return { problem: `${jobId} holds the tasks you delegated yourself; it has no plan to run` }
     if (!job.tasks.length) return { problem: `${jobId} has no tasks yet; plan it with plan_job first` }
     if (job.phase === "plan_gate") moveJob(job, "execute")
@@ -1257,6 +1410,16 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     }
     this.#jobs.set(key(project, job.id), job)
     saveJob(project, job)
+    // The job starts, and its first investigator would be refused: say it now, so the micromanager can tell the user
+    // before it names a task that cannot start. A job the user confirmed may run unwrapped (D23) is not reader-only.
+    if (job.isolation === "plan" && this.#sandboxAvailable?.() === false && this.#unsandboxedAllowed?.(project, job.id) !== true) {
+      this.readerOnly(project, job)
+      // Its plan.md says so too (A1-T7/T8): from the start, before any task runs, not only once someone asks.
+      this.#ensurePlanDoc(project, job)
+      return { job, warning: this.#readerOnlyWarning(job) }
+    }
+    // A plan job always leaves the document Build mode reads, even before its first task hands anything back.
+    if (job.isolation === "plan") this.#ensurePlanDoc(project, job)
     return { job }
   }
 
@@ -1271,6 +1434,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     if (job.phase !== "execute") throw new DelegationError(`Not started: job ${job.id} is ${job.phase}; run_job resumes it.`)
     const control = loadControl(project, job.id)
     if (control.stopped) throw new DelegationError(`Not started: the user stopped job ${job.id}. Ask them whether to go on; nothing starts until they start it again.`)
+    if (this.#refusePlanWriter(project, job, role)) throw this.#readerOnlyError(job)
     const unstarted = this.#planFirst && job.rolling && WRITERS.has(role.id) ? this.startNote(project, job) : undefined
     if (unstarted) throw new DelegationError(`Not started: ${unstarted}`)
     const task = job.tasks.find((t) => t.id === planned.task)
@@ -1702,13 +1866,32 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       const why = cwdProblems[i]
       return why ? [{ command, passed: false, code: 1, output: why }] : []
     })
-    const results = [...(await runGate(entry.worktree, safeChecks, this.#exec, this.#checkTimeout(job), entry.dir)), ...blockedChecks]
+    const gate = await this.#entryGate(entry, job, task.role)
+    const results = [...(await runGate(entry.worktree, safeChecks, this.#exec, this.#checkTimeout(job), entry.dir, {}, gate)), ...blockedChecks]
     if (frozen.length) results.push({ command: "frozen files unchanged", passed: false, code: 1, output: `You changed ${frozen.join(", ")}, which you may read and run but not change; they are restored to how they were. Change the code instead. If one of them is wrong, ask for the change with request_check_change, with the line that shows it.` })
     const graded = gradedOf(results)
     if (graded) task.graded = graded
+    // D23: the checks ran without a box because the user confirmed this job; every stage line that reports them says so.
+    const unsandboxed = unsandboxedNote(results)
     const failed = results.filter((r) => !r.passed)
     // Another attempt of its trial won while these checks ran (and took the worktree away).
     if (task.status === "cancelled") return { text: lostText(job, task) }
+    // No sandbox to run the checks in: they did not run at all, and no fix round can change that (A1-T12). The task is
+    // blocked with the gate's reason instead of being handed back to the worker.
+    const skipped = failed.filter((r) => r.skipped)
+    if (failed.length && skipped.length === failed.length) {
+      const why = skipped[0]!.output
+      stage(task, "gate", "fail", why)
+      moveTask(task, "blocked")
+      task.summary = `its checks were not run, so it is blocked: ${why}`
+      const note = this.#trialFailed(job, task, entry.project) ?? `[micromanager] ${task.id} ${task.title}: its checks were not run (${why}), so the task is blocked instead of handed back. Make the sandbox usable and continue it with steer_task and its sessionID ${session}.`
+      saveJob(entry.project, job)
+      return {
+        text: `I could not run your checks, so ${task.id} is blocked rather than handed back to you: ${why}. A check never runs outside the sandbox. Your work is still in your worktree; say plainly in your report that the checks were not run.`,
+        note,
+        parent: entry.parent,
+      }
+    }
     // The contract's evaluator runs only once the checks pass: it may take minutes, and a broken build measures nothing.
     // A red team is measured without its guards (src/contractround.ts): gaming them is what it is for.
     const fitness = failed.length || task.redteam ? {} : await this.#measure(entry, job, task)
@@ -1716,7 +1899,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     if ((task.status as Task["status"]) === "cancelled") return { text: lostText(job, task) }
     if (fitness.failed) {
       failed.push(fitness.failed)
-      stage(task, "gate", "pass", entry.checks.join(", "))
+      stage(task, "gate", "pass", `${entry.checks.join(", ")}${unsandboxed}`)
       // A used-up stop rule is final for this worker: another fix round could not be measured.
       if (fitness.exhausted) task.attempts = FIX_ROUNDS
     }
@@ -1729,7 +1912,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       // reason, because at the cap the useful message is that the CHECK is the problem, not the work.
       task.attempts++
       if (task.attempts > FIX_ROUNDS) {
-        stage(task, what, "fail", failed.map((f) => f.command).join(", "))
+        stage(task, what, "fail", `${failed.map((f) => f.command).join(", ")}${unsandboxed}`)
         moveTask(task, "blocked")
         task.summary = `its checks still fail after ${FIX_ROUNDS} fix round(s): ${failed.map((f) => f.command).join(", ")}`
         const note = this.#trialFailed(job, task, entry.project) ?? `[micromanager] ${task.id} ${task.title}: its worker hit the limit of ${FIX_ROUNDS} fix rounds with the checks still failing (${failed.map((f) => f.command).join(", ")}). If the check is what is wrong -- a path that does not exist in the worktree, a command the gate refuses -- correct the task with steer_task and its sessionID ${session} rather than starting a new worker.`
@@ -1742,13 +1925,13 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       }
       moveTask(task, "fixing")
       moveTask(task, "running")
-      stage(task, what, "fail", fitness.failed ? fitness.failed.output.split("\n")[0]! : failed.map((f) => f.command).join(", "))
+      stage(task, what, "fail", `${fitness.failed ? fitness.failed.output.split("\n")[0]! : failed.map((f) => f.command).join(", ")}${unsandboxed}`)
       saveJob(entry.project, job)
       return { text: failText(fitness.failed ? `Your checks pass, but the fitness contract does not hold (fix round ${task.attempts} of ${FIX_ROUNDS})` : `The checks fail in your directory (fix round ${task.attempts} of ${FIX_ROUNDS})`, failed, entry.dir) }
     }
     if (job.isolation === "none") {
       // No git: nothing to commit or merge, and no way to see what changed; the checks are the evidence.
-      stage(task, "gate", "pass", entry.checks.length ? entry.checks.join(", ") : "no checks given")
+      stage(task, "gate", "pass", `${entry.checks.length ? entry.checks.join(", ") : "no checks given"}${unsandboxed}`)
       if (fitness.evidence) stage(task, "fitness", "pass", fitness.evidence)
       moveTask(task, "passed")
       saveJob(entry.project, job)
@@ -1756,6 +1939,73 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       return {
         text: `Done; your change is in the project folder (no git, so nothing is committed); ${checks}. Now end with your short report.`,
         note: `[micromanager] ${task.id} ${task.title}: done in the project folder (no git); ${checks}.`,
+        parent: entry.parent,
+      }
+    }
+    if (job.isolation === "plan") {
+      // A plan job's work stays in its plan worktree: nothing is merged and no branch outlives the task. A read-only
+      // investigation may legitimately change nothing, so the "no file was changed" check below does not apply.
+      // The one thing that leaves the worktree is what the report's Artifacts: lines name, and every path is validated
+      // before a byte is copied (src/promote.ts). A refused path keeps the task open: a report that names something it
+      // could not hand back is not done, and a silent drop would teach the planner that a bad path works.
+      const artifacts = parseArtifacts(summary)
+      const promotion = promoteArtifacts({ project: entry.project, jobId: job.id, taskId: task.id, root: entry.worktree, dir: entry.dir, paths: artifacts })
+      if (!promotion.ok) {
+        moveTask(task, "fixing")
+        moveTask(task, "running")
+        stage(task, "promote", "fail", promotion.rejected.map((r) => `${r.path}: ${r.reason}`).join(", ").slice(0, 300))
+        saveJob(entry.project, job)
+        return {
+          text: `Your checks pass, but ${promotion.rejected.length} path(s) of your report's Artifacts: line cannot be promoted, so ${task.id} is not done yet:\n\n${promotion.rejected.map((r) => `- ${r.path}: ${r.reason}`).join("\n")}\n\nNothing of a refused path was copied. A path must name a regular file or a directory inside ${entry.dir}, with no symlinks, no absolute paths and no ".." leaving it. Fix the path, or remove it from the Artifacts: line, and call finish_task again.`,
+          parent: entry.parent,
+        }
+      }
+      stage(task, "gate", "pass", `${entry.checks.length ? entry.checks.join(", ") : "no checks given"}${unsandboxed}`)
+      if (fitness.evidence) stage(task, "fitness", "pass", fitness.evidence)
+      const area = planArea(entry.project, job.id)
+      // The worktree dies with its branch, so the work is committed on that branch first: the record's patch is then
+      // literally `git diff base..HEAD`, and the commit is thrown away with it, never reaching a branch of the user's.
+      // A copy of the project has no branch, so there is no commit and no patch.
+      let git: { base: string; head: string; patch: string } | undefined
+      let record: { manifest: string; findings: string; patch?: string }
+      try {
+        if (entry.branch) {
+          // A task adopted from a file that predates planBase has none: the commit it sits on now is the honest base
+          // for what this finish adds.
+          const base = task.planBase ?? (await this.#exec("git", ["rev-parse", "HEAD"], { cwd: entry.worktree })).stdout.trim()
+          task.planBase = base
+          // A no-op commit is fine: a planner that changed nothing has nothing to record in the patch.
+          await commitTask(entry.worktree, `${task.id}: ${task.title} (plan)`, `Plan job ${job.id}\nWorker: ${task.model ?? "?"} (${task.role}), session ${session}`, this.#exec)
+          const head = await this.#exec("git", ["rev-parse", "HEAD"], { cwd: entry.worktree })
+          if (head.code !== 0) throw new IntegrationError(`git rev-parse failed: ${head.stderr.trim()}`)
+          const diff = await this.#exec("git", ["diff", `${base}..${head.stdout.trim()}`], { cwd: entry.worktree })
+          if (diff.code !== 0) throw new IntegrationError(`git diff failed: ${diff.stderr.trim()}`)
+          git = { base, head: head.stdout.trim(), patch: diff.stdout }
+        }
+        record = writePromotionRecord({ project: entry.project, jobId: job.id, taskId: task.id, title: task.title, report: summary, promotion, checks: entry.checks, ...(git ? { git } : {}) })
+      } catch (err) {
+        // The artifacts are already promoted, which is harmless; without a record the task is not done, and the worker
+        // can call finish_task again once the cause is gone.
+        return {
+          text: `Your checks pass, but the record of this plan task could not be written, so ${task.id} is not done yet: ${err instanceof Error ? err.message : String(err)}. Its artifacts are already promoted. Call finish_task again.`,
+          parent: entry.parent,
+        }
+      }
+      task.promoted = promotion.promoted.map((a) => ({ path: a.path, bytes: a.bytes, sha256: a.sha256 }))
+      stage(task, "promote", "pass", `${promotion.promoted.length} artifact file(s), ${promotion.rejected.length} rejected`)
+      moveTask(task, "passed")
+      saveJob(entry.project, job)
+      // The artifacts are now the job's, so its plan.md says so; a richer document the plan agent wrote is kept.
+      this.#ensurePlanDoc(entry.project, job, task)
+      // The record is on disk, so the throwaway worktree and its branch go now rather than at the job's end.
+      await this.#dropWorktree(entry, task)
+      const checks = `${entry.checks.length ? `checks passed: ${entry.checks.join("; ")}` : "no checks were given"}${fitness.evidence ? `; measured: ${fitness.evidence}` : ""}`
+      const promoted = artifacts.length
+        ? `${promotion.promoted.length} artifact file(s) promoted to ${join(area, "artifacts", task.id)}`
+        : "no Artifacts: line, so nothing was promoted"
+      const named = [record.patch ? `patches/${task.id}.patch` : "no patch (no git)", `findings/${task.id}.md`, `artifacts/${task.id}/manifest.json`].join(", ")
+      return {
+        text: `Done; ${checks}. This is a plan job: nothing is committed or merged into your checkout, and the plan worktree is gone. The record is under ${area} (${named}); ${promoted}. Now end with your short report.`,
         parent: entry.parent,
       }
     }
@@ -1797,7 +2047,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
         parent: entry.parent,
       }
     }
-    stage(task, "gate", "pass", entry.checks.length ? entry.checks.join(", ") : "no checks given")
+    stage(task, "gate", "pass", `${entry.checks.length ? entry.checks.join(", ") : "no checks given"}${unsandboxed}`)
     if (fitness.evidence) stage(task, "fitness", "pass", fitness.evidence)
     const commit = await commitTask(entry.worktree, `${task.id}: ${task.title}`, `Job: ${job.id}\nWorker: ${task.model ?? "?"} (${task.role}), session ${session}${task.summary ? `\n\n${task.summary}` : ""}`, this.#exec)
     if (commit) task.commit = commit
@@ -1855,7 +2105,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   async #hold(entry: Entry, job: Job, task: Task, c: Contract, visible?: string): Promise<{ text: string; note?: string; parent?: string; stop?: string[] }> {
     let held: Measured | undefined
     if (c.corpus.heldOut) {
-      const r = await runEvaluator(entry.dir, c, "heldout", this.#exec, heldOutDir(entry.project, job.id, c.id))
+      const r = await runEvaluator(entry.dir, c, "heldout", this.#exec, heldOutDir(entry.project, job.id, c.id), await this.#entryGate(entry, job, task.role))
       this.#count(job, c, r.seconds)
       held = r.measured
       task.score = { ...held, corpus: "heldout", at: new Date().toISOString() }
@@ -1949,7 +2199,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     const c = job.contracts?.find((x) => x.id === task.redteam)
     let seen = "nothing measured"
     if (c) {
-      const { measured, seconds } = await runEvaluator(entry.dir, c, "visible", this.#exec)
+      const { measured, seconds } = await runEvaluator(entry.dir, c, "visible", this.#exec, undefined, await this.#entryGate(entry, job, task.role))
       this.#count(job, c, seconds)
       if (measured.valid) task.score = { ...measured, corpus: "visible", at: new Date().toISOString() }
       seen = describe(c, measured)
@@ -2008,7 +2258,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       for (const t of order.slice(0, 2)) {
         const e = this.#entries.get(`${job.id}/${t.id}`)
         if (!e || e.removed) continue
-        const r = await runEvaluator(e.dir, c, corpus, this.#exec, corpus === "heldout" ? heldOutDir(project, job.id, c.id) : undefined)
+        const r = await runEvaluator(e.dir, c, corpus, this.#exec, corpus === "heldout" ? heldOutDir(project, job.id, c.id) : undefined, await this.#entryGate(e, job, t.role))
         this.#count(job, c, r.seconds)
         t.score = { ...r.measured, corpus, at: new Date().toISOString() }
       }
@@ -2202,6 +2452,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // Rebase onto the session branch, the checks again when it moved, then the fast-forward.
   async #merge(entry: Entry, job: Job, task: Task): Promise<{ ok: true } | { ok: false; text: string }> {
+    if (job.isolation === "plan") return { ok: false, text: `${task.id} belongs to plan job ${job.id}, which has no branch and nothing to merge.` }
     const v = await validateIntegration(job, this.#exec, entry.project)
     if (!v.ok) {
       moveTask(task, "escalated")
@@ -2222,7 +2473,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
         return { ok: false, text: `Your commit does not apply on top of ${job.integrationBranch}, which other tasks moved on meanwhile (${step.conflict}). Run git rebase ${job.integrationBranch} in your directory, resolve the conflict keeping both changes, run the checks, and call finish_task again.` }
       }
       if (step.moved) {
-        const failed = (await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir)).filter((r) => !r.passed)
+        const failed = (await runGate(entry.worktree, entry.checks, this.#exec, this.#checkTimeout(job), entry.dir, {}, await this.#entryGate(entry, job, task.role))).filter((r) => !r.passed)
         if (failed.length) {
           moveTask(task, "escalated")
           stage(task, "merge", "fail", `checks fail on top of the newer commits: ${failed.map((f) => f.command).join(", ")}`)
@@ -2407,7 +2658,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // The live worker that works in a directory (a shell command's cwd: its own directory or below), for the sandbox
   // The sandbox (src/shell/sandbox.ts). The deepest match wins, so a writer's worktree beats the job's integration worktree it lies in.
-  workerAt(cwd: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
+  workerAt(cwd: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[]; plan: boolean } | undefined {
     const inside = (dir: string) => cwd === dir || cwd.startsWith(`${dir}/`)
     const found = [...this.#entries.values()]
       .filter((e) => !e.ended && (inside(e.dir) || inside(e.worktree)))
@@ -2417,7 +2668,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
 
   // The live worker of a session, for the sandbox (src/shell/): the session that asked for the shell is known there,
   // while the shell hook itself gets no session id. The same facts as workerAt, but by session instead of by directory.
-  workerBySession(session: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } | undefined {
+  workerBySession(session: string): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[]; plan: boolean } | undefined {
     const found = this.#entry(session)
     if (!found || found.ended || !found.session) return undefined
     return this.#task(found) ? this.#facts(found) : undefined
@@ -2427,7 +2678,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
     return this.#job(entry)?.tasks.find((t) => t.id === entry.taskId)
   }
 
-  #facts(entry: Entry): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[] } {
+  #facts(entry: Entry): { project: string; jobId: string; role: RoleId; writer: boolean; dir: string; worktree: string; frozen: string[]; plan: boolean } {
     const task = this.#task(entry)!
     return {
       project: entry.project,
@@ -2437,6 +2688,7 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
       dir: entry.dir,
       worktree: entry.worktree,
       frozen: entry.writer && entry.frozen ? [...entry.frozen.keys()].map((f) => resolve(entry.dir, f)) : [],
+      plan: this.#job(entry)?.isolation === "plan",
     }
   }
 
@@ -2458,7 +2710,27 @@ Its change is measured and never merged; its LOOPHOLE lines come to you when it 
   }
 
   async #dropWorktree(entry: Entry, task?: Task): Promise<void> {
-    if (!entry.writer || entry.removed || !entry.branch) return
+    if (!entry.writer || entry.removed) return
+    const job = this.#job(entry)
+    if (job?.isolation === "plan") {
+      // A plan job's worktree is its own: a git worktree (with a branch) goes through the plan removal; a copy of the
+      // project has no branch, and only a directory that really lies in this job's plan area is ever removed.
+      if (entry.branch) {
+        await removePlanWorktree(entry.project, { worktree: entry.worktree, branch: entry.branch }, this.#exec)
+      } else {
+        const area = resolve(planArea(entry.project, job.id))
+        const target = resolve(entry.worktree)
+        if (target !== area && !target.startsWith(`${area}${sep}`)) return
+        rmSync(entry.worktree, { recursive: true, force: true })
+      }
+      entry.removed = true
+      if (task) {
+        task.worktree = undefined
+        task.branch = undefined
+      }
+      return
+    }
+    if (!entry.branch) return
     await removeTaskWorktree(entry.project, { worktree: entry.worktree, branch: entry.branch }, this.#exec)
     entry.removed = true
     if (task) {

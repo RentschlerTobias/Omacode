@@ -24,7 +24,7 @@ test("the micromanager and every role become agents that keep the user's base ru
   }
   const draft = fakeDraft(base)
   const ids = installAgents(draft)
-  assert.deepEqual(ids, ["micromanager", ...ROLES.map((r) => r.agent), "summarizer"])
+  assert.deepEqual(ids, ["micromanager", "micromanager-plan", ...ROLES.map((r) => r.agent), "summarizer"])
   const summarizer = draft.agents.get("summarizer")!
   assert.equal(summarizer.hidden, true)
   assert.deepEqual(summarizer.permissions.at(-1), { action: "*", resource: "*", effect: "deny" }, "the summarizer runs no tool")

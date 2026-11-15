@@ -26,8 +26,9 @@ export interface Plan {
 
 export type Parsed = { readonly plan: Plan; readonly errors?: undefined } | { readonly plan?: undefined; readonly errors: string[] }
 
-// Roles that change files must declare what they write, so parallel safety and review have a scope.
-const WRITERS = new Set(["code", "test", "visual", "write", "debug"])
+// Roles that change files must declare what they write, so parallel safety and review have a scope. An investigator
+// declares the draft and findings files it writes, so two investigators in parallel cannot collide.
+const WRITERS = new Set(["code", "test", "visual", "write", "debug", "investigator"])
 const ID = /^[A-Za-z][\w.-]{0,31}$/
 
 // The JSON object in the message: the last ```json fence, else the outermost {...}.
@@ -211,6 +212,23 @@ Priority is 1 (do first) to 5 (do last), 3 when nothing stands out; among ready 
 
 export const MAX_SPLIT_LEVEL = 2
 
+// Plan mode's tasks change nothing of the project: the writers are investigators, who write only in their own plan
+// worktree, and everything else reads. Without this line the planner never names the role, and a plan job could not be
+// planned at all (A1-T5).
+export function planModeRoles(job: Pick<Job, "isolation">): string {
+  return job.isolation === "plan"
+    ? `\nThis is a plan job: no task changes the project. A task that must write drafts in its own plan worktree gets the role "investigator" (it lists the files it writes); every other task is "explore", "research" or "plan".`
+    : ""
+}
+
+// A1-T7, the fail-closed rule: with no sandbox a plan job's writers may not start, so it runs reader-only. The job
+// says so wherever the user looks: plan.md carries this line (A1-T8 writes the file), and job_status puts it first.
+export function readerOnlyNote(job: Pick<Job, "planReaderOnly">): string {
+  return job.planReaderOnly
+    ? "\nThis job ran reader-only: no sandbox on this machine, so no investigator changed or wrote anything."
+    : ""
+}
+
 export function splitFormat(ids: readonly string[]): string {
   return `Split these tasks into smaller ones: ${ids.join(", ")}.
 Answer with one JSON object in a \`\`\`json fence, nothing else after it:
@@ -332,7 +350,7 @@ Acceptance points: ${acceptanceText}${job.acceptance.length > 20 ? `; … and ${
 First find the root cause of the stall from the facts above; then plan around it, e.g. a smaller step, another
 order, or a task that removes the obstacle. Use new task ids that are not used yet; you may add acceptance points with
 new ids, and keep the verify commands of existing ones.
-${PLAN_FORMAT.replace('"acceptance": [{', '"acceptance": [(only new points) {')}`
+${PLAN_FORMAT.replace('"acceptance": [{', '"acceptance": [(only new points) {')}${planModeRoles(job)}`
 }
 
 // Replaces the unfinished tasks with the planner's new ones; done tasks and their commits stay. The old unfinished

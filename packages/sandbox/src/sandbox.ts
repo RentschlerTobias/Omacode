@@ -147,6 +147,13 @@ export function rulesFor(input: RuleInput): Rules {
   }
 }
 
+// A plan job's writer (A1-T7): the caller passes the plan root as `worktree` and the worker's own directory as `dir`,
+// so only the plan area (plus its temp dir) is writable and the project stays read-only. The caller decides WHETHER a
+// plan writer may start at all: with no sandbox, a plan job runs reader-only (src/native.ts).
+export function planRules(input: RuleInput): Rules {
+  return rulesFor({ ...input, writer: true, worktree: input.worktree })
+}
+
 // The sandbox the plugin runs worker commands in, or why there is none.
 export interface Wrapper {
   readonly available: boolean

@@ -36,10 +36,13 @@ function call(job: Job, task: Task): string {
 // todos (the todo tool); undefined while workers run and nothing new can start, for a job the runner runs, and for a
 // paused or stopped one. A session's own job only hears which todos can start: it is "done" whenever the micromanager
 // has nothing more in mind, which is not news.
-export function nextStep(job: Job, parallel: number): Step | undefined {
+// `allow` narrows the plan: a task it excludes is invisible to this step, neither started nor counted (A1-T11: a plan
+// job that runs reader-only names no investigator). Callers that pass none see every task, as before.
+export function nextStep(job: Job, parallel: number, allow: (t: Task) => boolean = () => true): Step | undefined {
   if (!(job.native || job.rolling) || HALTED.has(job.phase)) return undefined
-  const live = job.tasks.filter((t) => LIVE.has(t.status))
-  const ready = startable(job).slice(0, Math.max(0, parallel - live.length))
+  const tasks = job.tasks.filter(allow)
+  const live = tasks.filter((t) => LIVE.has(t.status))
+  const ready = startable({ ...job, tasks }).slice(0, Math.max(0, parallel - live.length))
   if (ready.length) {
     return {
       kind: "start",
@@ -54,13 +57,13 @@ export function nextStep(job: Job, parallel: number): Step | undefined {
   }
   if (live.length || !job.native) return undefined
   // A cancelled task is out of the plan, unless an open task still needs it.
-  const needed = new Set(job.tasks.filter((t) => OPEN.has(t.status)).flatMap((t) => t.dependsOn))
-  const left = job.tasks.filter((t) => !isDone(t) && !t.undone && (t.status !== "cancelled" || needed.has(t.id)))
+  const needed = new Set(tasks.filter((t) => OPEN.has(t.status)).flatMap((t) => t.dependsOn))
+  const left = tasks.filter((t) => !isDone(t) && !t.undone && (t.status !== "cancelled" || needed.has(t.id)))
   if (!left.length) {
-    const merged = job.tasks.filter((t) => isDone(t)).length
+    const merged = tasks.filter((t) => isDone(t)).length
     return {
       kind: "done",
-      text: `${HEADER} job ${job.id}: the plan is through, ${merged} of ${job.tasks.length} tasks merged on ${job.integrationBranch ?? jobBranch(job.id)}${merged < job.tasks.length ? " (the rest were cancelled)" : ""}. Tell the user briefly what changed; merge_job brings it into their checkout once they say so.`,
+      text: `${HEADER} job ${job.id}: the plan is through, ${merged} of ${tasks.length} tasks merged on ${job.integrationBranch ?? jobBranch(job.id)}${merged < tasks.length ? " (the rest were cancelled)" : ""}. Tell the user briefly what changed; merge_job brings it into their checkout once they say so.`,
     }
   }
   const stopped = left.filter((t) => !OPEN.has(t.status))

@@ -733,8 +733,8 @@ test("a follow-up the injection guard flags goes to later; every prompt is sent 
   assert.ok(prompts.some((p) => p.includes("<secret>")))
 })
 
-test("budget and notify settings: defaults, ceilings and bad values", async () => {
-  const { parseBudget, parseNotify, DEFAULT_BUDGET } = await import("../packages/micromanager/src/config.ts")
+test("budget, notify and unsandboxed settings: defaults, ceilings and bad values", async () => {
+  const { parseBudget, parseNotify, parseUnsandboxed, DEFAULT_BUDGET } = await import("../packages/micromanager/src/config.ts")
   assert.deepEqual(parseBudget("{}"), DEFAULT_BUDGET)
   assert.deepEqual(parseBudget('{"budget": {"tokens": 1e12, "cost": 3}}'), { ...DEFAULT_BUDGET, tokens: 50_000_000, cost: 3 })
   assert.throws(() => parseBudget('{"budget": {"tokns": 5}}'), /unknown budget/)
@@ -742,6 +742,11 @@ test("budget and notify settings: defaults, ceilings and bad values", async () =
   assert.equal(parseNotify("{}"), "jobs")
   assert.equal(parseNotify('{"notify": "tasks"}'), "tasks")
   assert.throws(() => parseNotify('{"notify": "loud"}'))
+  // D23: "ask" unless the user says otherwise, and only the three words.
+  assert.equal(parseUnsandboxed("{}"), "ask")
+  assert.equal(parseUnsandboxed('{"unsandboxed": "never"}'), "never")
+  assert.equal(parseUnsandboxed('{"unsandboxed": "allow"}'), "allow")
+  assert.throws(() => parseUnsandboxed('{"unsandboxed": "always"}'), /unsandboxed must be/)
 })
 
 test("when the decision model sees progress, a repeated failure keeps its fix rounds", async () => {

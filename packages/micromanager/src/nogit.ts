@@ -7,8 +7,10 @@
 // project wants git, a config folder or notes may not. What the first commit must leave out is decided here, by rules
 // that do not guess: secrets, dependency and build folders, and files too large for a repository.
 
-import { lstatSync, readdirSync, writeFileSync, existsSync, readFileSync } from "node:fs"
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+
+import { stateDir } from "@omacode/core/paths"
 
 import { exec as defaultExec, type Exec } from "./integration.ts"
 
@@ -24,7 +26,7 @@ export async function gitState(project: string, run: Exec = defaultExec): Promis
 // Folders that are installed or built, never written by hand.
 const GENERATED = new Set(["node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".cache", ".next", ".pytest_cache", ".mypy_cache", ".tox", ".gradle"])
 // Names that hold secrets: keys, certificates, environment files, credentials.
-const SECRET = [/^\.env(\..+)?$/i, /\.(pem|key|p12|pfx|kdbx|keystore|jks)$/i, /^id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/i, /^(credentials|secrets?)(\..+)?$/i, /^\.netrc$/i, /^\.npmrc$/i, /^\.pypirc$/i]
+export const SECRET = [/^\.env(\..+)?$/i, /\.(pem|key|p12|pfx|kdbx|keystore|jks)$/i, /^id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/i, /^(credentials|secrets?)(\..+)?$/i, /^\.netrc$/i, /^\.npmrc$/i, /^\.pypirc$/i]
 // The plugin's own state and anything above this size stay out.
 const OWN = new Set([".micromanager", ".jev-micromanager", ".git"])
 export const MAX_FILE_BYTES = 10 * 1024 * 1024
@@ -87,6 +89,74 @@ export function surveyFolder(project: string): Survey {
 
 export function humanSize(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1024 ** 2 ? `${(bytes / 1024).toFixed(0)} KB` : bytes < 1024 ** 3 ? `${(bytes / 1024 ** 2).toFixed(1)} MB` : `${(bytes / 1024 ** 3).toFixed(1)} GB`
+}
+
+// --- Plan mode in a project without git ------------------------------------------------------------------------
+
+export interface PlanCopy {
+  readonly files: number
+  readonly bytes: number
+  readonly excluded: readonly string[] // project-relative, a folder with a trailing "/"
+}
+
+// A plan worktree for a project that is no repository: a copy, since there is no commit to branch from. The same rules
+// as the first commit's keep it safe and small, and lstat means a symlink is never followed: a link back to the project
+// would recurse without end, and a link out of it would copy files that are not the project's.
+export function copyForPlan(project: string, dest: string): PlanCopy {
+  let files = 0
+  let bytes = 0
+  let seen = 0
+  const excluded: string[] = []
+  // The state directory by its resolved name, so a project that kept the old one is skipped too.
+  const own = stateDir(project)
+  mkdirSync(dest, { recursive: true })
+  const walk = (dir: string, out: string, rel: string) => {
+    let names: string[]
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (++seen > MAX_ENTRIES) return
+      const path = join(dir, name)
+      const target = join(out, name)
+      const relPath = rel ? `${rel}/${name}` : name
+      let st
+      try {
+        st = lstatSync(path)
+      } catch {
+        continue
+      }
+      if (st.isSymbolicLink()) { excluded.push(relPath); continue }
+      if (st.isDirectory()) {
+        // The state directory holds dest itself, so skipping it is also what keeps the copy from recursing into it.
+        if (OWN.has(name) || name === own) { excluded.push(`${relPath}/`); continue }
+        if (GENERATED.has(name)) { excluded.push(`${relPath}/`); continue }
+        try {
+          mkdirSync(target, { recursive: true })
+        } catch {
+          excluded.push(`${relPath}/`)
+          continue
+        }
+        walk(path, target, relPath)
+        continue
+      }
+      // A FIFO or a device is not something a project is made of: copying it would block or copy the machine.
+      if (!st.isFile()) { excluded.push(relPath); continue }
+      if (SECRET.some((re) => re.test(name)) || st.size > MAX_FILE_BYTES) { excluded.push(relPath); continue }
+      try {
+        copyFileSync(path, target)
+      } catch {
+        excluded.push(relPath)
+        continue
+      }
+      files++
+      bytes += st.size
+    }
+  }
+  walk(project, dest, "")
+  return { files, bytes, excluded }
 }
 
 // git init, a .gitignore with what stays out (kept and extended when there is one), and a first commit of the rest.

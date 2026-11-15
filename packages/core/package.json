@@ -30,6 +30,7 @@
     "postpack": "node ../../scripts/copy-license.mjs --remove"
   },
   "exports": {
+    "./paths": "./src/paths.ts",
     "./journal": "./src/journal.ts",
     "./heldout": "./src/heldout.ts",
     "./secrets": "./src/secrets.ts",

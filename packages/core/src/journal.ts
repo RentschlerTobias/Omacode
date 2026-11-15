@@ -6,15 +6,15 @@
 // src/backends.ts, with the state object and the questions) and "label" (a later answer for a decision).
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+
+import { userStateDir } from "./paths.ts"
 
 // Until 2026-10-19 the project was jev-micromanager, and so was its state directory: an old one moves over once, so
 // the journal keeps its history.
 export function journalPath(): string {
-  const base = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state")
-  const dir = join(base, "micromanager")
-  const old = join(base, "jev-micromanager")
+  const dir = userStateDir()
+  const old = join(dirname(dir), "jev-micromanager")
   if (!existsSync(dir) && existsSync(old)) {
     try {
       renameSync(old, dir)

@@ -1,8 +1,6 @@
 // ~/.config/opencode/micromanager.jsonc: optional overrides of the routing (JSON with // comments).
 
 import { existsSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
-import { join } from "node:path"
 
 import { DEFAULT_FLOORS, type Floors } from "./decide.ts"
 import { validatePolicies, type PolicySet } from "./policy.ts"
@@ -13,14 +11,14 @@ import { DEFAULT_GRACE, DEFAULT_PICK, DEFAULT_TRIALS, MAX_TRIALS, type Grace, ty
 import type { NotifyMode } from "./scheduler.ts"
 import { DEFAULT_REDACT, parseRedact, type RedactSettings } from "@omacode/core/redact-config"
 import { stripComments } from "@omacode/core/jsonc"
+import { userConfigPath } from "@omacode/core/paths"
 
 export { DEFAULT_REDACT, parseRedact, stripComments, type RedactSettings }
 
 // The name before 2026-10-19 (jev-micromanager.jsonc) is still read while the new one does not exist.
 export function configPath(): string {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
-  const path = join(base, "opencode", "micromanager.jsonc")
-  const old = join(base, "opencode", "jev-micromanager.jsonc")
+  const path = userConfigPath("micromanager.jsonc")
+  const old = userConfigPath("jev-micromanager.jsonc")
   return !existsSync(path) && existsSync(old) ? old : path
 }
 
@@ -70,6 +68,18 @@ export function parseRegistry(text: string): ModelEntry[] {
 export function parseNotify(text: string): NotifyMode {
   const raw = (JSON.parse(stripComments(text)) as { notify?: unknown }).notify ?? "jobs"
   if (raw !== "jobs" && raw !== "tasks" && raw !== "off") throw new Error('notify must be "jobs", "tasks" or "off"')
+  return raw
+}
+
+// "unsandboxed": what a job may do when no sandbox can run on this machine. D23: "unsandboxed is a user decision, never
+// a default" — "ask" (the default) puts the job's checks and their risk score to the user in a form, and nothing starts
+// without their answer; "never" keeps the fail-closed path of plan mode (a plan job runs reader-only); "allow" stores
+// the grant without asking, journalled with the score. Without an answer, nothing runs.
+export type UnsandboxedMode = "ask" | "never" | "allow"
+
+export function parseUnsandboxed(text: string): UnsandboxedMode {
+  const raw = (JSON.parse(stripComments(text)) as { unsandboxed?: unknown }).unsandboxed ?? "ask"
+  if (raw !== "ask" && raw !== "never" && raw !== "allow") throw new Error('unsandboxed must be "ask", "never" or "allow"')
   return raw
 }
 
@@ -283,6 +293,8 @@ export interface Settings {
   // How long one check may run, in milliseconds (default 300 s). A job may override it (src/state.ts).
   readonly checkTimeoutMs: number
   readonly notify: NotifyMode
+  // What a job may do when no sandbox can run here ("unsandboxed", D23): ask the user, never, or allow.
+  readonly unsandboxed: UnsandboxedMode
   readonly routing: Routing
   readonly floors: Floors
   readonly decisions: PolicySet
@@ -310,6 +322,7 @@ const DEFAULTS: Omit<Settings, "registry"> = {
   budget: DEFAULT_BUDGET,
   checkTimeoutMs: DEFAULT_CHECK_TIMEOUT_MS,
   notify: "jobs",
+  unsandboxed: "ask",
   routing: DEFAULT_ROUTING,
   floors: DEFAULT_FLOORS,
   decisions: {},
@@ -333,7 +346,7 @@ export function loadSettings(path = configPath()): Settings & { error?: string }
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY } // no file: the defaults
   }
   try {
-    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
+    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), unsandboxed: parseUnsandboxed(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
   } catch (err) {
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY, error: `${path}: ${String(err)}` }
   }
