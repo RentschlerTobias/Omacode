@@ -1,0 +1,51 @@
+{
+  "name": "@omacode/artifact",
+  "version": "0.1.1",
+  "private": false,
+  "type": "module",
+  "description": "Artifact contracts for the Omacode plugins: deck, video, site and image specs",
+  "license": "Apache-2.0",
+  "author": "Tobias Rentschler <tobias-rentschler@gmx.de>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RentschlerTobias/Omacode.git",
+    "directory": "packages/artifact"
+  },
+  "homepage": "https://github.com/RentschlerTobias/Omacode#readme",
+  "bugs": {
+    "url": "https://github.com/RentschlerTobias/Omacode/issues"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "artifacts",
+    "spec",
+    "contracts"
+  ],
+  "scripts": {
+    "prepack": "node ../../scripts/copy-license.mjs",
+    "postpack": "node ../../scripts/copy-license.mjs --remove"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./spec": "./src/spec.ts",
+    "./checks": "./src/checks.ts",
+    "./provenance": "./src/provenance.ts",
+    "./adapter": "./src/adapter.ts",
+    "./quality": "./src/quality.ts",
+    "./runner": "./src/runner.ts",
+    "./paths": "./src/paths.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@omacode/sandbox": "0.1.1"
+  }
+}

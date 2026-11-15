@@ -735,13 +735,31 @@ shown; doctor is actionable; uninstall exists.
 
 **Tasks**
 
-- [ ] **B1-T1 — Spec.** `video.json`, `deck.json`, `site.json`, `images.json`: schema + validation + version.
-- [ ] **B1-T2 — Checks registry.** L0 contract, L1 mechanical, L2 visual, L3 human; per artifact type; exit codes; a
+- [x] **B1-T1 — Spec.** `video.json`, `deck.json`, `site.json`, `images.json`: schema + validation + version.
+  - *Reality:* hand-written, strict validation with no dependency (a new library would be a new contract to keep). Unknown
+    keys are refused at every level, because a silently dropped typo lets two different specs hash the same. Paths are
+    checked lexically here and resolved against the real job only by the host runner (T5). A spec's `checks` selects
+    check ids; it can never define one.
+- [x] **B1-T2 — Checks registry.** L0 contract, L1 mechanical, L2 visual, L3 human; per artifact type; exit codes; a
   check may be `skipped` with a reason, never silently absent.
-- [ ] **B1-T3 — Provenance.** Tool/model/version/seed/license/territory/input hashes; asset manifest; derived from the
+  - *Reality:* a level is not cut short by one failure inside it (the remaining checks of that level still run); only the
+    next level is skipped, with the failed ids in the reason. A skip is an absence with a reason, not a pass: `evaluate`
+    lists it and leaves the "is a skip acceptable" call to the quality gate (T7). Level and producer must agree — a
+    program cannot declare an L0 check, a person is the only L3.
+- [x] **B1-T3 — Provenance.** Tool/model/version/seed/license/territory/input hashes; asset manifest; derived from the
   **model file hash** where a file exists.
-- [ ] **B1-T4 — Adapter interface.** `prepare`, `render`, `snapshot`, `check`, `openEditor`, `cancel`.
-- [ ] **B1-T5 — Host runner (constrained).** The runner is the harness executing a program on the user's machine, so it
+  - *Reality:* a model's `verified` flag says whether the hash was computed from the file or merely declared, because a
+    remote model cannot be hashed here and hiding that would make the record look stronger than it is. The manifest is a
+    separate value with its own `manifestOf`/`verifyManifest` rather than a member of the provenance record; an extra
+    file on disk is not an error (the manifest is a lower bound). `writeProvenance` chmods after writing, because the
+    mode only applies at creation.
+- [x] **B1-T4 — Adapter interface.** `prepare`, `render`, `snapshot`, `check`, `openEditor`, `cancel`.
+  - *Reality:* the runner the adapter is given (`HostRunner`) is declared next to the adapter, because that file is the
+    consumer; `runner.ts` implements it. The allowlist must be a bare program name, and a shell, a path, `node --version`
+    or a leading dash is refused at declaration — a shell in the allowlist turns argv back into a command string. The
+    adapter reaches the runner only through `hostRunnerFor`, which copies and freezes `executablesOf()`, so a later
+    mutation of the adapter's array cannot widen it.
+- [x] **B1-T5 — Host runner (constrained).** The runner is the harness executing a program on the user's machine, so it
   is an allowlist, not a shell:
   - executes **only adapter-declared executables** as **argv arrays** — never `sh -c` over spec text, never a command
     string from a spec; the allowlist is a **code-owned constant in the adapter**, never read from a spec;
@@ -750,12 +768,33 @@ shown; doctor is actionable; uninstall exists.
   - child processes (a Chromium, a renderer) inherit the same `cwd` and network restriction;
   - timeout, output cap, kill switch, one job at a time.
   B6-T6 extends this; it does not introduce it.
-- [ ] **B1-T6 — Plan → artifact handoff.** Map `plan.md` + `Artifacts:` into a typed spec. Needs the schema only.
-- [ ] **B1-T7 — Output-quality gate.** What "worth shipping" means per artifact type (deck: readable without narration,
+  - *Reality:* "no network" is enforced by bubblewrap's argv (the sandbox runtime wraps shell strings only, which is the
+    one thing this runner must not do); without a runnable `bwrap` an undeclared-network run is **refused**, fail closed.
+    `HOME`/`TMPDIR` are moved into the job and `DENY_READ` is mounted away, so a renderer cannot read the user's keys —
+    with `network: true` no wrapper is used at all, so neither applies (documented consequence). A program that resolves
+    into the job dir — through a search directory in the job, or a symlink in a writable PATH directory — is skipped.
+    Refusals and cancellations are results (`refused`, `cancelled`), never throws.
+- [x] **B1-T6 — Plan → artifact handoff.** Map `plan.md` + `Artifacts:` into a typed spec. Needs the schema only.
+  - *Reality:* `plan.md` carries no fps, frame size, scene duration, image prompt or image size, so each is a named
+    default with a warning — an adapter must not invent the number the handoff already picked. A site page is addressed
+    by its path inside the site, so two tasks promoting `index.html` would write one page twice: that collision is
+    refused naming both tasks. Every artifact is verified (path inside the root, size and sha256 against the document),
+    and a plan that promotes nothing the kind can use is an error, not an empty spec.
+- [x] **B1-T7 — Output-quality gate.** What "worth shipping" means per artifact type (deck: readable without narration,
   one idea per slide, no overflow; video: every scene passes its acceptance).
-- [ ] **B1-T8 — Tests.** Spec validation; checks ordering and skip semantics; provenance from a fake model file;
+  - *Reality:* a skipped L0/L1/L2 check is not shippable (a file nobody checked is not "verified"), while a skipped L3
+    is a warning — nobody has looked yet is the normal state of a fresh artifact. The visual rule requires a **passed
+    L2** check of the kind, so a deck without an overflow/blank-slide check can never ship, which is why B3's
+    browser-backed check is part of its acceptance. Images need `outputs` (a rendered placeholder counts), because a
+    slot with no file is a blank slot.
+- [x] **B1-T8 — Tests.** Spec validation; checks ordering and skip semantics; provenance from a fake model file;
   **host runner refuses an arbitrary executable, an unsafe environment and a path outside the job dir**; handoff from a
   fixture `plan.md`.
+  - *Reality:* the acceptance test runs the whole chain in one place — fixture `plan.md` → deck spec → fake adapter whose
+    `prepare`/`snapshot` really run `node` through the host runner → manifest → checks → quality gate `ship` → provenance
+    round-trip → the same runner refusing `sh -c "touch pwned"` with no file left behind. Its L2 visual result is
+    synthetic by nature: B1 has no browser-backed check, B3-T4 owns that. "The allowlist never comes from a spec" is
+    proven by the spec parser refusing an `executables` key — a spec has no field in which to name a program.
 
 **Files:** `packages/artifact/`, `packages/micromanager/src/artifact/`, `test/artifact.test.ts`.
 
