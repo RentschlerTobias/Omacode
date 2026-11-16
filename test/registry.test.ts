@@ -53,12 +53,12 @@ test("long contexts and the cloud pin go to the cloud", async () => {
   assert.equal(route(DEFAULT_REGISTRY, { role: "code", preferCloud: true }, a).model?.startsWith("opencode-go/"), true)
 })
 
-test("refusal_likely goes to a local uncensored model, sensitive to any local model", async () => {
+test("an uncensored reroute goes to a local uncensored model, sensitive to any local model", async () => {
   const a = await probe(DEFAULT_REGISTRY, undefined, fakeFetch)
-  const unc = route(DEFAULT_REGISTRY, { role: "code", refusalLikely: true, ctx: 60000 }, a)
+  const unc = route(DEFAULT_REGISTRY, { role: "code", uncensored: true, ctx: 60000 }, a)
   assert.equal(unc.model, undefined, "no local model has 60k context")
   assert.match(unc.reason, /uncensored, local/)
-  const r = route(DEFAULT_REGISTRY, { role: "code", refusalLikely: true }, a)
+  const r = route(DEFAULT_REGISTRY, { role: "code", uncensored: true }, a)
   assert.ok(r.ranked.every((id) => !DEFAULT_REGISTRY.find((m) => m.id === id)?.censored))
   assert.ok(route(DEFAULT_REGISTRY, { role: "code", sensitive: true, preferCloud: true }, a).ranked.every((id) => !id.startsWith("opencode-go/")))
 })

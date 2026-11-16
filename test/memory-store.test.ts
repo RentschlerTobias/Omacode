@@ -147,7 +147,9 @@ test("N17 is journaled with the text it sent, and a memory write names the decis
       },
     })
   }) as unknown as typeof fetch
-  const decider = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud" }, makeAskers({ ...DEFAULT_BACKENDS, mode: "cloud" }, "k", fetcher, () => false, { confirm: async () => "send" }), (e) => entries.push(e))
+  // A2-T5: the session opted in; this test is about the N17 path, not the opt-in.
+  const consent = { async allows() { return { allow: true, guards: false, why: "test" } } }
+  const decider = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud" }, makeAskers({ ...DEFAULT_BACKENDS, mode: "cloud" }, "k", fetcher, () => false, { confirm: async () => "send" }), (e) => entries.push(e), consent)
   const verdict = await capture(s, undefined, decider, { text: "Tests run with uv run pytest; mail anna.weber@firma.de if they fail", source: "LEARNED ses_w" }, { project: "p", session: "ses_w", journal: (e) => entries.push(e) })
   assert.equal(verdict.kind, "added")
   const decision = entries.find((e) => e.kind === "decision")!

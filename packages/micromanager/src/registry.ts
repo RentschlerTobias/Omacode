@@ -135,7 +135,7 @@ export interface RouteNeeds {
   readonly vision?: boolean
   readonly ctx?: number // tokens the task needs in context
   readonly sensitive?: boolean // must not leave the machine
-  readonly refusalLikely?: boolean // a censored model would refuse: local and uncensored only
+  readonly uncensored?: boolean // a censored model refused at runtime: local and uncensored only
   readonly avoidFamilies?: readonly string[] // a reviewer never checks its own family's work
   readonly preferCloud?: boolean // e.g. the user pinned the cloud
   readonly loadedModel?: string // the model already loaded on cuda0 (batching avoids swaps)
@@ -157,19 +157,19 @@ const QUICK_ROLES = new Set(["explore", "write"])
 export function route(registry: readonly ModelEntry[], needs: RouteNeeds, availability?: Map<string, Availability>): Route {
   const tier = tierFor(needs.difficulty)
   const avail = (id: string) => availability?.get(id) ?? { reachable: true }
-  const local = needs.sensitive || needs.refusalLikely
+  const local = needs.sensitive || needs.uncensored
   const candidates = registry.filter((m) =>
     !m.disabled &&
     avail(m.id).reachable &&
     (!needs.vision || m.vision) &&
     m.ctx >= (needs.ctx ?? 0) &&
     (!local || m.location === "local") &&
-    (!needs.refusalLikely || !m.censored) &&
+    (!needs.uncensored || !m.censored) &&
     (m.device !== "npu" || (tier === "quick" && QUICK_ROLES.has(needs.role))) &&
     !(needs.avoidFamilies ?? []).includes(m.family),
   )
   if (candidates.length === 0) {
-    const why = [needs.refusalLikely && "uncensored", local && "local", needs.vision && "vision", needs.ctx && `ctx ≥ ${needs.ctx}`].filter(Boolean).join(", ")
+    const why = [needs.uncensored && "uncensored", local && "local", needs.vision && "vision", needs.ctx && `ctx ≥ ${needs.ctx}`].filter(Boolean).join(", ")
     return { reason: `no reachable model fits (${why || "any"})`, ranked: [] }
   }
   // Local when capable: a local model covers the tier, and nothing pins the cloud.
@@ -200,7 +200,7 @@ export function route(registry: readonly ModelEntry[], needs: RouteNeeds, availa
   const reason = [
     best.location,
     `${tier} task`,
-    needs.refusalLikely ? "uncensored" : needs.sensitive ? "sensitive" : undefined,
+    needs.uncensored ? "uncensored" : needs.sensitive ? "sensitive" : undefined,
     avail(best.id).loaded || best.resident ? "already loaded" : best.location === "local" ? "needs a swap" : undefined,
   ].filter(Boolean).join(", ")
   return { model: best.id, reason, ranked: ranked.map((m) => m.id) }

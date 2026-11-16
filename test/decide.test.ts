@@ -712,7 +712,9 @@ function cloudDecider(confirm: () => Promise<"send" | "keep-local" | "cancel"> =
   const entries: Entry[] = []
   const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
   const askers = makeAskers(config, "k", fetcher, () => false, { confirm, secrets })
-  return { decider: new Decider(config, askers, (e) => entries.push(e)), entries, bodies }
+  // A2-T5: the worker's session opted in; this file tests the permission path, not the opt-in.
+  const consent = { async allows() { return { allow: true, guards: false, why: "test" } } }
+  return { decider: new Decider(config, askers, (e) => entries.push(e), consent), entries, bodies }
 }
 
 test("a permission case is journaled with the request, the text sent, the questions and the answers", async () => {

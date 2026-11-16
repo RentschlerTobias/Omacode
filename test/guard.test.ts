@@ -23,7 +23,7 @@ function decider(score: (text: string, call: number) => Record<string, number>) 
 }
 
 test("a goal is scored twice and the higher score counts", async () => {
-  const d = decider((_t, call) => ({ injection: call === 0 ? 0.59 : 2e-8, harmful: 0.1, sensitive: 0, refusal_likely: 0 }))
+  const d = decider((_t, call) => ({ injection: call === 0 ? 0.59 : 2e-8, harmful: 0.1, sensitive: 0 }))
   const r = await checkGuards(d.decider, "the same goal")
   assert.equal(d.calls(), 2)
   assert.equal(r.scores.injection, 0.59)

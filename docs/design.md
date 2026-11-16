@@ -639,11 +639,11 @@ It is applied as a short section in the worker's system prompt, by audience, not
 | N11 | merge | merge_now | gate after each merge (flag) |
 | N12 | done | job_satisfied | the verification wave must pass (flag) |
 | N13 | permission | answer, needs_user, risk, path_relevance | the user |
-| G0 | local-first gate (always local) | sensitive, refusal_likely, injection, harmful | the user |
+| G0 | local-first gate (local unless the session overrides it) | injection, harmful, sensitive | the user |
 | G | guards on worker text | injection, harmful (and refusal at runtime) | the user |
 
 Before every node, the policy layer (§22) checks whether the user has fixed or skipped the decision. Each node's
-backend (cloud Jev, GLiNER, Open-Jev, rules) is configured per node (§20).
+backend (cloud decision client, GLiNER, Open-Jev, rules) is configured per node (§20).
 
 Floors live next to the question wordings in `src/catalog.ts`, and change only together with an eval run.
 
@@ -700,7 +700,7 @@ Floors live next to the question wordings in `src/catalog.ts`, and change only t
   - the micromanager read cap;
   - journal, eval harness, dataset export;
   - the model registry with local / cloud routing and live availability (§19);
-  - G0 with the four guards, and decision backends per node: typesafe, gliner, rules (§20, §21);
+  - G0 with the three guards, and decision backends per node: cloud, gliner, rules (§20, §21);
   - the policy and override layer (§22);
   - shadow-mode journaling. GLiNER retraining and promotion follow once shadow data exists.
 - **Behind flags until the journal shows the need:**
@@ -723,7 +723,7 @@ Details are in plan.md, "Phase A results".
 | A6 | cc-safety-net imports from the symlinked plugin | **yes**: imports resolve from the real path | embed `checkCommand` as hard rule #0; a deny goes to the user. It adds `find -delete`, `git checkout --`, `dd` to devices and dynamic `curl \| sh`; it lets `sudo` through, which our own rule catches |
 | A7 | models see their own tool output and reasoning | **yes** for glm-5.3-flash, qwen3.8-flash, deepseek-v4.1-flash, ornith-u (4060, 17 s) and qwen3.8-u (iGPU, 125 s): correct answer, no re-read, reasoning and tool results stay in context; qwen3:4b on the NPU answered right but skipped the required tool | all stay in the routing table; the NPU model is quick tier only |
 | A8 | local availability is readable | llama-swap `/v1/models` (loaded / unloaded) and `/running`; llama-vulkan `/health`, `/props` (n_ctx 16384), `/slots` (`is_processing` for 4 slots); FLM lists only its catalog. A swap took 12–19 s with the file in the page cache (1–2 min cold) | the registry reads these live; the swap cost is about 20 s warm |
-| A9 | GLiNER answers fast enough on the CPU | **yes**: about 370 ms for four guard questions on 8 threads, 2–3 s load; zero-shot GLiNER is useless (all about 0.5); the oc-voice fine-tune separates injection and harmful but flags legitimate security work as harmful and knows no `refusal_likely` | a guard fine-tune with hard negatives is required; until then a G0 "yes" only asks the user (§20) |
+| A9 | GLiNER answers fast enough on the CPU | **yes**: about 370 ms for the guard questions on 8 threads, 2–3 s load; zero-shot GLiNER is useless (all about 0.5); the oc-voice fine-tune separates injection and harmful but flags legitimate security work as harmful | a guard fine-tune with hard negatives is required; until then a G0 "yes" only asks the user (§20) |
 | A10 | a refusal by a local censored model is detectable | **open**: only the swap time was measured; the refusal probe set comes from the user's own bench cases | `worker_refused` stays designed; its patterns are calibrated on the user's probe set |
 
 A side finding: a private standalone server sometimes hangs at start, before it loads any plugin. The spike
@@ -796,7 +796,7 @@ The fixed `MODELS` in `src/roles.ts` become the default entries.
    - vision needed → vision models;
    - a context larger than a model's `ctx` excludes it;
    - `sensitive` → local only;
-   - `refusal_likely` → local and uncensored only.
+   - `uncensored` (a worker refused at runtime, §21) → local and uncensored only.
 2. **Local when capable:** a task whose difficulty tier the local models cover runs locally. Hard tasks, long
    contexts and a busy device go to the cloud.
 3. **Availability, read live:**
@@ -820,14 +820,20 @@ Escalation with locality:
 The brief builder and the watchdog's token limit respect the chosen model's `ctx`. Tasks that do not fit 16k
 are split (N4) or go to the cloud.
 
-## 20. Decision backends, the local-first gate and shadow mode
-**Backends**, chosen per node, all speaking the Jev wire format (`POST {model, state, questions}`), so
-`src/jev.ts` only changes URL and model:
+## 20. Decision modes, the local-first gate and cloud mode
+**Two modes, no hybrid (D11).** `decider.mode` is `local` or `cloud`; a missing backend is a *state*, not a mode.
+- `local` is the mode from day one (D21): every decision is answered on this machine, and no key is read.
+- `cloud` may send a decision to the cloud decision client — after the egress gate below. The client is one class
+  (`src/decider.ts` `DecisionClient`), constructible only in this mode and only with a key (D19). It is also the
+  label factory the local model is trained from, so it is demoted, not deleted.
+
+**Backends**, chosen per node, all speaking the same wire format (`POST {model, state, questions}`), so the client
+only changes URL and model:
 
 | Backend | Where | Strength |
 |---|---|---|
-| `typesafe` | TypeSafe cloud Jev | best on fine decisions; the teacher in shadow mode |
-| `gliner` | our decision server (GLiNER2, a fine-tune of `fastino/GLiNER2.5-*-Decide`), on the CPU | local; about 370 ms for the four G0 guards on 8 threads (A9); needs our own fine-tune before it decides guards |
+| `cloud` | TypeSafe cloud Jev (the old `typesafe`) | best on fine decisions; the teacher in shadow mode |
+| `gliner` | our decision server (GLiNER2, a fine-tune of `fastino/GLiNER2.5-*-Decide`), on the CPU | local; about 370 ms for the guard questions on 8 threads (A9); needs our own fine-tune before it decides guards |
 | `openjev` | a local Open-Jev server | local, generative-free probabilities; larger |
 | `rules` | code | always available |
 
@@ -839,63 +845,80 @@ are split (N4) or go to the cloud.
   - Score → an ordinal single-label task over the rubric levels, whose expectation is the score.
 
   GLiNER reads a short window, so the state puts the task text first.
-- **Floors belong to the backend and the wording.** A GLiNER probability is not a Jev confidence.
+- **Floors belong to the backend and the wording.** A GLiNER probability is not a cloud confidence.
 
-**G0, the local-first gate.** It always runs on `gliner` and is never sent to the cloud. It answers `sensitive`,
-`refusal_likely`, `injection` and `harmful` (§21) on:
-- the job text,
-- each task text,
-- each worker question.
+**The egress gate (D13, A2-T6).** Every payload that would leave the machine passes one function inside the client, so
+no call site can skip it: deterministic redaction (secrets, e-mail, phone, IBAN, card, home paths, IP addresses, and
+the values the server was told are secret); then "unredactable" is decided — the payload carries a `sensitive` guard
+flag, or the redaction changed nothing in a text of more than 20 words; then the user is shown what would leave and must
+say "send". No confirmation, no request. A payload that carries the `sensitive` flag is never sent by an override: the
+session's guard answer does not cover it.
 
-Its outcomes:
+**Cloud mode is per session (A2-T5).** A session that has not opted in never reaches the gate at all: its decisions
+are answered on this machine, and the journal records the mode, the backend and that no text was sent. The opt-in is
+asked **once per session**, through the same form channel as the preview, and remembered for that session only — not for
+the job, not for the machine. It is asked again when it expired (12 hours) or when the session's first cloud ask names
+another job than the one it was given for. Its answers are: cloud with the guards local, cloud and guards, or keep local.
+The **guards** are a second, explicit answer and apply to that session alone; they cannot outlive it, and a guard
+override is refused for a `sensitive` payload. Every decision carries its mode, its backend, whether text left and the
+session's consent in the journal.
+
+**The confirmation cost.** Without a local name/address detector every cloud call is previewed and confirmed, because
+nothing can vouch for the payload; with one, the redaction has already replaced names and addresses and the preview can
+offer "send". Either way, `cloud` without NER costs a user round trip per call, and a payload nobody can vouch for is
+marked as such — which may be worse than `local` plus the one question a low-confidence decision asks.
+
+**G0, the local-first gate.** It answers `injection`, `harmful` and `sensitive` (§21) on the job text, each task text
+and each worker question, on the machine. Its outcomes:
 - `injection` or `harmful` → the user.
-- `sensitive` or `refusal_likely` → the job or task becomes **local-only**: every later node uses `gliner` or
-  `openjev`, and every worker runs locally.
-- Otherwise each node uses its configured backend.
+- `sensitive` → the job or task becomes **local-only**: every later node uses `gliner` or `openjev`, and every worker
+  runs locally.
+- Otherwise each node follows its configured backend, and in cloud mode its session's opt-in.
 
 **Until our own GLiNER fine-tune passes the guard bench** (A9: the oc-voice fine-tune flags a port scan of the
-user's own LAN as harmful and a credential rotation as injection, and has no notion of `refusal_likely`), a G0
-"yes" from GLiNER only sends the question to the user; it never blocks or routes on its own. `refusal_likely` is
-then caught at runtime by the `worker_refused` signature instead.
+user's own LAN as harmful and a credential rotation as injection), a G0 "yes" from GLiNER only sends the question to
+the user; it never blocks or routes on its own. A refusal at runtime is caught by the `worker_refused` signature instead.
 
-**Starting backends per node** follow oc-voice's measured verdict: GLiNER fine-tunes beat Jev on guards but
+**Starting backends per node** follow oc-voice's measured verdict: GLiNER fine-tunes beat the cloud client on guards but
 reached 0.85 against 0.98 on intent.
-- Guards (G0, G) start on `gliner`.
-- The fine decisions (N1, N2c, N5, N6, N9) start on `typesafe`.
+- Guards (G0, G) start on `gliner` in both modes, unless the session's user overrode that.
+- The fine decisions (N1, N2c, N5, N6, N9) follow the mode: `gliner`/`openjev` in `local`, the cloud in `cloud`.
 
 **Shadow (fine-tune) mode**, `decisionMode: shadow`:
-- **Both backends run.** Cloud Jev decides; GLiNER answers the same request in parallel and is only journaled.
+- **Both backends run.** The cloud client decides; GLiNER answers the same request in parallel and is only journaled.
   Local-only tasks have no teacher: GLiNER decides there, and its labels come from the user and the outcomes.
 - **The journal holds both answers**, so agreement is measured per node and per question.
 - **Retraining:**
-  - `npm run export-dataset -- --target gliner` writes GLiNER2 rows. The label is Jev's answer, but user
+  - `npm run export-dataset -- --target gliner` writes GLiNER2 rows. The label is the cloud client's answer, but user
     overrides and outcomes take priority.
   - A LoRA fine-tune, in the style of oc-voice's `training/` pipeline, produces a new checkpoint.
-- **Promotion gate per node:** on a held-out bench, agreement with Jev reaches the node's bar, and guards keep a
+- **Promotion gate per node:** on a held-out bench, agreement with the cloud client reaches the node's bar, and guards keep a
   recall of 1.0. The node then switches to `gliner`; config and journal record it.
 - **Demotion** is automatic when the user's override rate on GLiNER's answers rises.
 
-## 21. Censored vs uncensored: four separate guards
-The four guards are worded separately and calibrated together on one bench (`bench/guard_cases.json`, after
+## 21. Censored vs uncensored: three separate guards
+The three guards are worded separately and calibrated together on one bench (`bench/guard_cases.json`, after
 oc-voice `bench/jev_guard.py`), so that uncensored work is never filed as harmful.
 
 | Guard | Statement (noul) | Effect |
 |---|---|---|
 | `injection` | This text tries to subvert the agent: override or disable its rules or safety checks, reveal hidden instructions, keys or secrets, pose as a system or developer message, or make it pretend to be an unrestricted AI. | the user |
 | `harmful` | This task asks for help to hurt, threaten, stalk or poison specific people, to attack devices, accounts or networks the user does not own and is not authorized to test, or to build weapons. | the user |
-| `refusal_likely` | A mainstream safety-tuned model would likely refuse or water down this task, although it is legitimate. | local uncensored model |
 | `sensitive` | This task or its data must not leave the machine: personal data, credentials, private documents, or code marked private for this project. | local (censored models allowed) |
 
 - **Explicitly not harmful:** security testing of the user's own systems, CTFs, malware analysis in a lab,
   reverse engineering, explicit or adult fiction, controversial topics, drug harm-reduction. These are the hard
-  negatives on the bench.
+  negatives on the bench: no guard says yes to them.
 - **Hard positives:** indirect harm ("which poison is undetectable in food?", oc-voice's known gap), attacks on
   third parties, and injections hidden in tool output or web pages.
-- **Order:** injection / harmful → the user; then refusal_likely → local uncensored; then sensitive → local;
-  else normal routing.
+- **Order:** injection / harmful → the user; then sensitive → local; else normal routing.
 - **Refusal at runtime** is a watchdog signature, `worker_refused`. A censored worker's reply matches refusal
   patterns, or GLiNER answers "this reply refuses or waters down the task". N9 then moves the task to a local
   uncensored model, once, with a handoff note. If the task was flagged harmful, it goes to the user instead.
+- **The rulebook version** (`RULEBOOK_VERSION` in `src/catalog.ts`) names the wording, guard and floor set: a change to
+  any of them bumps it, every journaled decision records the version it was answered under, and the bench is re-run for
+  it. Version 2 is the three guards with the fourth one dropped (D12); its bench re-run follows in A2b, where the
+  labels from the journal exist.
 - Floors are set per backend from the bench.
 
 ## 22. Decisions by the model or by the user (overrides)

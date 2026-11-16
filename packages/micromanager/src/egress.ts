@@ -8,7 +8,8 @@
 //     the values the server was told are secret) is applied to the state text and to the questions. Only the result
 //     is previewed and sent; the preview never sees the unredacted text either;
 //   - "unredactable" is decided, as A2-T5 defines it: the payload carries a `sensitive` guard flag, or the redaction
-//     changed nothing in a text of more than 20 words;
+//     changed nothing in a text of more than 20 words. The preview says so, and a per-session guard override is refused
+//     for such a payload before it ever gets here (src/backends.ts);
 //   - the user is shown what would leave and must say "send". There is no other way through: without a preview channel
 //     (a CLI run, a session that is itself waiting) the call is kept local, journalled with that reason, and the
 //     caller falls back to its own default.
@@ -119,6 +120,18 @@ export function carriesSensitive(state: string): boolean {
 
 export function wordsOf(text: string): number {
   return text.trim() ? text.trim().split(/\s+/).length : 0
+}
+
+// The A2-T5 definition of "unredactable", in one place: a payload that carries a `sensitive` guard flag, or a text of
+// more than 20 words whose redaction changed nothing. The gate uses it for the preview, and the per-session guard
+// override is refused for one (src/backends.ts) — the same rule, so the two paths cannot drift.
+export function unredactableText(text: string, secrets: readonly string[] = []): { readonly unredactable: boolean; readonly why?: string } {
+  const why = carriesSensitive(text)
+    ? "it carries a sensitive guard flag"
+    : redactEgress(text, secrets) === text && wordsOf(text) > PREVIEW_WORDS
+      ? `the redaction changed nothing in ${wordsOf(text)} words`
+      : undefined
+  return why === undefined ? { unredactable: false } : { unredactable: true, why }
 }
 
 const rulesOf = (findings: readonly Finding[]): string[] => [...new Set(findings.map((f) => f.rule))].sort()

@@ -17,8 +17,10 @@ back, and a merge train waits for the checks.
 
 - OpenCode v2 and Node.js 22.12 or later.
 - On Linux, the sandbox uses `bubblewrap`, `socat` and `ripgrep`; without them the plugin still runs, unwrapped.
-- The decision model (Jev) is configured under `jev` in `micromanager.jsonc`; a local decision server can replace it
-  for the local-first guards.
+- The decision client is configured under `decider` in `micromanager.jsonc`: `{ "mode": "local" }` (the default) keeps
+  every decision on this machine and needs no key; `{ "mode": "cloud" }` may send one to the cloud client, after a
+  redaction and a per-call preview, once a session has opted in. The guards (injection, harmful, sensitive) stay local
+  unless that session's user lets them go, and a payload carrying the `sensitive` flag is never sent.
 
 Configuration, the job flow, the roles and the design notes live in the repository:
 <https://github.com/RentschlerTobias/Omacode#readme>.

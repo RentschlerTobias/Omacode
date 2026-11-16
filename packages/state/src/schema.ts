@@ -29,7 +29,7 @@ export type ToolGroup = "shell" | "web"
 
 export type PolicySet = Readonly<Record<string, string>> // key -> "auto" | "ask" | "rule" | "fixed:<value>"
 
-export type Guard = "injection" | "harmful" | "refusal_likely" | "sensitive"
+export type Guard = "injection" | "harmful" | "sensitive"
 export interface GateResult {
   readonly flagged: readonly Guard[]
   readonly scores: Partial<Record<Guard, number>>

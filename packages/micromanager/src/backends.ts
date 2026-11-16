@@ -3,19 +3,38 @@
 // node uses, and `default`/`nodes` only name a backend per node within what the mode allows. All speak the same wire
 // format, so one client (src/decider.ts) serves them; only URL, model and key differ.
 //
+// In cloud mode every node may ask the cloud, but only for a session that opted in (A2-T5). The opt-in is a value of
+// the session, not of the job or the machine: a session that has not opted in never reaches the egress gate at all,
+// its decisions are answered on this machine, and the journal says so. The guards need a second, explicit answer for
+// that session, and a sensitive payload cannot be overridden at all (src/egress.ts).
+//
 // Every decision is journalled here, with the state, the questions and the answers (A2-T2b). A payload for another
 // machine passes the egress gate inside that client (src/egress.ts), so the entry also carries the redacted text that
 // left and the gate's verdict.
 
 import { randomUUID } from "node:crypto"
 
-import { EgressRefused, summary, type EgressOptions, type EgressSummary } from "./egress.ts"
+import { RULEBOOK_VERSION } from "./catalog.ts"
+import { EgressRefused, summary, unredactableText, type EgressOptions, type EgressSummary } from "./egress.ts"
 import { cloudApiKey, DecisionClient, type AskContext, type Decision, type Question } from "./decider.ts"
 import { record } from "./journal.ts"
 import { findTool } from "./which.ts"
 
 export type BackendName = "cloud" | "gliner" | "openjev" | "rules"
 export type DeciderMode = "local" | "cloud"
+
+// The per-session opt-in for cloud asks (A2-T5). src/preview.ts CloudOptIn holds the memory and the waiting form; the
+// plugin gives it a channel to the session's micromanager. Without one — a CLI run, the runner's headless loop — no
+// session is asked and the cloud is not used, rather than sending something nobody opted in to.
+export interface ConsentState {
+  readonly allow: boolean // this session may use the cloud
+  readonly guards: boolean // and its guard questions may go too (the explicit per-session override)
+  readonly why: string // for the journal
+}
+
+export interface CloudConsent {
+  allows(session: string | undefined, job?: string): Promise<ConsentState>
+}
 
 // An asker is anything a node can be answered by. The context is what the egress gate needs (which node asks, for which
 // session); an asker that has no use for it ignores it, as the rules backend and every test double does.
@@ -32,7 +51,7 @@ export interface BackendConfig {
 }
 
 // Guards start on GLiNER, everything else follows the mode: the cloud client in "cloud", and in "local" the cloud
-// default is demoted to the local chain. G0 never leaves the machine, in either mode.
+// default is demoted to the local chain. G0 stays on this machine, in either mode, unless its session overrides that.
 export const DEFAULT_BACKENDS: BackendConfig = {
   mode: "local",
   default: "cloud",
@@ -45,8 +64,10 @@ export const DEFAULT_BACKENDS: BackendConfig = {
 }
 
 const LOCAL: ReadonlySet<BackendName> = new Set(["gliner", "openjev", "rules"])
-// Nodes whose questions carry user and task text that must never reach the cloud.
-const ALWAYS_LOCAL = new Set(["G0", "G0.injection"])
+// The guard nodes: injection, harmful and sensitive on a job's or task's text (G0) and the same guards on the text a
+// worker reads (G0.injection; design.md §14 calls the whole node G). They stay on this machine in both modes unless the
+// session's user overrode that for that session alone (A2-T5), and no other node's opt-in carries them along.
+const GUARD_NODES = new Set(["G0", "G0.injection", "G"])
 
 export class RulesBackend implements Asker {
   // Answers nothing: every caller falls back to its code default, as without a decision client.
@@ -88,7 +109,7 @@ export function makeAskers(
   const cloud = cloudClient(config, key, fetcher, egress)
   if (cloud) out.cloud = cloud
   // Local servers take any key; their timeout is short so a dead server costs little.
-  // GLiNER answers four guards in about 0.4 s on the CPU; 5 s leaves room for a loaded machine.
+  // GLiNER answers three guards in about 0.4 s on the CPU; 5 s leaves room for a loaded machine.
   if (config.urls.gliner) out.gliner = new DecisionClient("local", { url: config.urls.gliner, model: "gliner", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })
   // An Open-Jev server is a Python console script: installed means that program is on PATH, the same test the plugin
   // uses for any local tool it did not place itself (src/which.ts).
@@ -126,7 +147,7 @@ export interface AskOptions {
   readonly localOnly?: boolean // a sensitive job: no cloud backend
   readonly job?: string
   readonly task?: string
-  readonly session?: string // whose ask it is: the preview of a cloud send wakes that session's micromanager
+  readonly session?: string // whose ask it is: the cloud opt-in and the preview of a cloud send wake that session's micromanager
   // Only the cloud client may answer this node. The permission path uses it until A2b-T1 has trained the local model on
   // permission cases: with no cloud asker the rules answer nothing and the caller keeps its own default, instead of a
   // local model being asked something it was never measured on.
@@ -139,19 +160,28 @@ export class Decider {
   readonly #config: BackendConfig
   readonly #askers: Partial<Record<BackendName, Asker>>
   readonly #journal: (entry: Record<string, unknown>) => void
+  readonly #consent?: CloudConsent
 
-  constructor(config: BackendConfig, askers: Partial<Record<BackendName, Asker>>, journal: (entry: Record<string, unknown>) => void = record) {
+  constructor(
+    config: BackendConfig,
+    askers: Partial<Record<BackendName, Asker>>,
+    journal: (entry: Record<string, unknown>) => void = record,
+    consent?: CloudConsent,
+  ) {
     this.#config = config
     this.#askers = askers
     this.#journal = journal
+    this.#consent = consent
   }
 
   // The backend a node uses: its configured one, kept local when it has to be, rules when nothing else is there.
-  backendFor(node: string, localOnly = false): BackendName {
+  // This is the mode's answer, before any per-session consent: ask() asks the session and falls back when it has not
+  // opted in.
+  backendFor(node: string, localOnly = false, guards = false): BackendName {
     const wanted = this.#config.nodes[node] ?? this.#config.default
     // Local mode demotes a cloud override to the local chain: nothing leaves the machine there (D11, D21). The
-    // guards stay local in cloud mode too, and a local-only job never sends anything.
-    const local = this.#config.mode === "local" || localOnly || ALWAYS_LOCAL.has(node)
+    // guards stay local in cloud mode too unless this session overrode that, and a local-only job never sends anything.
+    const local = this.#config.mode === "local" || localOnly || (GUARD_NODES.has(node) && !guards)
     if (!local) return this.#askers[wanted] ? wanted : "rules"
     const chain: BackendName[] = LOCAL.has(wanted) ? [wanted, "gliner", "openjev", "rules"] : ["gliner", "openjev", "rules"]
     return chain.find((b) => this.#askers[b] !== undefined) ?? "rules"
@@ -159,14 +189,48 @@ export class Decider {
 
   async ask(node: string, state: Record<string, unknown>, questions: Record<string, Question>, options: AskOptions = {}): Promise<Asked> {
     const id = randomUUID()
-    const backend = options.cloudAnswers ? (this.#config.mode === "cloud" && this.#askers.cloud ? "cloud" : "rules") : this.backendFor(node, options.localOnly)
     const text = JSON.stringify(state)
+    // The backend the mode names, and — for the cloud — the session's opt-in. A session that has not opted in never
+    // reaches the egress gate: it is answered on this machine and the journal says why (A2-T5). A guard node's
+    // configured backend is local, so only the session's explicit guard answer can take it to the cloud.
+    const guard = GUARD_NODES.has(node)
+    const modeCloud = this.#config.mode === "cloud" && !options.localOnly && this.#askers.cloud !== undefined
+    const cloudWanted = modeCloud && (options.cloudAnswers || guard || this.backendFor(node, options.localOnly, true) === "cloud")
+    let consent: ConsentState | undefined
+    let overridden: string | undefined
+    let backend: BackendName
+    if (cloudWanted) {
+      consent = this.#consent
+        ? await this.#consent.allows(options.session, options.job)
+        : { allow: false, guards: false, why: "no channel to ask for a cloud opt-in, so the decision stays local" }
+      if (guard) {
+        // The guards need the session's second answer, and an unredactable payload cannot be overridden at all: it stays
+        // on this machine even for a session whose user let the guards go (A2-T5). An unredactable payload is one that
+        // carries a `sensitive` guard flag, or a nontrivial text the redaction left untouched; the gate marks it the
+        // same way, and this path agrees before any preview.
+        const blocked = unredactableText(text)
+        overridden = !consent.allow
+          ? consent.why
+          : !consent.guards
+            ? "the guards stay local in this session"
+            : blocked.unredactable
+              ? `the guard override is refused: ${blocked.why}`
+              : undefined
+        backend = overridden === undefined ? "cloud" : this.backendFor(node, true)
+      } else {
+        // The permission path keeps its own default when the session has not opted in: a local model was never measured
+        // on permission cases (cloudAnswers), so rules answer nothing rather than guessing.
+        backend = consent.allow ? "cloud" : options.cloudAnswers ? "rules" : this.backendFor(node, true)
+      }
+    } else {
+      backend = options.cloudAnswers ? "rules" : this.backendFor(node, options.localOnly)
+    }
     const context: AskContext = { node, ...(options.job ? { job: options.job } : {}), ...(options.task ? { task: options.task } : {}), ...(options.session ? { session: options.session } : {}) }
     const shadowName = this.#config.shadow
     // Shadow mode is the label factory for the local model (D19): in cloud mode the local backend answers beside the
     // cloud one and is only journaled. In local mode nothing may leave the machine, so there is no second request. A
     // cloud-only node has no shadow either: the local model was never measured on it.
-    const shadowAllowed = this.#config.mode === "cloud" && !options.cloudAnswers && shadowName && shadowName !== backend && this.#askers[shadowName] && (LOCAL.has(shadowName) || !(options.localOnly || ALWAYS_LOCAL.has(node)))
+    const shadowAllowed = this.#config.mode === "cloud" && !options.cloudAnswers && shadowName && shadowName !== backend && this.#askers[shadowName] && (LOCAL.has(shadowName) || !options.localOnly)
     const shadow = shadowAllowed ? this.#askers[shadowName]!.ask(text, questions, context).catch((err: unknown) => err as Error) : undefined
     let decision: Decision
     let error: string | undefined
@@ -180,8 +244,9 @@ export class Decider {
       decision = await new RulesBackend().ask()
     }
     const shadowResult = shadow ? await shadow : undefined
-    // One entry kind for every decision ("decision"), now with what A2-T2b needs to reproduce a permission case: the
-    // mode, the request, the text that actually left (redacted), and the gate's verdict. A local answer has no `sent`
+    // One entry kind for every decision ("decision"), with what A2-T2b needs to reproduce a permission case: the mode,
+    // the request, the text that actually left (redacted), and the gate's verdict. A2-T5 adds what the session allowed
+    // and whether any text left at all, so a decision that stayed home is legible as such. A local answer has no `sent`
     // and no `egress`: nothing left the machine.
     this.#journal({
       kind: "decision",
@@ -191,6 +256,8 @@ export class Decider {
       task: options.task,
       mode: this.#config.mode,
       backend: error ? "rules" : backend,
+      rulebook: RULEBOOK_VERSION,
+      sentText: decision.sent !== undefined,
       error,
       state,
       questions,
@@ -198,6 +265,7 @@ export class Decider {
       model: decision.model,
       latencyMs: decision.latencyMs,
       ...(options.request ? { request: options.request } : {}),
+      ...(consent ? { consent: overridden ?? (consent.allow ? (consent.guards ? "cloud+guards" : "cloud") : consent.why) } : {}),
       ...(decision.sent !== undefined ? { sent: decision.sent } : {}),
       ...((decision.egress ?? refused) ? { egress: decision.egress ?? refused } : {}),
       ...(shadowResult && shadowName

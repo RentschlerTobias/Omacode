@@ -179,7 +179,7 @@ export class Runner {
     }
     if (presetBreaksGate) this.#say(`preset ${(preset.policy as { value: string }).value} ignored: the ${uncensored ? "task" : "job"} must stay local${free ? " and uncensored" : ""}`)
     const availability = await this.#d.availability?.().catch(() => undefined)
-    const r = route(this.#d.registry, { role, difficulty, vision, sensitive: local, refusalLikely: free, avoidFamilies }, availability)
+    const r = route(this.#d.registry, { role, difficulty, vision, sensitive: local, uncensored: free, avoidFamilies }, availability)
     const id = r.model ?? roleById(role)?.models[0] ?? this.#d.registry[0]!.id
     this.#journal({ kind: "routing", job: job.id, task, role, model: id, reason: r.model ? r.reason : `fallback: ${r.reason}`, ranked: r.ranked.slice(0, 5) })
     return { id, reason: r.model ? r.reason : "fallback", routed: r.model !== undefined }

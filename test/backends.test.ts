@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, label, makeAskers, rulesDecider, type Asker, type BackendName } from "../packages/micromanager/src/backends.ts"
+import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, label, makeAskers, rulesDecider, RulesBackend, type Asker, type BackendName, type CloudConsent } from "../packages/micromanager/src/backends.ts"
 import { DecisionClient, DeciderError, type Question } from "../packages/micromanager/src/decider.ts"
 import { EgressRefused, type EgressRequest } from "../packages/micromanager/src/egress.ts"
 import { glinerRows, openJevRows, renderState, splitOf } from "../packages/micromanager/src/dataset.ts"
@@ -27,10 +27,14 @@ const jevAnswers: Decision["answers"] = {
   harmful: { type: "noul", noul: 0.05 },
 }
 
+// A2-T5: the session opted in to the cloud, guards local. The tests below are about the gate and the mode, not the
+// opt-in; the opt-in itself has its own tests at the end of this file.
+const OPTED_IN = { async allows() { return { allow: true, guards: false, why: "test" } } }
+
 function decider(askers: Partial<Record<BackendName, Asker>>, shadow?: BackendName) {
   const entries: Entry[] = []
-  // The cloud semantics of the table below: a node's backend, the guards local, shadow mode on.
-  const d = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud", shadow }, { rules: { async ask() { return { answers: {}, model: "rules", latencyMs: 0 } } }, ...askers }, (e) => entries.push(e))
+  // The cloud semantics of the table below: a node's backend, the guards local, shadow mode on, the session opted in.
+  const d = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud", shadow }, { rules: { async ask() { return { answers: {}, model: "rules", latencyMs: 0 } } }, ...askers }, (e) => entries.push(e), OPTED_IN)
   return { d, entries }
 }
 
@@ -293,7 +297,7 @@ test("keep local and cancel send nothing and are in the journal as such", async 
     const entries: Entry[] = []
     const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
     const askers = makeAskers(config, "k", fetch, () => false, { confirm: async () => answer })
-    const d = new Decider(config, askers, (e) => entries.push(e))
+    const d = new Decider(config, askers, (e) => entries.push(e), OPTED_IN)
     const asked = await d.ask("N5", { task: "Add a flag" }, QUESTIONS, { job: "job-1", session: "ses_w" })
     assert.equal(bodies.length, 0, `${answer}: nothing was sent`)
     assert.equal(asked.backend, "rules", "the caller falls back to its own default")
@@ -350,4 +354,158 @@ test("no call site asks a client directly, and every client is built behind the 
   assert.deepEqual(deciders, ["packages/micromanager/src/backends.ts", "packages/micromanager/src/cli.ts", "packages/micromanager/src/plugin.ts"])
   const plugin_ = readFileSync("packages/micromanager/src/plugin.ts", "utf8")
   assert.doesNotMatch(plugin_, /\bclient\.ask\(/, "a permission site asks the decider, never the client")
+})
+
+// --- A2-T4 and A2-T5: the rulebook version, the per-session cloud opt-in and the guards ---------------------------
+
+test("the rulebook version is bumped, and every decision names it", async () => {
+  const { RULEBOOK_VERSION, GUARDS } = await import("../packages/micromanager/src/catalog.ts")
+  assert.equal(RULEBOOK_VERSION, 2, "D12: the guard set changed, so the rulebook is a new version")
+  assert.deepEqual(Object.keys(GUARDS).sort(), ["harmful", "injection", "sensitive"])
+  const { d, entries } = decider({ cloud: fixed(jevAnswers) })
+  await d.ask("N5", { task: "Add a flag" }, QUESTIONS)
+  assert.equal(entries[0]!.rulebook, RULEBOOK_VERSION)
+})
+
+// The old guard id is gone from the code the plugin runs and from the bench. Written in two pieces so this test
+// itself does not become the match it looks for; the roadmap and the dated logs in docs/plan.md are history.
+test("the removed guard appears nowhere in the code, the bench or the live docs", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs")
+  const { join } = await import("node:path")
+  const needle = "refusal" + "_likely"
+  const files: string[] = []
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".venv") continue
+      const path = join(dir, entry.name)
+      if (entry.isDirectory()) walk(path)
+      else if (/\.(ts|json|md)$/.test(entry.name)) files.push(path)
+    }
+  }
+  for (const dir of ["packages", "bench", "test"]) walk(dir)
+  files.push("README.md", "docs/design.md")
+  const found = files.filter((f) => readFileSync(f, "utf8").includes(needle))
+  assert.deepEqual(found, [], `the removed guard still appears in ${found.join(", ")}`)
+})
+
+// The plugin's consent in miniature: the answer it already holds, or a refusal. The state machine itself is tested
+// below on CloudOptIn, which is what the plugin wraps with the channel to the micromanager.
+const consenting = (guards: boolean, why = "test"): CloudConsent => ({
+  async allows() {
+    return { allow: true, guards, why }
+  },
+})
+const refusing = (why: string): CloudConsent => ({
+  async allows() {
+    return { allow: false, guards: false, why }
+  },
+})
+
+test("a session that has not opted in reaches neither the gate nor the cloud, and the journal says local", async () => {
+  const { bodies, fetch } = transport(HARMLESS)
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  let previews = 0
+  const askers = makeAskers(config, "k", fetch, () => false, { confirm: async () => { previews++; return "send" } })
+  const d = new Decider(config, askers, (e) => entries.push(e), refusing("this session has not opted in to the cloud"))
+  const asked = await d.ask("N5", { task: "Add a flag" }, QUESTIONS, { session: "ses_w", job: "job-1" })
+
+  assert.equal(asked.backend, "gliner", "answered on this machine")
+  assert.equal(bodies.filter((b) => b.model === "cloud").length, 0, "no cloud request")
+  assert.equal(previews, 0, "the gate was not even reached")
+  const e = entries[0]!
+  assert.deepEqual(
+    { mode: e.mode, backend: e.backend, sentText: e.sentText, consent: e.consent, sent: e.sent },
+    { mode: "cloud", backend: "gliner", sentText: false, consent: "this session has not opted in to the cloud", sent: undefined },
+  )
+})
+
+test("an opted-in session sends, and the journal records the mode, the backend and that text left", async () => {
+  const { bodies, fetch } = transport(HARMLESS)
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  const askers = makeAskers(config, "k", fetch, () => false, { confirm: async () => "send" })
+  const d = new Decider(config, askers, (e) => entries.push(e), consenting(false))
+  const asked = await d.ask("N5", { task: "Add a flag" }, QUESTIONS, { session: "ses_w" })
+  assert.equal(asked.backend, "cloud")
+  // The cloud client's model is its default ("jev-latest"); the local one names itself "gliner".
+  const sent = bodies.filter((b) => b.model !== "gliner")
+  assert.equal(sent.length, 1)
+  const e = entries[0]!
+  assert.deepEqual([e.mode, e.backend, e.sentText, e.consent], ["cloud", "cloud", true, "cloud"])
+  assert.equal(e.sent, sent[0]?.state)
+})
+
+test("the opt-in is asked once per session, and a stale one or another job asks again", async () => {
+  const { CloudOptIn, OPT_IN_TTL_MS, optInAnswer, optInForm } = await import("../packages/micromanager/src/preview.ts")
+  const asked: string[] = []
+  const optIns = new CloudOptIn((e) => { if (e.event === "asked") asked.push(String(e.id)) })
+  assert.equal(optIns.state("ses_w", "job-1").need, "none", "nothing known yet")
+  optIns.remember("ses_w", "job-1", "cloud", 0)
+  assert.equal(optIns.state("ses_w", "job-1", 1000).need, "ok")
+  assert.equal(optIns.state("ses_w", "job-1", OPT_IN_TTL_MS).need, "stale", "expired asks again")
+  assert.equal(optIns.state("ses_w", "job-2", 1000).need, "job", "another job asks again")
+  assert.equal(optIns.state("ses_other", "job-1", 1000).need, "none", "another session asks again")
+
+  // One form per session, however many asks wait on it.
+  const first = optIns.open("ses_w", "job-1")
+  const second = optIns.open("ses_w", "job-1")
+  assert.equal(second.fresh, false)
+  assert.equal(first.pending.id, second.pending.id)
+  assert.equal(asked.length, 1, "one form, not one per ask")
+  assert.equal(optIns.answer(first.pending.id, "local")?.id, first.pending.id)
+  assert.equal(await first.answer, "local")
+  assert.equal(optIns.state("ses_w", "job-1", 1000).need, "local", "a no is remembered too, so the user is not asked before every call")
+  // The override and the answer do not outlive the session.
+  optIns.drop(["ses_w"])
+  assert.equal(optIns.state("ses_w", "job-1").need, "none")
+  assert.deepEqual(optInAnswer(["Cloud and guards"]), "guards")
+  assert.deepEqual(optInAnswer(["Cloud for this session"]), "cloud")
+  assert.deepEqual(optInAnswer(["Keep it local"]), "local")
+  assert.equal(optInAnswer(["something else"]), undefined)
+  assert.equal(optInForm({ id: "O1", session: "ses_w", at: 0 })[0]!.header, "Cloud O1")
+})
+
+test("a guard never reaches the cloud without the session's override", async () => {
+  const calls: string[] = []
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  const askers = { cloud: fixed(jevAnswers, calls, "cloud"), gliner: fixed(jevAnswers, calls, "gliner"), rules: new RulesBackend() }
+  const d = new Decider(config, askers, (e) => entries.push(e), consenting(false))
+  const asked = await d.ask("G0", { text: "a job" }, { harmful: QUESTIONS.harmful! }, { session: "ses_w" })
+  assert.equal(asked.backend, "gliner")
+  assert.deepEqual(calls.map((c) => c.split(":")[0]), ["gliner"])
+  assert.equal(entries[0]!.consent, "the guards stay local in this session")
+})
+
+test("an overridden guard is scoped to its session, and a sensitive payload refuses the override", async () => {
+  const calls: string[] = []
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  const askers = { cloud: fixed(jevAnswers, calls, "cloud"), gliner: fixed(jevAnswers, calls, "gliner"), rules: new RulesBackend() }
+  const scoped: CloudConsent = {
+    async allows(session) {
+      return { allow: true, guards: session === "ses_a", why: "test" }
+    },
+  }
+  const d = new Decider(config, askers, (e) => entries.push(e), scoped)
+  assert.equal((await d.ask("G0", { text: "a job" }, { harmful: QUESTIONS.harmful! }, { session: "ses_a" })).backend, "cloud")
+  assert.equal((await d.ask("G0", { text: "a job" }, { harmful: QUESTIONS.harmful! }, { session: "ses_b" })).backend, "gliner")
+  // The fake askers report no `sent` text; what matters here is which one answered and why.
+  assert.deepEqual(entries.map((e) => [e.backend, e.consent]), [
+    ["cloud", "cloud+guards"],
+    ["gliner", "the guards stay local in this session"],
+  ])
+  // The override does not reach a payload that carries the sensitive flag: kept local, and the journal says why.
+  const before = calls.filter((c) => c.startsWith("cloud:")).length
+  const refused = await d.ask("G0", { text: "summarise the dossier", sensitive: true }, { harmful: QUESTIONS.harmful! }, { session: "ses_a" })
+  assert.equal(refused.backend, "gliner")
+  assert.equal(calls.filter((c) => c.startsWith("cloud:")).length, before, "no cloud request")
+  assert.match(String(entries.at(-1)!.consent), /carries a sensitive guard flag/)
+  // The same rule's other arm: a nontrivial text the redaction left untouched is not one the override can vouch for.
+  const long = "the parser should skip the empty line before the header and keep the trailing comment in the output file as it is today"
+  const untouched = await d.ask("G0", { text: long }, { harmful: QUESTIONS.harmful! }, { session: "ses_a" })
+  assert.equal(untouched.backend, "gliner")
+  assert.match(String(entries.at(-1)!.consent), /changed nothing in \d+ words/)
+  assert.equal(calls.filter((c) => c.startsWith("cloud:")).length, before, "still no cloud request")
 })

@@ -223,7 +223,7 @@ function nodeDecider(byNode: Record<string, Decision["answers"]>) {
   d.ask = (n, ...rest) => { node = n; return ask(n, ...rest) }
   return d
 }
-const CLEAN = { injection: noul(0), harmful: noul(0), refusal_likely: noul(0.1), sensitive: noul(0.1) }
+const CLEAN = { injection: noul(0), harmful: noul(0), sensitive: noul(0.1) }
 const TREE = JSON.stringify([
   { id: "D1", question: "Should add() accept more than two numbers?", kind: "decision", dependsOn: [], impact: "high" },
   { id: "D2", question: "What should add() do with non-numbers?", kind: "decision", dependsOn: ["D1"], impact: "medium" },
@@ -256,7 +256,7 @@ test("a clear job skips the session; a pin forces it; a flagged gate asks the us
   assert.equal((await runner(project, fake.api, { decider: clear }).start("add an add function")).kind, "plan")
   const pinned = runner(project, fake.api, { decider: clear, policies: { global: { "N2.clarity": "ask" } } })
   assert.equal((await pinned.start("add an add function")).kind, "session")
-  const flagged = nodeDecider({ G0: { ...CLEAN, refusal_likely: noul(0.9) }, N1: { needs_clarification: noul(0.1) } })
+  const flagged = nodeDecider({ G0: { ...CLEAN, sensitive: noul(0.9) }, N1: { needs_clarification: noul(0.1) } })
   const r = runner(project, fake.api, { decider: flagged })
   const gated = await r.start("scan my own LAN")
   assert.equal(gated.kind, "gate")
@@ -718,7 +718,7 @@ test("a follow-up the injection guard flags goes to later; every prompt is sent 
     },
   })
   // A guard-only local backend, as the local decider is today: every other node falls back to the rules.
-  const guardIds = new Set(["injection", "harmful", "sensitive", "refusal_likely"])
+  const guardIds = new Set(["injection", "harmful", "sensitive"])
   const gliner: Asker = {
     ask: async (state, questions) => {
       const bad = /ignore your rules/.test(state)

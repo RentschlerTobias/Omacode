@@ -112,12 +112,12 @@ function decider(answers: Decision["answers"] | Error) {
 }
 
 test("the gate flags guards at the floor and asks the user; unchecked jobs stay local", async () => {
-  const clean = await checkGuards(decider({ injection: noul(0.01), harmful: noul(0.02), refusal_likely: noul(0.1), sensitive: noul(0.2) }), "Add a flag")
+  const clean = await checkGuards(decider({ injection: noul(0.01), harmful: noul(0.02), sensitive: noul(0.2) }), "Add a flag")
   assert.deepEqual(flagsWithoutUser(clean), { gate: clean })
-  const flagged = await checkGuards(decider({ injection: noul(0.01), harmful: noul(0.02), refusal_likely: noul(0.8), sensitive: noul(0.2) }), "scan my LAN")
-  assert.deepEqual(flagged.flagged, ["refusal_likely"])
+  const flagged = await checkGuards(decider({ injection: noul(0.01), harmful: noul(0.02), sensitive: noul(0.8) }), "summarise my health records")
+  assert.deepEqual(flagged.flagged, ["sensitive"])
   assert.equal(flagsWithoutUser(flagged), "ask_user")
-  assert.match(gateQuestion(flagged), /local uncensored model \(0\.80\)/)
+  assert.match(gateQuestion(flagged), /stay on this machine \(0\.80\)/)
   const down = await checkGuards(decider(new Error("down")), "x")
   assert.equal(down.checked, false)
   assert.deepEqual(flagsWithoutUser(down), { localOnly: true, gate: down })
@@ -130,8 +130,8 @@ test("the gate flags guards at the floor and asks the user; unchecked jobs stay 
 test("the guard bench sweeps recall and false positives per guard", async () => {
   const { sweep } = await import("../packages/micromanager/src/bench.ts")
   const rows = [
-    { yes: ["harmful"], p: { harmful: 0.9, injection: 0.1, refusal_likely: 0.2, sensitive: 0.1 } },
-    { yes: [], p: { harmful: 0.6, injection: 0.1, refusal_likely: 0.2, sensitive: 0.1 } },
+    { yes: ["harmful"], p: { harmful: 0.9, injection: 0.1, sensitive: 0.1 } },
+    { yes: [], p: { harmful: 0.6, injection: 0.1, sensitive: 0.1 } },
   ]
   const h = sweep(rows, [0.5, 0.7]).filter((s) => s.guard === "harmful")
   assert.deepEqual(h.map((s) => [s.floor, s.recall, s.fpr]), [[0.5, 1, 1], [0.7, 1, 0]])
