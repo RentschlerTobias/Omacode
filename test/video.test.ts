@@ -1510,7 +1510,8 @@ const reportOf = (results: readonly CheckResult[], spec: VideoSpec): QaReport =>
 
 // Whether the port refuses a connection, tried until it does or the deadline passes. Every wait is bounded so a server
 // that does not die fails the test instead of hanging it.
-function portClosed(port: number, ms = 5000): Promise<boolean> {
+// Fifteen seconds for the same reason as the deck's: the suite runs real engines in parallel files.
+function portClosed(port: number, ms = 15_000): Promise<boolean> {
   return new Promise((done) => {
     const deadline = Date.now() + ms
     const attempt = (): void => {

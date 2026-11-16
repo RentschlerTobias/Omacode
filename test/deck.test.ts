@@ -304,7 +304,10 @@ const freePort = async (): Promise<number> => {
 
 // Whether the port refuses a connection, tried until it does or the deadline passes. Every wait in this file is bounded
 // so a presenter that does not die fails the test instead of hanging it.
-const portClosed = (port: number, ms = 5000): Promise<boolean> =>
+// Fifteen seconds, not five: a full suite runs several real engines in parallel files, and a port that closes in 200 ms
+// on an idle machine has taken longer than five seconds under that load. The bound is a failure detector, not a
+// performance claim.
+const portClosed = (port: number, ms = 15_000): Promise<boolean> =>
   new Promise((done) => {
     const deadline = Date.now() + ms
     const attempt = (): void => {
