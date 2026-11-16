@@ -4,6 +4,10 @@
 // a fake runner, and the engine itself — render, snapshot, check, lint, preview — is reached through the real host
 // runner, because the wiring between a composition and a rendered file is not something a fake can vouch for.
 //
+// The QA pass (B2-T4) is tested without a browser where it can be: the frame rules on synthetic PNGs, the two model skips
+// on a parsed ffprobe envelope, and the fix loop on a stub. One end-to-end run then renders the 5 s demo and asks the
+// adapter for every check, so the report a person reads is exercised once against a real file.
+//
 // A real 5 s render is the slow test. The demo is 640x360, two scenes, draft quality and no audio: small enough that a
 // host limitation is worth skipping rather than waiting out, and real enough that `ffprobe` measures an actual file.
 
@@ -34,8 +38,24 @@ import {
   type HostRunner,
 } from "../packages/artifact/src/adapter.ts"
 import { assertRegistry, evaluate, type CheckResult } from "../packages/artifact/src/checks.ts"
+import {
+  QA_CHECK_IDS,
+  QA_ROUNDS,
+  classifyFix,
+  judgeFrames,
+  qaChecks,
+  qaRounds,
+  readProbe,
+  readSilence,
+  sampleTimes,
+  type QaCheck,
+  type QaReport,
+  type QaSample,
+  type SafeFix,
+} from "../packages/artifact/src/qa.ts"
 import { createHostRunner, hostRunnerFor } from "../packages/artifact/src/runner.ts"
 import { parseSpec, specVersionOf, SPEC_VERSIONS, type DeckSpec, type VideoSpec } from "../packages/artifact/src/spec.ts"
+import { frame } from "./harness.ts"
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Fixtures and fakes.
@@ -312,7 +332,7 @@ test("the video adapter is an adapter, declares its engine and environment, and 
   assertAdapter(adapter)
   assert.equal(adapter.kind, "video")
   assert.equal(adapter.name, "hyperframes")
-  assert.deepEqual(adapter.executables, ["hyperframes"])
+  assert.deepEqual(adapter.executables, ["hyperframes", "ffprobe", "ffmpeg"], "the engine renders; the QA pass reads the file")
   assert.equal(adapter.network, true, "the preview server is the one networked verb")
   assert.deepEqual(adapter.env, [...HYPERFRAMES_ENV_NAMES])
   for (const step of ["prepare", "render", "snapshot", "check", "openEditor", "cancel"]) {
@@ -336,18 +356,29 @@ test("the video adapter is an adapter, declares its engine and environment, and 
   assert.equal("present" in adapter, false)
 })
 
-test("the video checks are a registry, and the QA rules are explicitly not this round's", () => {
+test("the video checks are a registry, and the QA ids say which answers this host can honestly give", () => {
   assertRegistry(VIDEO_CHECKS)
   assert.deepEqual(
     VIDEO_CHECKS.map((def) => def.id),
-    ["video.count", "video.duration", "video.lint", "video.runtime", "video.snapshot"],
+    [
+      "video.count",
+      "video.duration",
+      "video.lint",
+      "video.runtime",
+      "video.snapshot",
+      ...QA_CHECK_IDS,
+    ],
   )
   for (const def of VIDEO_CHECKS) assert.equal(def.required, true, `${def.id} is required`)
-  // B2-T4 owns black/freeze/silence/transcript/VLM. A definition here would claim a result this round cannot produce, so
-  // the reason a video has no such line is in the adapter's source and not a green check nobody ran.
-  for (const absent of ["video.black", "video.freeze", "video.silence", "video.transcript", "video.vlm"]) {
-    assert.equal(VIDEO_CHECKS.some((def) => def.id === absent), false, `${absent} belongs to B2-T4`)
-  }
+  // The three skips that are predicted rather than discovered: a transcript and a VLM review have no local model and may
+  // not call a cloud one (D13/D21), and a film with no audio has no silence to measure (B2 has no narration).
+  assert.deepEqual(
+    VIDEO_CHECKS.filter((def) => def.skippable === true).map((def) => def.id),
+    ["video.silence", "video.transcript", "video.vlm"],
+  )
+  // The QA ids are the class of answer this adapter now produces; the registry asserts their levels, and the video's
+  // mechanical rules above are still the ones that ran before a file existed.
+  for (const id of QA_CHECK_IDS) assert.ok(VIDEO_CHECKS.some((def) => def.id === id), `${id} is in the registry`)
 })
 
 test("a video's checks read the project and the engine's envelope, and a missing section fails rather than passes", (t) => {
@@ -404,6 +435,237 @@ test("a video's checks read the project and the engine's envelope, and a missing
   assert.equal(contract[0]?.status, "skipped")
   assert.match(contract[0]?.reason ?? "", /spec parse/)
   assert.deepEqual(evaluate(VIDEO_CHECKS, results).invalid, [])
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The QA pass (B2-T4): the frame rules, the two absences, and the fix loop. The judgements are functions of frames, so
+// these tests build real PNGs with the encoder the deck's blank check already uses; no browser is started.
+
+// One frame of one grey level. A film is judged on luminance and on change, so a grey still is the smallest picture that
+// can express both.
+const still = (shade: number) => frame(48, 32, () => [shade, shade, shade, 255])
+const sample = (at: number, scene: string | undefined, shade: number): QaSample => ({
+  at,
+  ...(scene !== undefined ? { scene } : {}),
+  image: still(shade),
+})
+
+// A whole QA report with one check failed and every other check in the state it would be in on a film with no audio and
+// no local models. The fix loop is about which failures a proposal answers, so the report has to look like a real one.
+const reportWith = (check: QaCheck | undefined): QaReport => ({
+  sceneIds: ["one", "two"],
+  frames: [],
+  passed: check === undefined,
+  checks: QA_CHECK_IDS.map((id): QaCheck => {
+    if (check !== undefined && check.id === id) return check
+    const absent = id === "video.silence" || id === "video.transcript" || id === "video.vlm"
+    return { id, status: absent ? "skipped" : "passed", text: absent ? "not measured here" : "ok" }
+  }),
+})
+
+const checkIn = (checks: readonly QaCheck[], id: string): QaCheck => {
+  const found = checks.find((check) => check.id === id)
+  assert.ok(found, `the QA pass must answer ${id}`)
+  return found
+}
+
+test("the frame rules find a black run, a freeze across a cut and a flash, and pass a clean set", () => {
+  const black = qaChecks({
+    file: "video.mp4",
+    duration: 2,
+    samples: [sample(0.2, "one", 128), sample(0.6, "one", 0), sample(1.0, "one", 0), sample(1.4, "one", 128)],
+  })
+  const blackCheck = checkIn(black, "video.black")
+  assert.equal(blackCheck.status, "failed")
+  assert.match(blackCheck.text, /2 black frames at 0\.6, 1 s/)
+  assert.equal(checkIn(black, "video.freeze").status, "passed")
+  assert.equal(checkIn(black, "video.flash").status, "passed")
+
+  // Identical frames inside one scene are a title card, not a freeze; the same frame on both sides of a cut is a freeze.
+  const freeze = qaChecks({
+    file: "video.mp4",
+    duration: 2,
+    samples: [sample(0.2, "one", 128), sample(0.8, "one", 128), sample(1.4, "two", 128), sample(2.0, "two", 200)],
+  })
+  assert.equal(checkIn(freeze, "video.black").status, "passed")
+  const freezeCheck = checkIn(freeze, "video.freeze")
+  assert.equal(freezeCheck.status, "failed")
+  assert.match(freezeCheck.text, /the cut at 1\.4 s shows the same frame in scenes one and two/)
+  assert.deepEqual(freezeCheck.scenes, ["one", "two"])
+
+  const flash = qaChecks({
+    file: "video.mp4",
+    duration: 2,
+    samples: [sample(0.2, "one", 32), sample(0.8, "one", 255), sample(1.4, "one", 32)],
+  })
+  assert.equal(checkIn(flash, "video.flash").status, "failed")
+  assert.match(checkIn(flash, "video.flash").text, /255\/255 bright/)
+  assert.deepEqual(judgeFrames([sample(0, "one", 32), sample(1, "one", 255), sample(2, "one", 32)]).map((fault) => fault.kind), [
+    "flash",
+  ])
+
+  const clean = qaChecks({
+    file: "video.mp4",
+    duration: 2,
+    samples: [sample(0.2, "one", 64), sample(0.8, "one", 64), sample(1.4, "two", 160), sample(2.0, "two", 160)],
+  })
+  assert.equal(checkIn(clean, "video.black").status, "passed")
+  assert.equal(checkIn(clean, "video.freeze").status, "passed")
+  assert.equal(checkIn(clean, "video.flash").status, "passed")
+  assert.deepEqual(judgeFrames([]), [])
+
+  // Nothing was sampled at all: every frame rule says it did not look, and none of them passes on an empty set.
+  const none = qaChecks({ file: "video.mp4", sampleReason: "ffmpeg is not runnable here" })
+  for (const id of ["video.black", "video.freeze", "video.flash"]) {
+    assert.equal(checkIn(none, id).status, "skipped")
+    assert.match(checkIn(none, id).text, /not runnable/)
+  }
+})
+
+test("probe, sample times, and the three skips: no audio, no speech model, no vision model", () => {
+  const probe = readProbe(
+    JSON.stringify({
+      format: { duration: "5.000000" },
+      streams: [
+        { index: 0, codec_type: "video", width: 640, height: 360, r_frame_rate: "24/1" },
+        { index: 1, codec_type: "data" },
+      ],
+    }),
+  )
+  assert.ok(probe)
+  assert.equal(probe.duration, 5)
+  assert.equal(probe.audio, false)
+  assert.deepEqual(probe.video, { width: 640, height: 360, fps: 24 })
+  assert.equal(readProbe('{"streams":[]}'), undefined, "a file with no duration is not a probe")
+  assert.equal(readProbe("not json"), undefined)
+
+  // The sample grid is the scene midpoints plus a uniform spread, deduplicated, and every frame knows its scene.
+  const times = sampleTimes(5, [
+    { id: "one", start: 0, duration: 2.5 },
+    { id: "two", start: 2.5, duration: 2.5 },
+  ])
+  assert.ok(times.some((entry) => entry.at === 1.25 && entry.scene === "one"), JSON.stringify(times))
+  assert.ok(times.some((entry) => entry.at === 3.75 && entry.scene === "two"), JSON.stringify(times))
+  assert.ok(times.length <= 12 && times.length >= 4)
+  assert.deepEqual([...times].map((entry) => entry.at), [...times.map((entry) => entry.at)].sort((a, b) => a - b))
+  for (const entry of times) assert.ok(entry.at >= 0 && entry.at < 5)
+
+  const checks = qaChecks({
+    file: "video.mp4",
+    duration: 5,
+    probe,
+    samples: [sample(0.2, "one", 64), sample(0.8, "one", 64), sample(1.4, "two", 160), sample(2.0, "two", 160)],
+  })
+  const silence = checkIn(checks, "video.silence")
+  assert.equal(silence.status, "skipped")
+  assert.match(silence.text, /no audio track, so there is no silence to find/)
+  for (const id of ["video.transcript", "video.vlm"]) {
+    const check = checkIn(checks, id)
+    assert.equal(check.status, "skipped")
+    assert.match(check.text, /D13\/D21/)
+  }
+
+  // The silence parser pairs ffmpeg's log lines and closes a start the file ran out on at the duration.
+  assert.deepEqual(readSilence("silence_start: 1.25\nsilence_end: 2.5 | silence_duration: 1.25\n", 5), [
+    { start: 1.25, end: 2.5 },
+  ])
+  assert.deepEqual(readSilence("silence_start: 4\n", 5), [{ start: 4, end: 5 }])
+})
+
+test("evaluate sees the transcript and the VLM as skips, not as passes", (t) => {
+  const job = jobFor(t)
+  const spec = demo()
+  const project = writeVideoProject(spec, job)
+  const checks = qaChecks({ file: "video.mp4" })
+  const qa: QaReport = { checks, sceneIds: ["one", "two"], frames: [], passed: true }
+  const results = videoResults({ spec, project, qa }, VIDEO_CHECKS)
+  const coverage = evaluate(VIDEO_CHECKS, results)
+  assert.deepEqual(coverage.invalid, [])
+  assert.deepEqual(
+    coverage.skipped.map((result) => result.id).sort(),
+    ["video.black", "video.flash", "video.freeze", "video.silence", "video.transcript", "video.vlm"],
+  )
+  for (const result of coverage.skipped) assert.ok((result.reason ?? "").length > 0, `${result.id} must say why`)
+  // The registry declared these three in advance, so the gate treats their absence as a warning rather than a lie.
+  const predicted = new Set(["video.silence", "video.transcript", "video.vlm"])
+  for (const result of coverage.skipped.filter((entry) => predicted.has(entry.id))) {
+    assert.ok(VIDEO_CHECKS.find((def) => def.id === result.id)?.skippable, `${result.id} is declared skippable`)
+  }
+})
+
+test("the fix loop stops at three rounds, applies only allowlisted repairs, and reports a content change", async () => {
+  const freeze = reportWith({ id: "video.freeze", status: "failed", text: "the cut at 2.5 s repeats", scenes: ["one"] })
+  let rendered = 0
+  const applied: SafeFix[] = []
+  const result = await qaRounds({
+    render: async () => {
+      rendered += 1
+    },
+    qa: async () => freeze,
+    fixes: {
+      propose: async () => [
+        { op: "extend", scene: "one", ms: 250 },
+        { op: "extend", scene: "one", ms: 10_000 },
+        { op: "rewrite", scene: "one", text: "a new sentence" },
+        { op: "extend", scene: "one", ms: 100, text: "a new sentence" },
+      ],
+      apply: async (fix) => {
+        applied.push(fix)
+      },
+    },
+  })
+
+  assert.equal(rendered, QA_ROUNDS, "three renders is the whole budget")
+  assert.equal(result.stopped, "rounds")
+  assert.deepEqual(applied, [
+    { op: "extend", scene: "one", ms: 250 },
+    { op: "extend", scene: "one", ms: 250 },
+  ])
+  // One safe repair per round, and the three content or cap violations refused each time.
+  assert.equal(result.refused.length, 6)
+  assert.ok(result.refused.some((entry) => /outside 1–500 ms/.test(entry.reason)))
+  assert.ok(result.refused.some((entry) => /wording/.test(entry.reason)))
+  assert.ok(result.applied.every((fix) => fix.op === "extend"))
+  // The report a person gets names the failure the loop could not clear.
+  assert.ok(result.needsHuman.some((line) => line.startsWith("video.freeze:")))
+  assert.ok(result.needsHuman.some((line) => line.includes("3 rounds")))
+})
+
+test("a first pass that passes stops the loop before any fix is proposed", async () => {
+  let rendered = 0
+  let proposed = 0
+  const result = await qaRounds({
+    render: async () => {
+      rendered += 1
+    },
+    qa: async () => reportWith(undefined),
+    fixes: {
+      propose: async () => {
+        proposed += 1
+        return []
+      },
+      apply: async () => {},
+    },
+  })
+  assert.equal(rendered, 1)
+  assert.equal(proposed, 0)
+  assert.equal(result.stopped, "passed")
+  assert.deepEqual(result.applied, [])
+  assert.deepEqual(result.needsHuman, [])
+})
+
+test("a fix that answers a different failure, or names no scene, is refused with the reason", () => {
+  const freeze = reportWith({ id: "video.freeze", status: "failed", text: "the cut repeats", scenes: ["one"] })
+  // A flash was not reported, so a shift — a valid operation with a valid length — would move a cut for no reason.
+  assert.match(classifyFix({ op: "shift", scene: "one", ms: 100 }, freeze).reason ?? "", /no video\.flash failure/)
+  assert.match(classifyFix({ op: "extend", scene: "two", ms: 100 }, freeze).reason ?? "", /did not name scene two/)
+  assert.match(classifyFix({ op: "extend", scene: "absent", ms: 100 }, freeze).reason ?? "", /not one of the film's scenes/)
+  assert.match(classifyFix({ op: "extend", scene: "one", ms: 0 }, freeze).reason ?? "", /outside 1–500 ms/)
+  assert.deepEqual(classifyFix({ op: "extend", scene: "one", ms: 100 }, freeze).fix, {
+    op: "extend",
+    scene: "one",
+    ms: 100,
+  })
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -598,6 +860,84 @@ test("a five second, 640x360 demo renders to an mp4 inside the job, and ffprobe 
     [640, 360],
     "the render is the size the spec asked for",
   )
+})
+
+test("the demo renders, the QA pass reads the file, and the report names every check with its status", async (t) => {
+  const job = jobFor(t)
+  const adapter = videoAdapter()
+  const runner = await hostRunnerFor(adapter, { jobDir: job, timeoutMs: 240_000 })
+  const { ctx, logs } = harnessFor(job, runner)
+
+  try {
+    await adapter.prepare(demo(), ctx)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (hostLimitation(message)) return t.skip(`no HyperFrames through the runner here: ${message}`)
+    throw error
+  }
+
+  const renderStarted = Date.now()
+  try {
+    await adapter.render(ctx)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (hostLimitation(message)) return t.skip(`no renderer through the runner here: ${message}`)
+    throw error
+  }
+  const renderMs = Date.now() - renderStarted
+
+  // The pipeline order is render → snapshot → check: the scene frames are the snapshot step's, and the QA pass reads the
+  // encoded file. Both are part of the one report.
+  const snapshot = await adapter.snapshot(ctx)
+  if (snapshot.shots.length !== 2) {
+    const said = logs.join(" | ")
+    if (hostLimitation(said)) return t.skip(`no browser through the runner here: ${said}`)
+    assert.fail(`the demo did not snapshot to two frames: ${snapshot.shots.length}\n${said}`)
+  }
+
+  const qaStarted = Date.now()
+  const results = await adapter.check(ctx, VIDEO_CHECKS)
+  const qaMs = Date.now() - qaStarted
+  const byId = (id: string): CheckResult => {
+    const found = results.find((result) => result.id === id)
+    assert.ok(found, `the report must name ${id}`)
+    return found
+  }
+
+  // Every check the registry has, and every status a result can carry, in one line a person can read.
+  assert.deepEqual(
+    results.map((result) => result.id),
+    VIDEO_CHECKS.map((def) => def.id),
+  )
+  for (const result of results) assert.ok(["passed", "failed", "skipped"].includes(result.status), result.id)
+  const line = results.map((result) => `${result.id}=${result.status}`).join(" ")
+  t.diagnostic(`render ${renderMs} ms, check+QA ${qaMs} ms: ${line}`)
+  assert.deepEqual(evaluate(VIDEO_CHECKS, results).invalid, [])
+
+  // The frames of a two-scene title film are not black, do not repeat across the cut, and have no flash.
+  for (const id of ["video.black", "video.freeze", "video.flash"]) {
+    const result = byId(id)
+    if (result.status === "failed") {
+      const said = `${id}: ${result.reason ?? ""}`
+      if (hostLimitation(said) || /ffmpeg is not runnable/.test(said)) return t.skip(`no frame sampler here: ${said}`)
+      assert.fail(said)
+    }
+    assert.equal(result.status, "passed", `${id}: ${result.reason ?? ""}`)
+  }
+  // The demo has no audio bed, so the silence check says there is nothing to measure; the two model checks say why no
+  // model ran. None of the three is a green line for a look that never happened.
+  const silence = byId("video.silence")
+  assert.equal(silence.status, "skipped")
+  assert.match(silence.reason ?? "", /no audio track/)
+  for (const id of ["video.transcript", "video.vlm"]) {
+    assert.equal(byId(id).status, "skipped")
+    assert.match(byId(id).reason ?? "", /D13\/D21/)
+  }
+
+  // The engine's own checks still pass on the same project, so the QA pass was added to them rather than replacing them.
+  assert.equal(byId("video.lint").status, "passed", byId("video.lint").reason)
+  assert.equal(byId("video.duration").output, "5 s across 2 scenes")
+  assert.ok(!line.includes("=failed"), `${line}\n${logs.join(" | ")}`)
 })
 
 test("the demo snapshots one frame per scene and its check passes lint, runtime and the count", async (t) => {

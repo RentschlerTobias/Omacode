@@ -21,6 +21,7 @@ import { extname, join } from "node:path"
 import { insidePath } from "@omacode/artifact/paths"
 import { sha256File } from "@omacode/artifact/provenance"
 import { specVersionOf, parseSpec, type ArtifactKind, type Page, type Scene, type Slide, type Slot, type Spec } from "@omacode/artifact/spec"
+import { storyboardFromPlan, type PlanScene } from "@omacode/artifact/storyboard"
 
 import { parsePlanDoc } from "../plandoc.ts"
 import { planArea } from "../worktree/git.ts"
@@ -57,8 +58,9 @@ const EXTENSIONS: Record<ArtifactKind, readonly string[]> = {
 }
 
 // What plan.md does not carry. Each default is used with a warning naming it, because a scene without a duration or a
-// slot without a size cannot be built, and an adapter must not have to invent the number this module already picked.
-const DEFAULT_DURATION = 5
+// slot without a size cannot be built, and an adapter must not have to invent the number this module already picked. A
+// video's duration is the storyboard's (B2-T3): `DEFAULT_BEAT_SECONDS` is stated there, and the handoff does not spell a
+// second default that could drift from it.
 const DEFAULT_FPS = 30
 const DEFAULT_SIZE = { width: 1920, height: 1080 } as const
 const DEFAULT_IMAGE_SIZE = { width: 1024, height: 1024 } as const
@@ -231,12 +233,36 @@ export async function specFromPlan(input: HandoffInput): Promise<Handoff> {
   } else if (input.kind === "video") {
     warnings.push(`plan.md carries no fps, so the spec uses the default ${DEFAULT_FPS} fps`)
     warnings.push(`plan.md carries no frame size, so the spec uses the default ${DEFAULT_SIZE.width}×${DEFAULT_SIZE.height}`)
-    const scenes: Scene[] = []
-    for (const file of usable) {
-      scenes.push({ id: uniqueId(slugOf(file.asset), seen), duration: DEFAULT_DURATION, asset: file.asset })
-      warnings.push(`${file.asset}: plan.md carries no duration, so the scene uses the default ${DEFAULT_DURATION} s`)
-      used.push({ task: file.task, path: file.asset, sha256: file.sha256 })
+    // A video plan becomes a storyboard first (B2-T3): the plan's prose is the beat sheet, each promoted clip a beat, and
+    // the two things plan.md never carries — a duration and an acceptance line for the scene — are stated by the
+    // storyboard rather than invented by the adapter. The scenes are the beats read back in time order.
+    const drafts: PlanScene[] = usable.map((file) => ({
+      id: uniqueId(slugOf(file.asset), seen),
+      asset: file.asset,
+    }))
+    const board = storyboardFromPlan({
+      job: input.job,
+      goal: doc.goal,
+      findings: doc.findings,
+      decisions: doc.decisions,
+      scenes: drafts,
+    })
+    warnings.push(...board.notes)
+    if (board.storyboard === undefined) {
+      errors.push(...board.errors)
+      return { errors, warnings, used: [] }
     }
+    const beats = board.storyboard.beats
+    const scenes: Scene[] = beats.map((beat, index) => {
+      const end = index + 1 < beats.length ? beats[index + 1]!.at : board.storyboard!.duration
+      return {
+        id: beat.id,
+        duration: Math.round((end - beat.at) * 1000) / 1000,
+        asset: usable[index]!.asset,
+        acceptance: [...beat.acceptance],
+      }
+    })
+    for (const file of usable) used.push({ task: file.task, path: file.asset, sha256: file.sha256 })
     built = {
       kind: "video",
       ...base,

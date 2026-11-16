@@ -15,9 +15,11 @@
 // so the render, the snapshot and a person all see the same caption.
 //
 // The checks are the mechanical and visual results this round can produce: the scene count, the film's duration, the
-// engine's lint, the console, and the snapshot count. The QA rules of B2-T4 — black/freeze/flash frames, silence, a
-// transcript, a VLM review — are deliberately absent: T4 owns them, and a definition here would claim a result nothing
-// in this round can produce.
+// engine's lint, the console, the snapshot count, and the QA pass of B2-T4 — the file's own frames and audio, read by
+// `ffprobe` and `ffmpeg` through the same runner (`qa.ts`). A transcript and a VLM review are declared skippable and
+// skipped with the reason: no local model is configured and D13/D21 refuse a cloud one, so a green line for either would
+// claim a look that never happened. Silence is skippable too, for a different and stated reason: a B2 film has no
+// narration, so a film without an audio track has nothing to measure.
 
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, relative, resolve } from "node:path"
@@ -25,6 +27,7 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 import type { Adapter, AdapterContext, HostRunner } from "../adapter.ts"
 import { SKIPPED_CODE, type CheckDef, type CheckResult } from "../checks.ts"
 import { insidePath } from "../paths.ts"
+import { QA_CHECK_IDS, runQa, type QaReport } from "../qa.ts"
 import type { Scene, VideoSpec } from "../spec.ts"
 import {
   BROWSER_GPU_ARGS,
@@ -429,6 +432,65 @@ export const VIDEO_CHECKS: readonly CheckDef[] = [
     run: "argv",
     required: true,
   },
+  // The QA pass (B2-T4). The frames are the encoded file's, sampled by ffmpeg at the scene midpoints and on a uniform
+  // grid; the judgement is in `qa.ts` and reads them with the same PNG reader the deck's blank check uses.
+  {
+    id: "video.black",
+    level: "L2",
+    kind: "video",
+    title: "no run of frames goes black",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "video.freeze",
+    level: "L2",
+    kind: "video",
+    title: "no cut shows the frame before it again",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "video.flash",
+    level: "L2",
+    kind: "video",
+    title: "no frame is far brighter than both neighbours",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "video.silence",
+    level: "L1",
+    kind: "video",
+    title: "no silent stretch longer than half a second",
+    run: "argv",
+    required: true,
+    // A B2 film has no narration, so a film with no audio track has nothing to measure; that skip is predicted rather
+    // than a surprise, and the reason says so. A film with an audio bed gets the real silencedetect pass.
+    skippable: true,
+  },
+  {
+    id: "video.transcript",
+    level: "L2",
+    kind: "video",
+    title: "a speech model transcribed the film",
+    run: "argv",
+    required: true,
+    // Skippable by declaration, for the same reason as the deck's vision review: no local speech model is configured and
+    // a cloud one may not be called for a check (D13/D21).
+    skippable: true,
+  },
+  {
+    id: "video.vlm",
+    level: "L2",
+    kind: "video",
+    title: "a vision model looked at the film",
+    run: "argv",
+    required: true,
+    // Skippable by declaration: the only vision engine the stack can drive is a cloud model, and D13/D21 forbid calling
+    // one for a check. The gate treats the skip as a warning, so the film ships with the absence stated.
+    skippable: true,
+  },
 ]
 
 interface Verdict {
@@ -448,6 +510,9 @@ export interface VideoResultInput {
   readonly project: VideoProject
   readonly report?: unknown
   readonly shots?: readonly string[]
+  // The QA pass over the rendered file (B2-T4). Absent when the caller has not run one — a pure test of the project rules,
+  // or a `check` that found no rendered file — and the QA ids then skip with that sentence rather than a green line.
+  readonly qa?: QaReport
 }
 
 function countVerdict(input: VideoResultInput): Verdict {
@@ -520,9 +585,26 @@ function verdictFor(id: string, input: VideoResultInput): Verdict | undefined {
 
 // One result per definition, in the order the caller asked. A definition this adapter has no rule for is a skip with the
 // reason and never a pass: `video.contract` is the spec parse's (L0, run: "spec"), and a caller that hands it here should
-// see that the adapter did not run it rather than a green line that hides the fact.
+// see that the adapter did not run it rather than a green line that hides the fact. The QA ids are answered by the report
+// the QA pass produced; without that report they are a skip with the reason, because a rule that never saw a file cannot
+// pass one.
 export function videoResults(input: VideoResultInput, defs: readonly CheckDef[]): readonly CheckResult[] {
   return defs.map((def): CheckResult => {
+    if (def.run === "argv" && (QA_CHECK_IDS as readonly string[]).includes(def.id)) {
+      const check = input.qa?.checks.find((entry) => entry.id === def.id)
+      if (check === undefined) {
+        return {
+          id: def.id,
+          level: def.level,
+          status: "skipped",
+          code: SKIPPED_CODE,
+          reason: `${def.id} is produced by the QA pass, which did not run over this film`,
+        }
+      }
+      if (check.status === "passed") return { id: def.id, level: def.level, status: "passed", code: 0, output: check.text }
+      if (check.status === "failed") return { id: def.id, level: def.level, status: "failed", code: 1, reason: check.text }
+      return { id: def.id, level: def.level, status: "skipped", code: SKIPPED_CODE, reason: check.text }
+    }
     const verdict = def.run === "argv" ? verdictFor(def.id, input) : undefined
     if (verdict === undefined) {
       const why =
@@ -586,7 +668,10 @@ export function videoAdapter(): VideoAdapter {
     kind: "video",
     name: "hyperframes",
     version: "0.1.0",
-    executables: ["hyperframes"],
+    // The engine makes the project and the render; the QA pass (B2-T4) measures the file it made, so the two programs that
+    // read a video are declared here too — one allowlist per adapter, still written in code and still unreachable from a
+    // spec. `ffprobe` names the file's shape, `ffmpeg` samples its frames and runs silencedetect.
+    executables: ["hyperframes", "ffprobe", "ffmpeg"],
     // The preview server is the one call that needs the host network; a render, a snapshot and a check leave it out and
     // stay wrapped. The declaration is a permission, not a default: each run asks for it or does not.
     network: true,
@@ -672,6 +757,11 @@ export function videoAdapter(): VideoAdapter {
 
     // One `hyperframes check` for lint, runtime and the page's own report, because a second browser session would answer
     // about a page that is not the one the first looked at. `network` stays unset: the check reads a local file.
+    //
+    // The QA pass then reads the encoded file, when one is in the job. It is part of `check` rather than a verb of its own
+    // because a film is checked as a file: the six QA ids are registry checks like the rest, and a caller that asked for
+    // them expects the adapter it asked to answer. Before a render the file is not there and the pass says so, one sentence
+    // for every QA id, without starting ffprobe or ffmpeg.
     async check(ctx, defs) {
       const current = built()
       const result = await hyperframesCheck(ctx.run, ctx.jobDir)
@@ -679,7 +769,21 @@ export function videoAdapter(): VideoAdapter {
         const said = result.refused ?? (tailOf(result.output) || "exited with no output")
         ctx.log(`hyperframes check: ${said}`)
       }
-      return videoResults({ spec: asked(), project: current, report: result.report, shots }, defs)
+      const currentSpec = asked()
+      const format = currentSpec.output?.format ?? "mp4"
+      // Only a caller that asked for a QA id pays for the QA pass: a check of the project alone stays as cheap as it was.
+      const wanted = defs.some((def) => (QA_CHECK_IDS as readonly string[]).includes(def.id))
+      const qa = wanted
+        ? await runQa(ctx.run, {
+            jobDir: ctx.jobDir,
+            scenes: current.scenes.map((scene) => ({ id: scene.id, start: scene.start, duration: scene.duration })),
+            file: OUTPUT_FILE[format],
+          })
+        : undefined
+      return videoResults(
+        { spec: currentSpec, project: current, report: result.report, shots, ...(qa !== undefined ? { qa } : {}) },
+        defs,
+      )
     },
 
     // The studio server a person edits in. Preview and present are the same shape: a local HTTP server that holds the

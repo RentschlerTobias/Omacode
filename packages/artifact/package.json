@@ -39,6 +39,8 @@
     "./runner": "./src/runner.ts",
     "./paths": "./src/paths.ts",
     "./png": "./src/png.ts",
+    "./storyboard": "./src/storyboard.ts",
+    "./qa": "./src/qa.ts",
     "./adapters/deck": "./src/adapters/deck.ts",
     "./adapters/deck-project": "./src/adapters/deck-project.ts",
     "./adapters/deck-run": "./src/adapters/deck-run.ts",
