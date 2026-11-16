@@ -584,10 +584,25 @@ test("the deck tells HyperFrames it is inside a sandbox, so Chrome stops buildin
   assert.ok((deckAdapter().env ?? []).includes("HYPERFRAMES_CHROME_SANDBOX"), "the adapter declares the name it sets")
 })
 
-test("the deck adapter never names the program's video encoding command", () => {
+test("the deck adapter never names the program's video encoding command", async (t) => {
   // A deck is presented and snapshotted. A project that was encoded to a video would be a different artifact, and the
   // adapter is the place that decides which of the two a deck is. The interface's own `render` step is the name of "write
-  // the artifact's files", so the rule is about the argv the engine is handed: no run may ask for the encoder.
+  // the artifact's files", so the rule is about the argv the engine is handed: no run the deck makes may ask for the
+  // encoder. The argv is the fact; a source grep alone would pass on a command built from a variable.
+  const job = mkdtempSync(join(tmpdir(), "mm-deck-render-"))
+  t.after(() => rmSync(job, { recursive: true, force: true }))
+  const runner = fakeRunner(
+    passed(JSON.stringify({ ok: true, lint: {}, runtime: {}, layout: {}, contrast: {} })),
+    passed(JSON.stringify({ ok: true, frames: [] })),
+  )
+  await deckCheck(runner, job)
+  await deckSnapshot(runner, job, { at: [0], end: false })
+  assert.ok(runner.calls.length >= 2, "the check and the snapshot are what a deck runs")
+  for (const call of runner.calls) {
+    assert.equal(call.args.includes("render"), false, `a deck asked the engine for: ${call.args.join(" ")}`)
+  }
+
+  // The source half, so a later edit cannot reintroduce the word as a literal the current test never reaches.
   const source = readFileSync(new URL("../packages/artifact/src/adapters/deck.ts", import.meta.url), "utf8")
   assert.equal(/\bargs:\s*\[[^\]]*"render"/.test(source), false, "a deck must never call the encoder")
 })
@@ -1453,11 +1468,13 @@ test("the quality gate ships a deck whose only skip is the vision review", () =>
 // The two boundaries B3's acceptance names beside the deck itself: no second adapter, and no daemon. They are stated as
 // what the tree contains, because that is what "not built" means here.
 
-test("the package builds one adapter and names no artifact daemon or deferred PPTX path (D24)", () => {
+test("the package builds one adapter per kind and names no artifact daemon or deferred PPTX path (D24)", () => {
   const built = readdirSync(new URL("../packages/artifact/src/adapters/", import.meta.url)).sort()
-  // D24: B3 ships the HTML deck only. A file here that is not one of the deck's own modules is a second adapter that was
-  // built, which is the thing the acceptance says did not happen — not that the deck must live in exactly one file.
-  assert.deepEqual(built.filter((name) => !name.startsWith("deck")), [])
+  // D24: B3 ships the HTML deck only and B2 adds the HyperFrames video adapter; a file here outside those two adapters
+  // and their own modules is a third artifact producer that was built, which is the thing the acceptance says did not
+  // happen — not that a kind must live in exactly one file.
+  const allowed = new Set(["deck.ts", "deck-checks.ts", "deck-project.ts", "deck-run.ts", "hyperframes.ts", "video.ts"])
+  assert.deepEqual(built.filter((name) => !allowed.has(name)), [])
 
   const source = new URL("../packages/artifact/src/", import.meta.url)
   const files = readdirSync(source, { recursive: true, encoding: "utf8" })

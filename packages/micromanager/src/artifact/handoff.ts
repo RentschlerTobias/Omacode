@@ -208,8 +208,8 @@ export async function specFromPlan(input: HandoffInput): Promise<Handoff> {
   }
 
   const base = {
-    // The version belongs to the kind (spec.ts): a deck is 2 since B3-T1, the other three are 1. This file asks, so a
-    // bump cannot leave a handoff writing yesterday's number.
+    // The version belongs to the kind (spec.ts): a deck is 2 since B3-T1 and a video is 2 since B2-T2, while a site and
+    // an image set are 1. This file asks, so a bump cannot leave a handoff writing yesterday's number.
     version: specVersionOf(input.kind),
     job: input.job,
     brief: input.brief,
@@ -240,6 +240,7 @@ export async function specFromPlan(input: HandoffInput): Promise<Handoff> {
     built = {
       kind: "video",
       ...base,
+      engine: "hyperframes",
       fps: DEFAULT_FPS,
       size: { width: DEFAULT_SIZE.width, height: DEFAULT_SIZE.height },
       scenes,

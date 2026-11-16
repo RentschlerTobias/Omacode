@@ -42,7 +42,9 @@
     "./adapters/deck": "./src/adapters/deck.ts",
     "./adapters/deck-project": "./src/adapters/deck-project.ts",
     "./adapters/deck-run": "./src/adapters/deck-run.ts",
-    "./adapters/deck-checks": "./src/adapters/deck-checks.ts"
+    "./adapters/deck-checks": "./src/adapters/deck-checks.ts",
+    "./adapters/hyperframes": "./src/adapters/hyperframes.ts",
+    "./adapters/video": "./src/adapters/video.ts"
   },
   "files": [
     "src"

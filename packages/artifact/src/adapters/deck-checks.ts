@@ -25,8 +25,8 @@ import { CONTRACT_CHECKS, SKIPPED_CODE, type CheckDef, type CheckResult } from "
 import { insidePath } from "../paths.ts"
 import { blankFrame, readPng } from "../png.ts"
 import type { DeckSpec, Slide } from "../spec.ts"
+import { firstFew, listLengthIn, many, numberIn, partOf, recordOf } from "./hyperframes.ts"
 import { placeholderNote, type DeckIsland, type DeckProject } from "./deck-project.ts"
-import { recordOf } from "./deck-run.ts"
 
 // The definition of every check this adapter produces. The contract check comes from the registry (B1-T2) rather than
 // being written again here, so there is one spelling of its id and one title for it: the spec parse owns L0, this file
@@ -117,74 +117,9 @@ export const DECK_CHECKS: readonly CheckDef[] = [
   },
 ]
 
-// Every part of the envelope this file reads has the same shape: a verdict, three counts and a `findings` array of the
-// same object — `code`, `severity`, `message`, `selector`. The parts differ in the extras (`layout` carries `samples`,
-// `contrast` carries `checked`/`passed` and whether it ran at all), so the extras stay a record and the three common
-// fields are read once. A finding that is not an object is dropped rather than guessed at: it cannot be reported.
-interface Finding {
-  readonly code: string
-  readonly severity: string
-  readonly message: string
-  readonly selector?: string
-}
-
-interface Part {
-  readonly ok: boolean
-  readonly findings: readonly Finding[]
-  readonly fields: Record<string, unknown>
-}
-
-function partOf(report: unknown, key: string): Part | undefined {
-  const section = recordOf(recordOf(report)?.[key])
-  if (section === undefined) return undefined
-  const findings: Finding[] = []
-  const listed = section["findings"]
-  if (Array.isArray(listed)) {
-    for (const entry of listed) {
-      const item = recordOf(entry)
-      if (item === undefined) continue
-      findings.push({
-        code: typeof item["code"] === "string" ? item["code"] : "unknown",
-        severity: typeof item["severity"] === "string" ? item["severity"] : "error",
-        message: typeof item["message"] === "string" ? item["message"] : "",
-        ...(typeof item["selector"] === "string" ? { selector: item["selector"] } : {}),
-      })
-    }
-  }
-  return { ok: section["ok"] === true, findings, fields: section }
-}
-
-const numberIn = (part: Part, key: string): number | undefined => {
-  const value = part.fields[key]
-  return typeof value === "number" ? value : undefined
-}
-
-// The reported sample moments count as a list in the real envelope (`layout.samples` is the seconds the pass looked at),
-// and a field that is a list is counted rather than rendered: the sentence wants "in 9 samples", not the seconds.
-const listLengthIn = (part: Part, key: string): number | undefined => {
-  const value = part.fields[key]
-  return Array.isArray(value) ? value.length : undefined
-}
-
-// Where a finding is, in the reader's terms: the selector the browser matched, or the page when the finding is about the
-// page itself. This is the closest the envelope comes to "which slide": the writer names every slide's section
-// `#slide-<id>`, so a layout or contrast finding's selector begins with the slide it is on.
-const addressOf = (finding: Finding): string => (finding.selector ? `${finding.selector}: ` : "")
-
-const describe = (finding: Finding): string =>
-  `${addressOf(finding)}${finding.message || finding.code}`
-
-// How many findings a failed check names before it says how many more there are. A report is read once and fixed from
-// one example; eighty findings in one sentence is a wall that hides the first.
-const NAMED_FINDINGS = 3
-
-function firstFew(findings: readonly Finding[]): string {
-  const shown = findings.slice(0, NAMED_FINDINGS).map(describe).join("; ")
-  const rest = findings.length - Math.min(findings.length, NAMED_FINDINGS)
-  return rest > 0 ? `${shown}; and ${rest} more` : shown
-}
-
-const many = (count: number, one: string, plural = `${one}s`): string => `${count} ${count === 1 ? one : plural}`
+// Every part of the envelope this file reads has the same shape and is read by `partOf` in the runtime module. The
+// findings this file adds are the ones its own rules recognise, and a finding it cannot read is dropped there rather
+// than guessed at here.
 
 // What one rule concluded. The verdict is a sentence and a word, and the result built from it carries the level, the code
 // and the field each belongs in: a pass reads in `output`, a failure and a skip read in `reason`.

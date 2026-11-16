@@ -98,12 +98,24 @@ const deck = {
 
 const video = {
   kind: "video",
-  version: 1,
+  version: 2,
   job: "job-1",
   brief: "a video about the release",
+  engine: "hyperframes",
   fps: 30,
   size: { width: 1920, height: 1080 },
-  scenes: [{ id: "sc1", title: "Intro", duration: 2.5, asset: "media/intro.png", captions: ["hello"] }],
+  audio: { src: "audio/theme.mp3", volume: 0.8 },
+  output: { format: "mp4", quality: "high" },
+  scenes: [
+    {
+      id: "sc1",
+      title: "Intro",
+      duration: 2.5,
+      asset: "media/intro.png",
+      captions: ["hello"],
+      acceptance: ["the title is readable for the whole scene"],
+    },
+  ],
 }
 
 const site = {
@@ -182,19 +194,24 @@ test("a spec missing its list fails at the list, not somewhere further in", () =
 })
 
 test("each kind carries its own version, and the wrong one is refused by kind and number", () => {
-  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 1, site: 1, images: 1 })
+  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 2, site: 1, images: 1 })
   for (const kind of ARTIFACT_KINDS) assert.equal(specVersionOf(kind), SPEC_VERSIONS[kind])
 
   const stale = parseSpec("deck", { ...deck, version: 1 })
   assert.equal(stale.spec, undefined)
   assert.deepEqual(stale.errors, ["version: a deck spec is version 2, got 1"])
 
-  const ahead = parseSpec("video", { ...video, version: 2 })
+  const ahead = parseSpec("video", { ...video, version: 3 })
   assert.equal(ahead.spec, undefined)
-  assert.deepEqual(ahead.errors, ["version: a video spec is version 1, got 2"])
+  assert.deepEqual(ahead.errors, ["version: a video spec is version 2, got 3"])
 
-  // The other two did not change in B3-T1, so a version 1 spec of each still parses. A shared counter would have made
-  // three unchanged contracts invalid for a reason none of them had.
+  // A video from before B2-T2 is version 1, and the sentence names the version the contract now has.
+  const previous = parseSpec("video", { ...video, version: 1 })
+  assert.equal(previous.spec, undefined)
+  assert.deepEqual(previous.errors, ["version: a video spec is version 2, got 1"])
+
+  // The other two did not change in B3-T1 or B2-T2, so a version 1 spec of each still parses. A shared counter would
+  // have made two unchanged contracts invalid for a reason none of them had.
   assert.deepEqual(parseSpec("site", site).errors, [])
   assert.deepEqual(parseSpec("images", images).errors, [])
 })
@@ -1614,6 +1631,7 @@ const videoSpec = (scenes: VideoSpec["scenes"]): VideoSpec => ({
   version: SPEC_VERSIONS.video,
   job: "job-1",
   brief: "a video about the release",
+  engine: "hyperframes",
   fps: 30,
   size: { width: 1920, height: 1080 },
   scenes,

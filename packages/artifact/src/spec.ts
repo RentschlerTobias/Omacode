@@ -20,13 +20,14 @@ export const ARTIFACT_KINDS = ["deck", "video", "site", "images"] as const
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 
 // The version of each kind's contract. One counter for all four would tie three unchanged contracts to every change in
-// the fourth: the deck gained reveals, branches and hotspots in B3-T1, and a shared number would have declared a video, a
-// site and an image set written the day before invalid for a reason none of them had. A version moves when that kind's
-// description changes, and only then. Read through `specVersionOf`, so no caller spells a number that a later bump would
-// leave behind.
+// the fourth: the deck gained reveals, branches and hotspots in B3-T1 while the video stayed as it was, and the video
+// gained its engine, audio bed, output target and per-scene acceptance in B2-T2 while the deck stayed as it was. A
+// shared number would have declared each of them invalid for a reason none of them had. A version moves when that
+// kind's description changes, and only then. Read through `specVersionOf`, so no caller spells a number that a later
+// bump would leave behind.
 export const SPEC_VERSIONS = {
   deck: 2,
-  video: 1,
+  video: 2,
   site: 1,
   images: 1,
 } as const satisfies Record<ArtifactKind, number>
@@ -46,7 +47,8 @@ export interface AssetRef {
 
 // What every spec carries, whatever it describes. The kind and version are what make a spec self-describing: a file
 // found later, without the process that wrote it, can still be checked against this file. The version is the kind's own,
-// so a deck says 2 and a video, a site and an image set say 1.
+// so a deck says 2, a video says 2 since B2-T2 added the engine, the audio bed, the output target and per-scene
+// acceptance, and a site and an image set still say 1.
 interface SpecBase<K extends ArtifactKind> {
   readonly kind: K
   readonly version: SpecVersion<K>
@@ -99,12 +101,22 @@ export interface Scene {
   readonly duration: number
   readonly asset?: string
   readonly captions?: readonly string[]
+  // What this scene has to do, one line each. A scene is a promise a later round can look at; the spec only keeps the
+  // lines, so a check can address the scene it was written for instead of a paragraph of prose.
+  readonly acceptance?: readonly string[]
 }
 
+// A video is version 2 since B2-T2. `engine` is a literal because the adapter and the spec have to agree about who made
+// the file before provenance records it; adding a second engine is a new version, not a widened string. `audio` is one
+// bed for the film, and `output` is the container the renderer has to produce. Neither has a path the author can choose
+// beyond the audio's source: the output name is the adapter's, so two specs cannot write over each other by accident.
 export interface VideoSpec extends SpecBase<"video"> {
+  readonly engine: "hyperframes"
   readonly fps: number
   readonly size: { readonly width: number; readonly height: number }
   readonly scenes: readonly Scene[]
+  readonly audio?: { readonly src: string; readonly volume?: number }
+  readonly output?: { readonly format: "mp4" | "webm"; readonly quality?: "low" | "medium" | "high" }
 }
 
 export interface Page {
@@ -222,6 +234,26 @@ function num(
     return
   }
   if (!ok(value)) errors.push(`${p}: expected ${expectation}, got ${value}`)
+}
+
+// A required value from a fixed set. The set is in the message because the reader is looking at a JSON file: "engine is
+// wrong" would send them to this file, while the expected word is the repair.
+function oneOf(obj: Record<string, unknown>, key: string, path: string, errors: Errors, allowed: readonly string[]): void {
+  const p = child(path, key)
+  const value = obj[key]
+  if (value === undefined) {
+    errors.push(`${p}: required`)
+    return
+  }
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    const expected = allowed.map((entry) => shown(entry)).join(" or ")
+    errors.push(`${p}: expected ${expected}, got ${shown(value)}`)
+  }
+}
+
+function optOneOf(obj: Record<string, unknown>, key: string, path: string, errors: Errors, allowed: readonly string[]): void {
+  if (obj[key] === undefined) return
+  oneOf(obj, key, path, errors, allowed)
 }
 
 // A required nested object with a known key set. A theme with a typo inside it fails like any other record.
@@ -377,7 +409,12 @@ const BASE_KEYS = ["kind", "version", "job", "brief", "checks", "assets"] as con
 const SLIDE_KEYS = ["id", "title", "body", "notes", "hidden", "asset", "reveals", "hotspots"] as const
 const HOTSPOT_KEYS = ["id", "label", "target"] as const
 const BRANCH_KEYS = ["id", "label", "slides"] as const
-const SCENE_KEYS = ["id", "title", "duration", "asset", "captions"] as const
+const SCENE_KEYS = ["id", "title", "duration", "asset", "captions", "acceptance"] as const
+const AUDIO_KEYS = ["src", "volume"] as const
+const OUTPUT_KEYS = ["format", "quality"] as const
+const VIDEO_FORMATS = ["mp4", "webm"] as const
+const VIDEO_QUALITIES = ["low", "medium", "high"] as const
+const VIDEO_ENGINES = ["hyperframes"] as const
 const PAGE_KEYS = ["path", "title", "sections"] as const
 const SLOT_KEYS = ["id", "prompt", "size", "seed", "negative", "refs"] as const
 const THEME_KEYS = ["name"] as const
@@ -544,12 +581,24 @@ function scene(value: unknown, path: string, errors: Errors): void {
   num(obj, "duration", path, errors, "a number of seconds greater than 0", (n) => n > 0)
   pathField(obj, "asset", path, errors, false)
   texts(obj, "captions", path, errors)
+  texts(obj, "acceptance", path, errors)
 }
 
 function video(obj: Record<string, unknown>, errors: Errors): void {
+  oneOf(obj, "engine", "", errors, VIDEO_ENGINES)
   num(obj, "fps", "", errors, "a number greater than 0 and at most 240", (n) => n > 0 && n <= 240)
   sizeField(obj, "size", "", errors)
   list(obj, "scenes", "", errors, scene)
+  optObjField(obj, "audio", "", errors, AUDIO_KEYS, (audio, p) => {
+    pathField(audio, "src", p, errors, true)
+    // The gain the renderer applies. 0 is silence and 1 is 0 dB; a value outside the range is a mistake the spec can
+    // see, and a renderer that clamped it would quietly change the film.
+    num(audio, "volume", p, errors, "a number between 0 and 1", (n) => n >= 0 && n <= 1, false)
+  })
+  optObjField(obj, "output", "", errors, OUTPUT_KEYS, (output, p) => {
+    oneOf(output, "format", p, errors, VIDEO_FORMATS)
+    optOneOf(output, "quality", p, errors, VIDEO_QUALITIES)
+  })
 }
 
 function page(value: unknown, path: string, errors: Errors): void {
@@ -585,7 +634,7 @@ function images(obj: Record<string, unknown>, errors: Errors): void {
 // deck is allowed to say.
 const KIND_KEYS: Record<ArtifactKind, readonly string[]> = {
   deck: [...BASE_KEYS, "slides", "branches", "theme"],
-  video: [...BASE_KEYS, "fps", "size", "scenes"],
+  video: [...BASE_KEYS, "engine", "fps", "size", "scenes", "audio", "output"],
   site: [...BASE_KEYS, "pages"],
   images: [...BASE_KEYS, "slots"],
 }
