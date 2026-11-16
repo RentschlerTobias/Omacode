@@ -131,9 +131,10 @@ const site = {
 
 const images = {
   kind: "images",
-  version: 1,
+  version: 2,
   job: "job-1",
   brief: "images for the release",
+  model: { name: "SDXL base", file: "sdxl-base.safetensors" },
   slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 512, height: 512 }, seed: 7, negative: "text", refs: ["refs/a.png"] }],
 }
 
@@ -194,7 +195,7 @@ test("a spec missing its list fails at the list, not somewhere further in", () =
 })
 
 test("each kind carries its own version, and the wrong one is refused by kind and number", () => {
-  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 2, site: 1, images: 1 })
+  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 2, site: 1, images: 2 })
   for (const kind of ARTIFACT_KINDS) assert.equal(specVersionOf(kind), SPEC_VERSIONS[kind])
 
   const stale = parseSpec("deck", { ...deck, version: 1 })
@@ -210,8 +211,13 @@ test("each kind carries its own version, and the wrong one is refused by kind an
   assert.equal(previous.spec, undefined)
   assert.deepEqual(previous.errors, ["version: a video spec is version 2, got 1"])
 
-  // The other two did not change in B3-T1 or B2-T2, so a version 1 spec of each still parses. A shared counter would
-  // have made two unchanged contracts invalid for a reason none of them had.
+  // An image set from before B5-T1 is version 1; the article is "an", because the refusal is read by a person.
+  const imagesPrevious = parseSpec("images", { ...images, version: 1 })
+  assert.equal(imagesPrevious.spec, undefined)
+  assert.deepEqual(imagesPrevious.errors, ["version: an images spec is version 2, got 1"])
+
+  // A site did not change in B3-T1, B2-T2 or B5-T1, so its version 1 still parses. A shared counter would have made
+  // an unchanged contract invalid for a reason it did not have.
   assert.deepEqual(parseSpec("site", site).errors, [])
   assert.deepEqual(parseSpec("images", images).errors, [])
 })
@@ -819,7 +825,7 @@ test("a complete fake adapter passes the contract, and every step is callable wi
   await adapter.cancel?.()
 })
 
-test("a shell, a path, a command line or a leading dash is refused as an executable; an empty allowlist is refused too", () => {
+test("a shell, a path, a command line or a leading dash is refused as an executable; an empty allowlist needs the network", () => {
   assert.throws(
     () => assertAdapter(withExecutables(["sh"])),
     (error: unknown) => error instanceof Error && error.message.includes('"sh"') && error.message.includes("shell"),
@@ -838,6 +844,10 @@ test("a shell, a path, a command line or a leading dash is refused as an executa
   }
 
   assert.throws(() => assertAdapter(withExecutables([])), /executables: expected at least one/)
+
+  // An adapter that runs no program is a real shape since B5: the image adapter talks to ComfyUI and spawns nothing. Its
+  // one capability is the socket, and `network: true` is what makes an empty allowlist honest rather than empty.
+  assert.doesNotThrow(() => assertAdapter({ ...fakeAdapter(), executables: [], network: true }))
 })
 
 test("the allowlist is a frozen copy, so neither a later mutation nor a caller can widen it", () => {

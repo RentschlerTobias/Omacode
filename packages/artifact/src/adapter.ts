@@ -74,7 +74,9 @@ export interface AdapterContext {
 
 // What the runner needs to know about an adapter before it runs anything. `executables` is the allowlist, as bare
 // program names, and `network` is the one declaration that decides whether a child may reach out at all; both are
-// written in the adapter's source, so neither can arrive with a job.
+// written in the adapter's source, so neither can arrive with a job. An adapter that runs no program at all — an image
+// adapter that only talks to a local server — declares an empty allowlist, and may only do so with `network: true`:
+// the socket is then the one capability it has.
 export interface AdapterMeta {
   readonly kind: ArtifactKind
   readonly name: string
@@ -146,10 +148,18 @@ export function assertAdapter(adapter: Adapter): void {
   }
 
   const executables = meta["executables"]
-  if (!Array.isArray(executables) || executables.length === 0) {
-    throw new Error(
-      `${label}: executables: expected at least one program name, got ${Array.isArray(executables) ? "an empty array" : got(executables)}`,
-    )
+  if (!Array.isArray(executables)) {
+    throw new Error(`${label}: executables: expected at least one program name, got ${got(executables)}`)
+  }
+  // The network declaration is read before the allowlist because the one exception to "at least one program" is an
+  // adapter that runs no program and says so by declaring the socket as its capability. An empty list with no network
+  // is still a refusal: that adapter could do nothing at all.
+  const network = meta["network"]
+  if (typeof network !== "boolean") {
+    throw new Error(`${label}: network: expected a boolean, got ${got(network)}`)
+  }
+  if (executables.length === 0 && !network) {
+    throw new Error(`${label}: executables: expected at least one program name, got an empty array`)
   }
   for (const entry of executables) {
     if (typeof entry !== "string" || !BARE_NAME.test(entry)) {
@@ -160,10 +170,6 @@ export function assertAdapter(adapter: Adapter): void {
         `${label}: executable ${shown(entry)}: a shell may not be declared, because it would turn the runner's argv array back into a command string`,
       )
     }
-  }
-
-  if (typeof meta["network"] !== "boolean") {
-    throw new Error(`${label}: network: expected a boolean, got ${got(meta["network"])}`)
   }
 
   // The names a run may hand a value for. A malformed or doubled name is a mistake this file can see, so it is refused

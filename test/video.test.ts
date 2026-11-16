@@ -1433,28 +1433,31 @@ test(
 
 test("the motion path names no generative endpoint and has no client to call one (B2: without any generative model)", () => {
   const source = new URL("../packages/artifact/src/", import.meta.url)
-  const files = readdirSync(source, { recursive: true, encoding: "utf8" })
-    .filter((name) => name.endsWith(".ts"))
-    .map((name) => ({ name, text: readFileSync(new URL(name, source), "utf8") }))
-  assert.ok(files.length >= 10, "the walk must see the package, not an empty list")
+  // B2's acceptance is about the motion path, not the whole package: B5 owns the ComfyUI client and the image adapter,
+  // and B2b will own the video graphs. The files a motion job runs through are the ones this guard reads, so a
+  // generative endpoint cannot arrive in the film by being imported beside `hyperframes render`.
+  const motion = ["adapters/video.ts", "adapters/hyperframes.ts", "qa.ts", "storyboard.ts"]
+  const files = motion.map((name) => ({ name, text: readFileSync(new URL(name, source), "utf8") }))
+  assert.ok(files.length >= 4, "the walk must see the motion path, not an empty list")
 
-  // B2's acceptance is "without any generative model": B2b and B5 own ComfyUI, the local weights (Wan 2.2, Mochi,
-  // CogVideoX) and the optional cloud API, and D13/D21 refuse a cloud model for a check. So the artifact package must not
-  // name one. The scan reads the text as it is written — string literals and import specifiers are where an endpoint URL
-  // or a model id would land — because a comment may name the thing the package does not do (runner.ts says a ComfyUI
-  // worker is one reason the host runner exists) and prose is not a call. The second half is the client: the package has
-  // no `fetch`, so no code path here can call an endpoint even without a name.
   const names = ["comfyui", "stable-diffusion", "wan", "mochi", "cogvideo", "openai", "anthropic", "gemini"]
   const named = new RegExp(`["'\`][^"'\`\\n]*\\b(?:${names.join("|")})\\b`, "i")
   assert.deepEqual(
     files.filter((file) => named.test(file.text)).map((file) => file.name),
     [],
-    "no generative endpoint or model name may be written in the artifact package",
+    "no generative endpoint or model name may be written in the motion path",
   )
   assert.deepEqual(
     files.filter((file) => /\bfetch\s*\(|XMLHttpRequest/.test(file.text)).map((file) => file.name),
     [],
-    "every program an artifact needs is reached through the host runner; the package has no HTTP client of its own",
+    "the motion path reaches no HTTP client of its own; B5's client belongs to the image kind and to B2b",
+  )
+  // The type-level half of the same boundary: importing the image adapter or its client from a video file would put the
+  // client back in the motion path even though the text above looks clean.
+  assert.deepEqual(
+    files.filter((file) => /from\s+["'][^"']*(?:comfyui|adapters\/image)[^"']*["']/.test(file.text)).map((file) => file.name),
+    [],
+    "the motion path must not import the image adapter or its ComfyUI client",
   )
 })
 

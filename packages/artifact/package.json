@@ -41,12 +41,14 @@
     "./png": "./src/png.ts",
     "./storyboard": "./src/storyboard.ts",
     "./qa": "./src/qa.ts",
+    "./comfyui": "./src/comfyui.ts",
     "./adapters/deck": "./src/adapters/deck.ts",
     "./adapters/deck-project": "./src/adapters/deck-project.ts",
     "./adapters/deck-run": "./src/adapters/deck-run.ts",
     "./adapters/deck-checks": "./src/adapters/deck-checks.ts",
     "./adapters/hyperframes": "./src/adapters/hyperframes.ts",
-    "./adapters/video": "./src/adapters/video.ts"
+    "./adapters/video": "./src/adapters/video.ts",
+    "./adapters/image": "./src/adapters/image.ts"
   },
   "files": [
     "src"

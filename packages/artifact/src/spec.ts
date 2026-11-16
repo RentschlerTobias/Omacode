@@ -20,16 +20,16 @@ export const ARTIFACT_KINDS = ["deck", "video", "site", "images"] as const
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 
 // The version of each kind's contract. One counter for all four would tie three unchanged contracts to every change in
-// the fourth: the deck gained reveals, branches and hotspots in B3-T1 while the video stayed as it was, and the video
-// gained its engine, audio bed, output target and per-scene acceptance in B2-T2 while the deck stayed as it was. A
-// shared number would have declared each of them invalid for a reason none of them had. A version moves when that
-// kind's description changes, and only then. Read through `specVersionOf`, so no caller spells a number that a later
-// bump would leave behind.
+// the fourth: the deck gained reveals, branches and hotspots in B3-T1 while the video stayed as it was, the video gained
+// its engine, audio bed, output target and per-scene acceptance in B2-T2 while the deck stayed as it was, and the image
+// set gained its checkpoints in B5-T1 while neither of them changed. A shared number would have declared each of them
+// invalid for a reason none of them had. A version moves when that kind's description changes, and only then. Read
+// through `specVersionOf`, so no caller spells a number that a later bump would leave behind.
 export const SPEC_VERSIONS = {
   deck: 2,
   video: 2,
   site: 1,
-  images: 1,
+  images: 2,
 } as const satisfies Record<ArtifactKind, number>
 
 // The version a spec of this kind has to carry. A function rather than a lookup at every call site, so the parser and
@@ -48,7 +48,7 @@ export interface AssetRef {
 // What every spec carries, whatever it describes. The kind and version are what make a spec self-describing: a file
 // found later, without the process that wrote it, can still be checked against this file. The version is the kind's own,
 // so a deck says 2, a video says 2 since B2-T2 added the engine, the audio bed, the output target and per-scene
-// acceptance, and a site and an image set still say 1.
+// acceptance, a site says 1, and an image set says 2 since B5-T1 added the checkpoints it is made with.
 interface SpecBase<K extends ArtifactKind> {
   readonly kind: K
   readonly version: SpecVersion<K>
@@ -129,6 +129,17 @@ export interface SiteSpec extends SpecBase<"site"> {
   readonly pages: readonly Page[]
 }
 
+// The checkpoint an image set (or one slot of it) is made with. `name` is what a person reads in provenance and in an
+// error; `file` is the file ComfyUI resolves inside its own models directory, relative to it and never a job path.
+// `sha256` is the digest of the weights, and B5-T4 is what will enforce it: a name proves nothing, because a workflow
+// can load any file on the server's disk. The hash is optional here so a spec can be written before the registry knows
+// the checkpoint; an adapter that requires a verified hash says so itself.
+export interface ImageModel {
+  readonly name: string
+  readonly file?: string
+  readonly sha256?: string
+}
+
 export interface Slot {
   readonly id: string
   readonly prompt: string
@@ -136,9 +147,15 @@ export interface Slot {
   readonly seed?: number
   readonly negative?: string
   readonly refs?: readonly string[]
+  // A slot may name its own checkpoint, so one set can put two models to work without becoming two sets. A slot with no
+  // model uses the set's.
+  readonly model?: ImageModel
 }
 
 export interface ImagesSpec extends SpecBase<"images"> {
+  // The checkpoint the whole set is made with. Optional because every slot may name its own, but a slot that names
+  // neither is refused by the adapter: an image set with no checkpoint is a set of prompts with nothing to run them.
+  readonly model?: ImageModel
   readonly slots: readonly Slot[]
 }
 
@@ -393,6 +410,44 @@ function pathList(obj: Record<string, unknown>, key: string, path: string, error
   value.forEach((item, index) => checkPath(item, at(p, index), errors))
 }
 
+// Why a checkpoint file is not one ComfyUI could load. This is not `pathProblem`: a checkpoint is resolved by the
+// server inside its own models directory, not by the job runner against the job, so an absolute path or a `..` is
+// refused for a different reason — the spec must not choose a file anywhere on the host. The rule is still lexical,
+// because the spec cannot see the server's disk.
+function checkpointProblem(value: string): string | undefined {
+  if (!value) return "a checkpoint file must not be empty"
+  if (value.startsWith("/")) return "a checkpoint file must be relative to ComfyUI's models directory"
+  if (value.includes("\\")) return 'a checkpoint file must use "/" as its separator'
+  const segments = value.split("/")
+  if (segments.includes(".") || segments.includes("..")) return 'a checkpoint file must not contain "." or ".." segments'
+  if (segments.includes("")) return "a checkpoint file must not contain an empty segment"
+  return undefined
+}
+
+// A checkpoint as written. The hash is checked for shape here because B5-T4 will compare it to a registry: a digest
+// that could never be one would make the unknown-hash policy ask about a string no file can have. The file is optional
+// because a set may be written before the model is installed, and `name` is then all provenance has.
+function modelField(obj: Record<string, unknown>, key: string, path: string, errors: Errors): void {
+  optObjField(obj, key, path, errors, MODEL_KEYS, (model, p) => {
+    str(model, "name", p, errors, true)
+    const file = model["file"]
+    if (file !== undefined) {
+      if (typeof file !== "string") errors.push(`${child(p, "file")}: expected a string, got ${got(file)}`)
+      else {
+        const problem = checkpointProblem(file)
+        if (problem) errors.push(`${child(p, "file")}: ${problem}, got ${shown(file)}`)
+      }
+    }
+    const sha = model["sha256"]
+    if (sha !== undefined) {
+      if (typeof sha !== "string") errors.push(`${child(p, "sha256")}: expected a string, got ${got(sha)}`)
+      else if (!/^[0-9a-f]{64}$/.test(sha)) {
+        errors.push(`${child(p, "sha256")}: expected a lowercase sha256 digest of 64 hex characters, got ${shown(sha)}`)
+      }
+    }
+  })
+}
+
 const SIZE_KEYS = ["width", "height"] as const
 
 // A size is pixels, so it is two positive integers and nothing else. The key set is enforced here too: a size that
@@ -416,8 +471,13 @@ const VIDEO_FORMATS = ["mp4", "webm"] as const
 const VIDEO_QUALITIES = ["low", "medium", "high"] as const
 const VIDEO_ENGINES = ["hyperframes"] as const
 const PAGE_KEYS = ["path", "title", "sections"] as const
-const SLOT_KEYS = ["id", "prompt", "size", "seed", "negative", "refs"] as const
+const SLOT_KEYS = ["id", "prompt", "size", "seed", "negative", "refs", "model"] as const
+const MODEL_KEYS = ["name", "file", "sha256"] as const
 const THEME_KEYS = ["name"] as const
+
+// The article a kind takes in a sentence. Only an image set differs, and the version refusal is read by a person
+// looking at images.json, so "a images spec" is not the sentence to leave them with.
+const article = (kind: ArtifactKind): string => (kind === "images" ? "an" : "a")
 
 // The base fields are checked by one function for all four kinds, so a deck and a site cannot drift apart on what a
 // job id or a selected check is.
@@ -429,7 +489,7 @@ function base(obj: Record<string, unknown>, kind: ArtifactKind, errors: Errors):
   const supported = specVersionOf(kind)
   const version = obj["version"]
   if (version === undefined) errors.push("version: required")
-  else if (version !== supported) errors.push(`version: a ${kind} spec is version ${supported}, got ${shown(version)}`)
+  else if (version !== supported) errors.push(`version: ${article(kind)} ${kind} spec is version ${supported}, got ${shown(version)}`)
 
   str(obj, "job", "", errors, true)
   str(obj, "brief", "", errors, true)
@@ -624,9 +684,11 @@ function slot(value: unknown, path: string, errors: Errors): void {
   num(obj, "seed", path, errors, "an integer", (n) => Number.isInteger(n), false)
   optStr(obj, "negative", path, errors)
   pathList(obj, "refs", path, errors)
+  modelField(obj, "model", path, errors)
 }
 
 function images(obj: Record<string, unknown>, errors: Errors): void {
+  modelField(obj, "model", "", errors)
   list(obj, "slots", "", errors, slot)
 }
 
@@ -636,7 +698,7 @@ const KIND_KEYS: Record<ArtifactKind, readonly string[]> = {
   deck: [...BASE_KEYS, "slides", "branches", "theme"],
   video: [...BASE_KEYS, "engine", "fps", "size", "scenes", "audio", "output"],
   site: [...BASE_KEYS, "pages"],
-  images: [...BASE_KEYS, "slots"],
+  images: [...BASE_KEYS, "model", "slots"],
 }
 
 const CHECKS: Record<ArtifactKind, (obj: Record<string, unknown>, errors: Errors) => void> = { deck, video, site, images }
