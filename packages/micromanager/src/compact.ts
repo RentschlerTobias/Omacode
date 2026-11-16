@@ -147,7 +147,7 @@ export class Compactor {
     let asked = 0
     if (open.length && load >= this.#o.startChars) {
       const answers = this.#decider
-        ? (await this.#decider.ask("N14", { ...focus(msgs), results: open.map((c, i) => ({ call: i, tool: c.tool, input: c.input.slice(0, 300), age: c.age, start: c.head })) }, compactQuestions(open, this.#o.subject), { job: sessionID }).catch(() => undefined))?.decision.answers ?? {}
+        ? (await this.#decider.ask("N14", { ...focus(msgs), results: open.map((c, i) => ({ call: i, tool: c.tool, input: c.input.slice(0, 300), age: c.age, start: c.head })) }, compactQuestions(open, this.#o.subject), { job: sessionID, session: sessionID }).catch(() => undefined))?.decision.answers ?? {}
         : {}
       asked = open.length
       open.forEach((c, i) => {

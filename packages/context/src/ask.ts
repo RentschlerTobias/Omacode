@@ -10,13 +10,19 @@ export type AskAnswer =
   | { type: "score"; score: number; confidence: number; probabilities: Record<string, number> }
   | { type: "noul"; noul: number }
 
+export interface AskedDecision {
+  readonly id?: string // the journal entry, so a memory write can point at the decision it was made by
+  readonly backend?: string
+  readonly decision: { readonly answers: Record<string, AskAnswer> }
+}
+
 export interface Asker {
   ask(
     id: string,
     state: Record<string, unknown>,
     questions: Record<string, AskQuestion>,
-    options?: { job?: string },
-  ): Promise<{ decision: { answers: Record<string, AskAnswer> } }>
+    options?: { job?: string; session?: string },
+  ): Promise<AskedDecision>
 }
 
 export const NOUL_FLOOR = 0.5

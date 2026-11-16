@@ -16,7 +16,10 @@ import { dirname, join } from "node:path"
 
 import { looksSecret } from "@omacode/core/secrets"
 
-export type Kind = "secret" | "email" | "phone" | "iban" | "card" | "person" | "address"
+// "path" and "ip" belong to the egress gate (src/egress.ts): a decision payload names the machine it was made on, so
+// the home directory and addresses are numbered there. The vault keeps no entries for them — every request carries
+// paths, and a placeholder in each one would cost the model more than it protects.
+export type Kind = "secret" | "email" | "phone" | "iban" | "card" | "person" | "address" | "path" | "ip"
 
 export interface Finding {
   readonly value: string
@@ -143,7 +146,10 @@ export function findPii(text: string): Finding[] {
 // ---------------------------------------------------------------------------------------------------------------------
 // Placeholders
 
-const PREFIX: Record<Kind, string> = { secret: "SECRET", email: "email", phone: "PHONE", iban: "IBAN", card: "CARD", person: "PERSON", address: "ADDRESS" }
+const PREFIX: Record<Kind, string> = {
+  secret: "SECRET", email: "email", phone: "PHONE", iban: "IBAN", card: "CARD", person: "PERSON", address: "ADDRESS",
+  path: "PATH", ip: "IP",
+}
 const PLACEHOLDER = /\b(?:(SECRET|PHONE|IBAN|CARD|PERSON|ADDRESS)_(\d+)|email(\d+)@redacted\.invalid)\b/g
 
 export function isPlaceholder(s: string): boolean {
@@ -185,7 +191,7 @@ const WORDY = new Set<Kind>(["person", "address", "email", "phone"])
 export class Vault {
   readonly #byValue = new Map<string, Entry>()
   readonly #byPlaceholder = new Map<string, Entry>()
-  readonly #counters: Record<Kind, number> = { secret: 0, email: 0, phone: 0, iban: 0, card: 0, person: 0, address: 0 }
+  readonly #counters: Record<Kind, number> = { secret: 0, email: 0, phone: 0, iban: 0, card: 0, person: 0, address: 0, path: 0, ip: 0 }
   readonly #allow: Set<string>
   readonly #path: string | null
   readonly #secrets: boolean
@@ -410,6 +416,64 @@ export function restoreScope(tool: string): ((kind: Kind) => boolean) | undefine
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Paths and addresses: the part of a payload that says which machine it was made on (the egress gate, src/egress.ts)
+
+// The home directory itself, in the four shapes it is written: ~/x, /home/alice/x, /Users/alice/x, /root/x and
+// C:\Users\alice\x. Only that prefix becomes a placeholder; what follows stays, so a decision still reads
+// "a read of PATH_1/Repos/proj/src/main.ts" instead of losing where the file is.
+const HOME_PATH = /(?<![\w.~-])(?:~(?=[/\\])|\/home\/[A-Za-z0-9._-]+|\/Users\/[A-Za-z0-9._-]+|\/root\b|[A-Za-z]:\\{1,2}Users\\{1,2}[A-Za-z0-9._-]+)/g
+
+// IPv4 as it is written in URLs, logs and configs. An IPv6 address shares its colons with times and ids, so it is left
+// to the name detector rather than guessed at here.
+const IPV4 = /(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])/g
+
+const octets = (s: string): boolean => s.split(".").every((o) => Number(o) <= 255)
+
+export function findPaths(text: string): Finding[] {
+  return [...text.matchAll(HOME_PATH)].map((m) => ({ value: m[0], kind: "path", rule: "home-path" }))
+}
+
+export function findIps(text: string): Finding[] {
+  return [...text.matchAll(IPV4)].filter((m) => octets(m[0])).map((m) => ({ value: m[0], kind: "ip", rule: "ipv4" }))
+}
+
+// Every deterministic finding of a text, with the server's own secret values: what a preview names and what the
+// redaction below replaces.
+export function egressFindings(text: string, secrets: readonly string[] = []): Finding[] {
+  const out = [...findSecrets(text), ...findPii(text), ...findPaths(text), ...findIps(text)]
+  for (const value of secrets) if (value.length >= 8 && text.includes(value)) out.push({ value, kind: "secret", rule: "known" })
+  return out
+}
+
+// The deterministic redaction of a payload that leaves the machine (D13, A2-T6). The same detectors the vault uses —
+// secrets, e-mail, phone, IBAN, card, and the names a local detector found — then the two the vault does not track, and
+// the values the server was told are secret (its environment, its .env files, the cloud key). Only this result is shown
+// in a preview and sent: there is one redaction, not one per call site.
+//
+// With a vault the vault's own placeholders are used, so a value the model already knows stays recognisable; without one
+// (a CLI run, a test) the payload is numbered per text, and it is still redacted: the gate does not depend on the
+// context redaction being on.
+export function redactEgress(text: string, secrets: readonly string[] = []): string {
+  if (!text) return text
+  let out = text
+  // A known value first: a token format is found by a detector, a value that is merely secret is only known by being told.
+  for (const value of [...secrets].filter((s) => s.length >= 8).sort((a, b) => b.length - a.length)) out = out.split(value).join("<secret>")
+  if (hasVault()) out = scrub(out)
+  const found = hasVault() ? [...findPaths(out), ...findIps(out)] : [...findSecrets(out), ...findPii(out), ...findPaths(out), ...findIps(out)]
+  const seen = new Map<string, string>()
+  const n: Record<Kind, number> = { secret: 0, email: 0, phone: 0, iban: 0, card: 0, person: 0, address: 0, path: 0, ip: 0 }
+  for (const f of found) {
+    let replacement = seen.get(f.value)
+    if (!replacement) {
+      replacement = placeholder(f.kind, ++n[f.kind])
+      seen.set(f.value, replacement)
+    }
+    out = out.split(f.value).join(replacement)
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Known secrets: values that are secret wherever they appear, whatever their format
 
 function envFileValues(text: string): { name: string; value: string }[] {
@@ -619,6 +683,12 @@ export function scrub(text: string): string {
   let out = text
   for (const f of findSecrets(text)) out = out.split(f.value).join("<secret>")
   return out
+}
+
+// Whether a vault is in use, for the egress gate: with one its placeholders are the ones to use, without one the gate
+// numbers the same findings itself (src/egress.ts, redactEgress).
+export function hasVault(): boolean {
+  return active !== undefined
 }
 
 // The user's own name and e-mail from git: values the vault leaves alone.

@@ -4,7 +4,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
 
-import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
+import { DEFAULT_BACKENDS, Decider, makeAskers, type Asker } from "../packages/micromanager/src/backends.ts"
 import { capture, learnedLines } from "../packages/micromanager/src/context/capture.ts"
 import { Embedder } from "../packages/micromanager/src/context/embed.ts"
 import { CoreSnapshots, recall, recallBlock, RecentRecalls } from "../packages/micromanager/src/context/recall.ts"
@@ -124,4 +124,41 @@ test("settings: memory on by default, the embedding service configurable or off"
   assert.equal(parseMemory('{ "memory": { "embedding": false } }').embedding, false)
   assert.deepEqual(parseMemory('{ "memory": { "embedding": { "model": "qwen3-embedding-8b" } } }').embedding, { url: "http://127.0.0.1:8093", model: "qwen3-embedding-8b" })
   assert.throws(() => parseMemory('{ "memory": { "embedding": 3 } }'), /memory.embedding/)
+})
+
+// A2-T2b: N17 goes through the same decider as every other node, so the memory write can be reproduced from the
+// decision it was made by — the request, the text that was sent, the questions and the answers — and the payload of a
+// cloud answer is redacted before it leaves (A2-T6).
+test("N17 is journaled with the text it sent, and a memory write names the decision", async () => {
+  const s = new MemoryStore(dir(), { git: false })
+  s.add({ scope: "project", project: "p", text: "The parser skips empty lines before the header", pinned: false })
+  const entries: Record<string, unknown>[] = []
+  const bodies: { state?: string }[] = []
+  const fetcher = (async (_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)) as { state?: string })
+    return Response.json({
+      model: "cloud",
+      answers: {
+        lasting: { type: "noul", noul: 0.9 },
+        useful: { type: "noul", noul: 0.9 },
+        scope: { type: "choice", choice: "project", confidence: 0.95, probabilities: { project: 0.95 } },
+        relation: { type: "choice", choice: "new", confidence: 0.9, probabilities: { new: 0.9 } },
+        which: { type: "choice", choice: "n0", confidence: 0.9, probabilities: { n0: 0.9 } },
+      },
+    })
+  }) as unknown as typeof fetch
+  const decider = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud" }, makeAskers({ ...DEFAULT_BACKENDS, mode: "cloud" }, "k", fetcher, () => false, { confirm: async () => "send" }), (e) => entries.push(e))
+  const verdict = await capture(s, undefined, decider, { text: "Tests run with uv run pytest; mail anna.weber@firma.de if they fail", source: "LEARNED ses_w" }, { project: "p", session: "ses_w", journal: (e) => entries.push(e) })
+  assert.equal(verdict.kind, "added")
+  const decision = entries.find((e) => e.kind === "decision")!
+  assert.equal(decision.node, "N17")
+  assert.equal(decision.mode, "cloud")
+  assert.equal(decision.backend, "cloud")
+  assert.deepEqual((decision.state as { source: string }).source, "LEARNED ses_w")
+  assert.deepEqual(Object.keys(decision.questions as object).sort(), ["lasting", "scope", "useful"])
+  assert.deepEqual(Object.keys(decision.answers as object).sort(), ["lasting", "scope", "useful"])
+  assert.equal(decision.sent, bodies[0]!.state, "the journal keeps the text the client posted")
+  assert.equal(String(decision.sent).includes("anna.weber@firma.de"), false, "the candidate was redacted before it left")
+  const write = entries.find((e) => e.kind === "memory.write")!
+  assert.equal(write.decision, decision.id, "the write names the decision that made it")
 })

@@ -9,12 +9,14 @@ import { execFile } from "node:child_process"
 import { claim } from "@omacode/core/registry"
 import { installAgents, SUMMARIZER_AGENT, type AgentDraft } from "./agents.ts"
 import { cloudRegistry, configPath, loadPicks, loadSettings } from "./config.ts"
-import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
+import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, permissionAsker, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
 import { injected, injectionScore } from "./gate.ts"
 import { backstop, DELEGATION_TOOLS, delegationRole, notRouted, resultText, rewriteResult, routeDelegation, unownedDelegation, type ChildSession, type ToolCall } from "./hooks.ts"
 import { redact, type Question as DecisionQuestion } from "./decider.ts"
 import { journalPath, record } from "./journal.ts"
-import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, makeAskers } from "./backends.ts"
+import { DEFAULT_BACKENDS, Decider, backendNotes, cloudKey, makeAskers } from "./backends.ts"
+import { type EgressAnswer, type EgressOptions, type EgressRequest } from "./egress.ts"
+import { PreviewRequests, previewAnswer, previewNote } from "./preview.ts"
 import { look, missingVisualEvidence } from "./look.ts"
 import { runBrowser } from "./browser.ts"
 import { readPick } from "./pick.ts"
@@ -49,10 +51,11 @@ import { looksSecret, planRules, rulesFor, startSandbox, tempDirFor, WorkerShell
 import sandboxPlugin from "./shell/index.ts"
 import type { SessionRecord as ShellSessionRecord } from "./shell/wire.ts"
 import { addGrant, isStarted, lastOptions, loadControl, optionsOf, saveLastOptions, updateControl } from "./control.ts"
-import { badName, GRANT_FLOOR, grantBatchNote, grantNote, harmlessQuestion, grantResult, GrantRequests, grantState, triage, type GrantKind } from "./grants.ts"
+import { badName, GRANT_FLOOR, grantBatchNote, grantNote, grantResult, GrantRequests, triage, type GrantKind } from "./grants.ts"
+import { askCheckBug, askGrantHarmless } from "./permission.ts"
 import { accessForm, answersOf, formInput, gitForm, readForm, type Question } from "./forms.ts"
 import { gitState, humanSize, initRepo, surveyFolder } from "./nogit.ts"
-import { CHECK_BUG, CHECK_BUG_FLOOR, CLASSIFY, LOCAL_BLOCK, LOCAL_BLOCK_FLOOR, NOUL_FLOOR, OPEN_ENDED, OPEN_ENDED_FLOOR } from "./catalog.ts"
+import { CHECK_BUG_FLOOR, CLASSIFY, LOCAL_BLOCK, LOCAL_BLOCK_FLOOR, NOUL_FLOOR, OPEN_ENDED, OPEN_ENDED_FLOOR } from "./catalog.ts"
 import { ending, Notifier, Scheduler, type Cancel } from "./scheduler.ts"
 import { registerSkills, SKILLS, type SkillEditor } from "./skills.ts"
 import { backlogIgnored, listJobs, loadJob, notesDir, reconcileJob, saveJob, stateDir } from "./store.ts"
@@ -217,6 +220,8 @@ interface Shared {
   code?: { commit: string; dirty: boolean | "unknown" } // the plugin code this server loaded
   asks: Asks // workers' paused permission requests, answered by the micromanager or the user (src/ask.ts)
   grantRequests: GrantRequests // workers' requests for a variable or a host, waiting for the user (src/grants.ts)
+  // Cloud sends waiting for the user's preview answer (src/preview.ts); made on first use, like the change requests.
+  previews?: PreviewRequests
   // Writers' requests to change a check, waiting for a decision (src/checkchange.ts); made on first use, so a server that
   // loaded an older plugin first gets one too.
   changeRequests?: ChangeRequests
@@ -969,6 +974,19 @@ const plugin = {
     const names: NameSettings | undefined = vault && settings.redact.names && settings.redact.nameAddress
       ? { url: (DEFAULT_BACKENDS.urls.gliner ?? "http://127.0.0.1:8781/v1/systemone").replace(/\/v1\/systemone$/, "/v1/entities"), labels: DEFAULT_LABELS, threshold: settings.redact.threshold }
       : undefined
+    // The preview of a cloud send (D13, A2-T6): the payload waits for the user's word like a grant does. Only a worker's
+    // ask is previewed, because only then is there a session that can put the form without waiting on itself — the
+    // worker's micromanager. An ask from a micromanager's own turn, from the runner loop or from a CLI run has nobody to
+    // ask it for, so it is kept local (src/egress.ts), and the journal says so.
+    const confirmEgress = async (request: EgressRequest): Promise<EgressAnswer | undefined> => {
+      const parent = request.session ? native.ownerOf(request.session)?.parent : undefined
+      if (!parent) return undefined
+      const previews = (SHARED.previews ??= new PreviewRequests(record))
+      const { pending, answer } = previews.open(request)
+      await say({ sessionID: parent, text: previewNote(pending), resume: true }).catch((err: unknown) => log("warn", `preview note failed: ${String(err)}`))
+      if (notify !== "off") notifyDesktop(`${pending.id}: a cloud decision waits for you`, `${pending.node ?? "decision"} · ${pending.destination}`)
+      return answer
+    }
     let namesDownSince = 0
     // Every string of the request the provider gets, and its system prompt, through the vault; names first, when on.
     const redactRequest = async (input: SessionHookInput): Promise<void> => {
@@ -1071,7 +1089,15 @@ const plugin = {
     // key comes from JEV_API_KEY or the keyring, and without it every question goes to the user.
     const backends = { ...DEFAULT_BACKENDS, mode }
     const key = cloudKey(backends)
-    const client = cloudClient(backends, key)
+    // D13/A2-T6: every client the plugin builds carries the gate. The cloud call is previewed and confirmed; a local
+    // server is a loopback URL and never consults it.
+    const egressOptions: EgressOptions = {
+      confirm: confirmEgress,
+      names: Boolean(names),
+      secrets: knownSecrets(process.env, ctx.location?.directory, [key ?? ""]),
+    }
+    const askers = makeAskers(backends, key, undefined, undefined, egressOptions)
+    const client = askers.cloud
     if (mode === "cloud" && !client) log("warn", key ? "cloud mode, but no cloud URL is configured: every question goes to the user" : "cloud mode, but no decision key (JEV_API_KEY or the keyring entry service=typesafe key=jev): every question goes to the user")
     // A backend that is off says why, once, at start (openjev without a server installed, for one): a missing backend
     // is a state, not a mode (D11).
@@ -1225,8 +1251,8 @@ const plugin = {
       }
       if (t.verdict === "jev" && client) {
         try {
-          const answer = (await client.ask(grantState(kind, name, why, owner.task, value), { harmless: harmlessQuestion(kind) })).answers.harmless
-          const p = answer?.type === "noul" ? answer.noul : 0
+          // Through the decider (A2-T2b), so this case is reproducible from the journal (src/permission.ts).
+          const p = await askGrantHarmless(decider, { kind, name, why, task: owner.task, ...(value !== undefined ? { value } : {}), session: sessionID, job: jobId })
           if (p >= GRANT_FLOOR) {
             addGrant(where.project, jobId, kind, name, true)
             decided("granted", "jev", `harmless ${p.toFixed(2)}`)
@@ -1261,8 +1287,7 @@ const plugin = {
       }
       if (r.kind === "check_bug" && client) {
         try {
-          const answer = (await client.ask(`A worker's check failed and the worker says the check itself is wrong.\nTask: ${task}\nCheck: ${r.target}\nProblem: ${r.problem}\nEvidence: ${r.evidence.slice(0, 2000)}`, { check_bug: CHECK_BUG })).answers.check_bug
-          const p = answer?.type === "noul" ? answer.noul : 1
+          const p = await askCheckBug(decider, { task, target: r.target, problem: r.problem, evidence: r.evidence, session: sessionID, job: here.job.id, taskId: here.task.id })
           if (p < CHECK_BUG_FLOOR) {
             const a: ChangeAnswer = { accepted: false, by: "jev", note: "the evidence does not show the check is wrong" }
             decided("K-", a)
@@ -1809,6 +1834,7 @@ const plugin = {
       const helpers = [...SHARED.helperOf].filter(([, writer]) => writer === session).map(([helper]) => helper)
       SHARED.grantRequests.drop([session])
       SHARED.changeRequests?.drop([session])
+      SHARED.previews?.drop([session, ...helpers])
       for (const helper of helpers) {
         if (ended.has(helper)) continue
         ended.add(helper)
@@ -1959,7 +1985,10 @@ const plugin = {
       // A worker session reads inside its own worktree (its directory), so the read-only-inside fast path applies to a
       // worker's inspection instead of asking Jev, whose confidence on those sits below the read floor.
       const root = runnerSessions.has(evaluation.sessionID) ? workerDirs.get(evaluation.sessionID) ?? ctx.location?.directory : undefined
-      const outcome = await decide(client, request, floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
+      // The case goes through the decider (A2-T2b), which journals the request, the text that was sent, the questions and
+      // the answers. The asker exists only where a cloud client does: the permission nodes are cloud-only until A2b-T1
+      // has measured the local model on them, so in local mode the user decides, exactly as before.
+      const outcome = await decide(client ? permissionAsker(decider, { ...(job ? { job: job.id } : {}) }) : undefined, request, floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
       // A worker of the plugin's, also one adopted after a restart and continued by its session, which the prompt hook
       // does not claim again (live run, 2026-10-27: such a worker's request was neither paused nor refused, so OpenCode
       // parked it with nobody to answer, and the worker waited for good).
@@ -2023,7 +2052,7 @@ const plugin = {
     } catch (err) {
       record({ kind: "adopt", directory: project, error: String(err) })
     }
-    const decider = new Decider(backends, makeAskers(backends, key))
+    const decider = new Decider(backends, askers)
     // Memory beyond the session (src/context/): core entries in every prompt, recalled notes in a worker's brief and at
     // the micromanager's user turns, LEARNED lines and the memory tools through search and Jev. Off by itself when its
     // store cannot open; keyword search while the embedding service is down.
@@ -2312,6 +2341,30 @@ const plugin = {
           SHARED.sandboxAsk = pending
           tell(`"${(answers[sandboxAt] ?? []).join(", ")}" is no answer to the form, so nothing was granted and the question still waits. Ask with the same form again.`)
         }
+        return
+      }
+      // D13/A2-T6: the user's answer on a cloud preview ("Send S1"). Only the micromanager's own result settles it, and
+      // a label that is none of the form's answers leaves the payload waiting.
+      const previewAt = answers ? asked.findIndex((q) => /^Send S\d+$/.test(q.header ?? "")) : -1
+      if (answers && previewAt >= 0) {
+        const tell = (text: string) => rewriteResult(call.result, (was) => `${was}\n[micromanager] ${text}`)
+        if (native.isWorker(sessionID) || runnerSessions.has(sessionID)) return
+        const id = asked[previewAt]!.header!.split(" ")[1]!
+        const previews = (SHARED.previews ??= new PreviewRequests(record))
+        const pending = previews.get(id)
+        const choice = previewAnswer(answers[previewAt] ?? [])
+        if (!pending) {
+          tell("That cloud preview was no longer waiting, so nothing was sent. A payload that waits is only let go by its own form.")
+          return
+        }
+        if (!choice) {
+          tell(`"${(answers[previewAt] ?? []).join(", ")}" is no answer to the form; the payload still waits and nothing was sent. Ask with the same form again.`)
+          return
+        }
+        previews.answer(id, choice)
+        tell(choice === "send"
+          ? `The user let ${id} go: the payload leaves the machine as shown, and the decision it belongs to goes on.`
+          : `The user kept ${id} ${choice === "cancel" ? "in: nothing is sent and this call is not asked again" : "on this machine: nothing was sent, and the decision is made without the cloud"}.`)
         return
       }
       const change = answers && asked[0]?.header ? readChange(asked[0].header, answers[0] ?? []) : undefined
@@ -3030,7 +3083,7 @@ const plugin = {
             const sc = (["user", "global", "project"] as const).find((x) => x === scope.toLowerCase())
             if (!text) return "memory_set needs text: the fact, in one sentence."
             if (!sc) return "memory_set needs scope: user, global or project."
-            const v = await memory.capture({ text, source: `memory_set ${tctx.sessionID ?? ""}`.trim(), scope: sc, pinned: /^(yes|true|ja)$/i.test(core) }, project)
+            const v = await memory.capture({ text, source: `memory_set ${tctx.sessionID ?? ""}`.trim(), scope: sc, pinned: /^(yes|true|ja)$/i.test(core) }, project, tctx.sessionID)
             if (!v) return `The memory is off: ${memory.off}`
             if (v.kind === "duplicate") return `Not stored: ${describeEntry(v.of)} already says it.`
             if (v.kind === "dropped") return `Not stored: ${v.why}.`
@@ -3221,7 +3274,7 @@ const plugin = {
         await ctx.session.wait({ sessionID: s.id })
         return lastAssistantText(await ctx.session.context({ sessionID: s.id }).catch(() => undefined))
       },
-      facts: async (facts, sessionID) => { for (const text of facts) await memory.capture({ text, source: `summary ${sessionID}` }, project) },
+      facts: async (facts, sessionID) => { for (const text of facts) await memory.capture({ text, source: `summary ${sessionID}` }, project, sessionID) },
       journal: record,
       digest: (sessionID, reason) => digest(sessionID, reason),
     })
@@ -3348,7 +3401,7 @@ const plugin = {
               const loopholes = await native.noteLoopholes(worker, report)
               if (loopholes) await say({ sessionID: parent, text: loopholes, resume: true }).catch((err: unknown) => log("warn", `note failed: ${String(err)}`))
               const learned = learnedLines(report).slice(0, 5)
-              for (const line of learned) await memory.capture({ text: line, source: `LEARNED ${worker}` }, project)
+              for (const line of learned) await memory.capture({ text: line, source: `LEARNED ${worker}` }, project, worker)
               // The same facts go to the job, where #brief shows the last few to every later worker. Without this the
               // native path replanned on "nothing recorded" while the memory held the facts.
               const fresh = learned.filter((line) => !r.job.lessons.includes(line))

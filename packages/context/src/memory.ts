@@ -90,11 +90,11 @@ export class Memory {
     return r ? { text: recallBlock(r), ids: r.picked.map((h) => h.entry.id) } : { text: "", ids: [] }
   }
 
-  async capture(c: Candidate, projectDir: string | undefined): Promise<Verdict | undefined> {
+  async capture(c: Candidate, projectDir: string | undefined, session?: string): Promise<Verdict | undefined> {
     const s = this.store()
     if (!s) return undefined
     const slug = this.slug(projectDir)
-    return await capture(s, this.#embedder, this.#decider, c, { ...(slug ? { project: slug } : {}), journal: this.#journal })
+    return await capture(s, this.#embedder, this.#decider, c, { ...(slug ? { project: slug } : {}), ...(session ? { session } : {}), journal: this.#journal })
   }
 
   async search(query: string, projectDir: string | undefined, limit = 8): Promise<SearchResult | undefined> {

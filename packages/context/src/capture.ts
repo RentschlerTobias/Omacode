@@ -49,19 +49,24 @@ export function captureQuestions(c: Candidate, neighbours: readonly Hit[]): Reco
   return q
 }
 
-export async function capture(store: MemoryStore, embedder: Embedder | undefined, decider: Asker | undefined, c: Candidate, o: { project?: string; journal?: (e: Record<string, unknown>) => void } = {}): Promise<Verdict> {
+export async function capture(store: MemoryStore, embedder: Embedder | undefined, decider: Asker | undefined, c: Candidate, o: { project?: string; session?: string; journal?: (e: Record<string, unknown>) => void } = {}): Promise<Verdict> {
   const text = c.text.trim().replace(/\s+/g, " ").slice(0, 500)
   if (text.length < 12) return { kind: "dropped", why: "too short to be a fact" }
   const found = await search(store, embedder, text, { ...(o.project ? { project: o.project } : {}), task: "dedupe", limit: NEIGHBOURS })
   const neighbours = found.hits.slice(0, NEIGHBOURS)
   const top = neighbours[0]
+  let decision: string | undefined // the N17 entry this write was made by, once it is asked
   const journal = (v: Verdict, extra: Record<string, unknown> = {}) => {
-    o.journal?.({ kind: "memory.write", verdict: v.kind, text: text.slice(0, 200), source: c.source, project: o.project, vectors: found.vectors, top: top?.similarity, ...extra })
+    o.journal?.({ kind: "memory.write", verdict: v.kind, text: text.slice(0, 200), source: c.source, project: o.project, vectors: found.vectors, top: top?.similarity, ...(decision ? { decision } : {}), ...extra })
     return v
   }
   if (top && ((top.similarity ?? 0) >= DUPLICATE_SIMILARITY || top.entry.text.toLowerCase() === text.toLowerCase())) return journal({ kind: "duplicate", of: top.entry })
-  const asked = decider ? await decider.ask("N17", { project: o.project, candidate: text, source: c.source, neighbours: neighbours.map((n, i) => ({ id: `n${i}`, text: n.entry.text, scope: n.entry.scope, similarity: n.similarity })) }, captureQuestions({ ...c, text }, neighbours), { job: c.source }).catch(() => undefined) : undefined
+  // N17 through the decider (A2-T2b): the decision is journaled with its state, the text that was sent, the questions and
+  // the answers, and this entry names it, so a memory write can be reproduced from the decision it was made by. The
+  // decider is the one that carries the egress gate (src/egress.ts); a caller's own client cannot skip it.
+  const asked = decider ? await decider.ask("N17", { project: o.project, candidate: text, source: c.source, neighbours: neighbours.map((n, i) => ({ id: `n${i}`, text: n.entry.text, scope: n.entry.scope, similarity: n.similarity })) }, captureQuestions({ ...c, text }, neighbours), { job: c.source, ...(o.session ? { session: o.session } : {}) }).catch(() => undefined) : undefined
   const a = asked?.decision.answers ?? {}
+  decision = asked?.id
   const jev = Object.keys(a).length > 0 // the rules backend answers nothing
   const noul = (k: string) => (a[k]?.type === "noul" ? (a[k] as { noul: number }).noul : undefined)
   const choice = (k: string) => (a[k]?.type === "choice" ? (a[k] as { choice: string }).choice : undefined)

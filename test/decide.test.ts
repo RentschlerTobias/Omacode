@@ -91,7 +91,9 @@ test("the client sends the wire format, retries a 429 once, and masks secrets", 
     if (calls === 1) return new Response("", { status: 429 })
     return Response.json({ model: "jev-1", answers: { ok: { type: "noul", noul: 0.9 } } })
   }) as unknown as typeof fetch
-  const client = new DecisionClient("k", { fetch: fakeFetch, retries: 1 })
+  // A local server: the wire format is the client's transport, and nothing leaves the machine (the egress gate of a
+  // remote destination is tested in test/backends.test.ts).
+  const client = new DecisionClient("k", { url: "http://127.0.0.1:8781/v1/systemone", fetch: fakeFetch, retries: 1 })
   const got = await client.ask("token sk-abcdefghijklmnopqrstuv in a log", { ok: { type: "noul", instructions: "It is fine." } })
   assert.equal(calls, 2)
   assert.deepEqual(got.answers.ok, { type: "noul", noul: 0.9 })
@@ -679,4 +681,95 @@ test("an investigator's commands inside its plan worktree need no per-command as
   const reader = await fast(plan("shell", ["npm test"], "explorer"))
   assert.equal(reader.verdict, "deny")
   assert.doesNotMatch(reader.reason, /task's own worktree/)
+})
+
+// -------------------------------------------------------------------------------------------------------------------
+// A2-T2b: the permission case goes through the decider, so the journal holds the request, the text that was sent, the
+// questions and the answers. The egress gate is in the client, so this also proves the case is previewed (A2-T6).
+
+import { DEFAULT_BACKENDS, Decider, makeAskers } from "../packages/micromanager/src/backends.ts"
+import { permissionAsker } from "../packages/micromanager/src/decide.ts"
+import { askCheckBug, askGrantHarmless } from "../packages/micromanager/src/permission.ts"
+import type { Entry } from "../packages/micromanager/src/journal.ts"
+
+const CLOUD_URL = "https://api.example.com/v1/systemone"
+
+function cloudDecider(confirm: () => Promise<"send" | "keep-local" | "cancel"> = async () => "send", secrets: string[] = []) {
+  const bodies: { state?: string; questions?: unknown }[] = []
+  const fetcher = (async (_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)) as { state?: string; questions?: unknown })
+    return Response.json({
+      model: "cloud",
+      answers: {
+        answer: { type: "choice", choice: "allow", confidence: 0.96, probabilities: { allow: 0.96, deny: 0.04 } },
+        needs_user: { type: "noul", noul: 0.1 },
+        risk: { type: "score", score: 0.6, confidence: 0.9, probabilities: {} },
+        harmless: { type: "noul", noul: 0.95 },
+        check_bug: { type: "noul", noul: 0.9 },
+      },
+    })
+  }) as unknown as typeof fetch
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  const askers = makeAskers(config, "k", fetcher, () => false, { confirm, secrets })
+  return { decider: new Decider(config, askers, (e) => entries.push(e)), entries, bodies }
+}
+
+test("a permission case is journaled with the request, the text sent, the questions and the answers", async () => {
+  const { decider, entries, bodies } = cloudDecider()
+  const outcome = await decide(permissionAsker(decider, { job: "job-1" }), req("shell", ["npm test"]))
+  assert.equal(outcome.verdict, "allow")
+  const e = entries.find((x) => x.kind === "decision")!
+  assert.equal(e.kind, "decision")
+  assert.equal(e.node, "N13", "the permission node")
+  assert.equal(e.mode, "cloud")
+  assert.equal(e.backend, "cloud")
+  assert.equal(e.job, "job-1")
+  assert.deepEqual(e.request, { sessionID: "ses_1", agent: "coder", action: "shell", resources: ["npm test"], directory: "/p", task: "Add a --verbose flag." })
+  assert.match(String(e.sent), /wants permission for \\"shell\\" on: npm test/, "the text that was sent, redacted")
+  assert.equal(String(bodies[0]!.state), e.sent, "and the same text is what the client posted")
+  assert.deepEqual(Object.keys(e.questions as object).sort(), ["answer", "needs_user", "risk"])
+  assert.deepEqual(Object.keys(e.answers as object).sort(), ["answer", "needs_user", "risk"])
+  assert.equal((e.egress as { verdict: string }).verdict, "send")
+})
+
+test("a permission case the user keeps local is journaled as kept local and sends nothing", async () => {
+  const { decider, entries, bodies } = cloudDecider(async () => "keep-local")
+  const outcome = await decide(permissionAsker(decider, { job: "job-1" }), req("shell", ["npm test"]))
+  assert.equal(outcome.verdict, "user", "the user decides, as without a client")
+  assert.match(outcome.reason, /kept local/)
+  assert.equal(bodies.length, 0)
+  const e = entries.find((x) => x.kind === "decision")!
+  assert.equal(e.backend, "rules")
+  assert.equal(e.sent, undefined)
+  assert.equal((e.egress as { verdict: string }).verdict, "keep-local")
+})
+
+test("a permission case is redacted before it is sent", async () => {
+  const { decider, entries, bodies } = cloudDecider(async () => "send", ["s3cr3t-value-here"])
+  const task = "Read /home/alice/Repos/proj/.env and mail anna.weber@firma.de; the key is s3cr3t-value-here"
+  await decide(permissionAsker(decider), req("edit", ["/home/alice/Repos/proj/src/x.ts"], "coder", task))
+  const sent = String(bodies[0]!.state)
+  for (const raw of ["/home/alice", "anna.weber@firma.de", "s3cr3t-value-here"]) assert.equal(sent.includes(raw), false, raw)
+  assert.equal(entries[0]!.sent, sent)
+})
+
+test("the grant and check_bug questions are journaled like every other permission case", async () => {
+  const { decider, entries } = cloudDecider()
+  const harmless = await askGrantHarmless(decider, { kind: "network", name: "docs.example.org", why: "the build fetches the docs", task: "T1 Build docs", session: "ses_w", job: "job-1" })
+  assert.equal(harmless, 0.95)
+  const bug = await askCheckBug(decider, { task: "T1 Build docs", target: "npm test", problem: "the check is out of date", evidence: "line 4 expects 2", session: "ses_w", job: "job-1", taskId: "T1" })
+  assert.equal(bug, 0.9)
+  const grant = entries[0]!
+  assert.equal(grant.node, "N13.grant")
+  assert.equal((grant.request as { kind: string }).kind, "grant")
+  assert.equal((grant.request as { name: string }).name, "docs.example.org")
+  assert.match(String(grant.sent), /network access to the host docs\.example\.org/)
+  assert.deepEqual(Object.keys(grant.questions as object), ["harmless"])
+  assert.deepEqual(Object.keys(grant.answers as object), ["harmless"])
+  const check = entries[1]!
+  assert.equal(check.node, "N13.check_bug")
+  assert.equal((check.request as { kind: string }).kind, "check_bug")
+  assert.match(String(check.sent), /Check: npm test/)
+  assert.deepEqual(Object.keys(check.questions as object), ["check_bug"])
 })

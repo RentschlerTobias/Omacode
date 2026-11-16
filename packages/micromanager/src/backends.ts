@@ -2,18 +2,25 @@
 // or rules. The decider has exactly two modes, "local" and "cloud" (D11): the mode decides the class of backend a
 // node uses, and `default`/`nodes` only name a backend per node within what the mode allows. All speak the same wire
 // format, so one client (src/decider.ts) serves them; only URL, model and key differ.
+//
+// Every decision is journalled here, with the state, the questions and the answers (A2-T2b). A payload for another
+// machine passes the egress gate inside that client (src/egress.ts), so the entry also carries the redacted text that
+// left and the gate's verdict.
 
 import { randomUUID } from "node:crypto"
 
-import { cloudApiKey, DecisionClient, type Decision, type Question } from "./decider.ts"
+import { EgressRefused, summary, type EgressOptions, type EgressSummary } from "./egress.ts"
+import { cloudApiKey, DecisionClient, type AskContext, type Decision, type Question } from "./decider.ts"
 import { record } from "./journal.ts"
 import { findTool } from "./which.ts"
 
 export type BackendName = "cloud" | "gliner" | "openjev" | "rules"
 export type DeciderMode = "local" | "cloud"
 
+// An asker is anything a node can be answered by. The context is what the egress gate needs (which node asks, for which
+// session); an asker that has no use for it ignores it, as the rules backend and every test double does.
 export interface Asker {
-  ask(state: string, questions: Record<string, Question>): Promise<Decision>
+  ask(state: string, questions: Record<string, Question>, context?: AskContext): Promise<Decision>
 }
 
 export interface BackendConfig {
@@ -55,32 +62,44 @@ export function cloudKey(config: BackendConfig, read: () => string | undefined =
 }
 
 // The one construction site of the cloud client (D19). Local mode, no key and no cloud URL each mean "no client",
-// and none of them reads a key or a cloud URL from anywhere else.
-export function cloudClient(config: BackendConfig, key: string | undefined, fetcher?: typeof fetch): DecisionClient | undefined {
+// and none of them reads a key or a cloud URL from anywhere else. The gate travels with the client (A2-T6): a caller
+// without a confirm function builds a client that can reach nothing at all.
+export function cloudClient(config: BackendConfig, key: string | undefined, fetcher?: typeof fetch, egress?: EgressOptions): DecisionClient | undefined {
   if (config.mode !== "cloud" || !key) return undefined
   const url = config.urls.cloud
   if (!url) return undefined
-  return new DecisionClient(key, { url, fetch: fetcher })
+  return new DecisionClient(key, { url, fetch: fetcher, ...(egress ? { egress } : {}) })
 }
 
 // A backend exists only where an asker was built. Open-Jev is optional and off when its server is not installed, so
 // the backend list names the reason (backendNotes) instead of silently leaving a hole in the fallback chain.
+//
+// Every client built here carries the same gate. The local servers are loopback URLs, so the gate is not consulted for
+// them; a "local" server named by a LAN or public address is remote, and then it is previewed and confirmed like the
+// cloud one instead of leaving unremarked.
 export function makeAskers(
   config: BackendConfig,
   key: string | undefined,
   fetcher?: typeof fetch,
   installed: (name: string) => boolean = (name) => findTool(name) !== undefined,
+  egress?: EgressOptions,
 ): Partial<Record<BackendName, Asker>> {
   const out: Partial<Record<BackendName, Asker>> = { rules: new RulesBackend() }
-  const cloud = cloudClient(config, key, fetcher)
+  const cloud = cloudClient(config, key, fetcher, egress)
   if (cloud) out.cloud = cloud
   // Local servers take any key; their timeout is short so a dead server costs little.
   // GLiNER answers four guards in about 0.4 s on the CPU; 5 s leaves room for a loaded machine.
-  if (config.urls.gliner) out.gliner = new DecisionClient("local", { url: config.urls.gliner, model: "gliner", timeoutMs: 5000, fetch: fetcher })
+  if (config.urls.gliner) out.gliner = new DecisionClient("local", { url: config.urls.gliner, model: "gliner", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })
   // An Open-Jev server is a Python console script: installed means that program is on PATH, the same test the plugin
   // uses for any local tool it did not place itself (src/which.ts).
-  if (config.urls.openjev && installed("openjev")) out.openjev = new DecisionClient("local", { url: config.urls.openjev, model: "openjev", timeoutMs: 5000, fetch: fetcher })
+  if (config.urls.openjev && installed("openjev")) out.openjev = new DecisionClient("local", { url: config.urls.openjev, model: "openjev", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })
   return out
+}
+
+// A decider that can reach nothing (src/runner.ts without a decision model): rules only, no URL, so no client is built
+// and the egress gate is never even consulted.
+export function rulesDecider(journal: (entry: Record<string, unknown>) => void): Decider {
+  return new Decider({ mode: "local", default: "rules", nodes: {}, urls: {} }, { rules: new RulesBackend() }, journal)
 }
 
 // Why a backend is off, in one line, for the plugin's start log: a missing optional server is a state to state.
@@ -107,6 +126,13 @@ export interface AskOptions {
   readonly localOnly?: boolean // a sensitive job: no cloud backend
   readonly job?: string
   readonly task?: string
+  readonly session?: string // whose ask it is: the preview of a cloud send wakes that session's micromanager
+  // Only the cloud client may answer this node. The permission path uses it until A2b-T1 has trained the local model on
+  // permission cases: with no cloud asker the rules answer nothing and the caller keeps its own default, instead of a
+  // local model being asked something it was never measured on.
+  readonly cloudAnswers?: boolean
+  // A permission case: the request itself, journalled beside the text it sent, so the case can be reproduced (A2-T2b).
+  readonly request?: Record<string, unknown>
 }
 
 export class Decider {
@@ -133,28 +159,37 @@ export class Decider {
 
   async ask(node: string, state: Record<string, unknown>, questions: Record<string, Question>, options: AskOptions = {}): Promise<Asked> {
     const id = randomUUID()
-    const backend = this.backendFor(node, options.localOnly)
+    const backend = options.cloudAnswers ? (this.#config.mode === "cloud" && this.#askers.cloud ? "cloud" : "rules") : this.backendFor(node, options.localOnly)
     const text = JSON.stringify(state)
+    const context: AskContext = { node, ...(options.job ? { job: options.job } : {}), ...(options.task ? { task: options.task } : {}), ...(options.session ? { session: options.session } : {}) }
     const shadowName = this.#config.shadow
     // Shadow mode is the label factory for the local model (D19): in cloud mode the local backend answers beside the
-    // cloud one and is only journaled. In local mode nothing may leave the machine, so there is no second request.
-    const shadowAllowed = this.#config.mode === "cloud" && shadowName && shadowName !== backend && this.#askers[shadowName] && (LOCAL.has(shadowName) || !(options.localOnly || ALWAYS_LOCAL.has(node)))
-    const shadow = shadowAllowed ? this.#askers[shadowName]!.ask(text, questions).catch((err: unknown) => err as Error) : undefined
+    // cloud one and is only journaled. In local mode nothing may leave the machine, so there is no second request. A
+    // cloud-only node has no shadow either: the local model was never measured on it.
+    const shadowAllowed = this.#config.mode === "cloud" && !options.cloudAnswers && shadowName && shadowName !== backend && this.#askers[shadowName] && (LOCAL.has(shadowName) || !(options.localOnly || ALWAYS_LOCAL.has(node)))
+    const shadow = shadowAllowed ? this.#askers[shadowName]!.ask(text, questions, context).catch((err: unknown) => err as Error) : undefined
     let decision: Decision
     let error: string | undefined
+    let refused: EgressSummary | undefined
     try {
-      decision = await this.#askers[backend]!.ask(text, questions)
+      decision = await this.#askers[backend]!.ask(text, questions, context)
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
+      // A cloud call the egress gate kept local did not fail: it never happened, and the journal says which of the two.
+      if (err instanceof EgressRefused) refused = summary(err.outcome)
       decision = await new RulesBackend().ask()
     }
     const shadowResult = shadow ? await shadow : undefined
+    // One entry kind for every decision ("decision"), now with what A2-T2b needs to reproduce a permission case: the
+    // mode, the request, the text that actually left (redacted), and the gate's verdict. A local answer has no `sent`
+    // and no `egress`: nothing left the machine.
     this.#journal({
       kind: "decision",
       id,
       node,
       job: options.job,
       task: options.task,
+      mode: this.#config.mode,
       backend: error ? "rules" : backend,
       error,
       state,
@@ -162,6 +197,9 @@ export class Decider {
       answers: decision.answers,
       model: decision.model,
       latencyMs: decision.latencyMs,
+      ...(options.request ? { request: options.request } : {}),
+      ...(decision.sent !== undefined ? { sent: decision.sent } : {}),
+      ...((decision.egress ?? refused) ? { egress: decision.egress ?? refused } : {}),
       ...(shadowResult && shadowName
         ? shadowResult instanceof Error
           ? { shadow: { backend: shadowName, error: shadowResult.message } }

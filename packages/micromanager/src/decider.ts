@@ -6,9 +6,14 @@
 // This class is URL-agnostic on purpose: the local GLiNER/Open-Jev servers speak the same wire format. The cloud
 // client — the cloud URL and a key — is built in one place only, src/backends.ts cloudClient, and only when the
 // decider's mode is "cloud" (D11/D19). In "local" mode no key is read and no cloud URL is touched.
+//
+// A destination that is not this machine passes the egress gate (src/egress.ts) inside ask(): the redaction, the
+// preview and the user's confirmation happen here, in the one function that makes a request, so a caller with a raw
+// client cannot send anything the gate did not see (D13, A2-T6). A loopback URL is a local server and sends as before.
 
 import { execFileSync } from "node:child_process"
 
+import { egress, EgressRefused, hostOf, remote, summary, type EgressOptions, type EgressSummary } from "./egress.ts"
 import { mapStrings, scrub } from "./redact.ts"
 
 export type Question =
@@ -25,7 +30,21 @@ export interface Decision {
   readonly answers: Record<string, Answer>
   readonly model: string
   readonly latencyMs: number
+  // The redacted text that left the machine, and what the gate made of it. Absent for a local server: nothing left.
+  readonly sent?: string
+  readonly egress?: EgressSummary
 }
+
+// What the caller of an ask knows and the client needs: which node asks (the journal and the preview), for which job,
+// and — the one thing the preview cannot work without — whose session it belongs to, so the form reaches that session's
+// micromanager (A2-T6).
+export interface AskContext {
+  readonly node: string
+  readonly job?: string
+  readonly task?: string
+  readonly session?: string
+}
+
 
 export class DeciderError extends Error {}
 
@@ -36,7 +55,12 @@ export interface DecisionClientOptions {
   readonly retries?: number // on 429/529 only
   readonly maxStateChars?: number
   readonly fetch?: typeof fetch
+  // The gate for a destination that is not this machine (src/egress.ts). Without a confirm function every such request
+  // is refused before it is made: a raw client has no way to skip the gate, because this class is the only place a
+  // request happens.
+  readonly egress?: EgressOptions
 }
+
 
 // The cloud key: JEV_API_KEY, else the desktop keyring (secret-tool store --label="TypeSafe Jev API key" service
 // typesafe key jev). Only src/backends.ts cloudKey calls this, and only in "cloud" mode: a local start reads neither.
@@ -55,7 +79,8 @@ export function cloudApiKey(env: NodeJS.ProcessEnv = process.env): string | unde
 }
 
 // Private data is swapped for the vault's placeholders before the state leaves the machine (src/redact.ts); with
-// redaction off, keys and tokens are still masked.
+// redaction off, keys and tokens are still masked. A payload for another machine goes through the egress gate instead
+// (src/egress.ts), which redacts a little more and asks the user first.
 export function redact(text: string): string {
   return scrub(text)
 }
@@ -76,6 +101,8 @@ export class DecisionClient {
   readonly #retries: number
   readonly #maxStateChars: number
   readonly #fetch: typeof fetch
+  readonly #egress: EgressOptions
+  readonly #remote: boolean
 
   constructor(key: string, options: DecisionClientOptions = {}) {
     this.#key = key
@@ -85,12 +112,34 @@ export class DecisionClient {
     this.#retries = options.retries ?? 1
     this.#maxStateChars = options.maxStateChars ?? 24000
     this.#fetch = options.fetch ?? fetch
+    this.#egress = options.egress ?? {}
+    this.#remote = remote(this.#url)
   }
 
-  async ask(state: string, questions: Record<string, Question>): Promise<Decision> {
+  async ask(state: string, questions: Record<string, Question>, context?: AskContext): Promise<Decision> {
     // The newest part of the state is at the end; a cut keeps it.
     const cut = state.length > this.#maxStateChars ? state.slice(-this.#maxStateChars) : state
-    const body = JSON.stringify({ model: this.#model, state: redact(cut), questions: wireQuestions(questions) })
+    let body: string
+    let sent: string | undefined
+    let egressSummary: EgressSummary | undefined
+    if (this.#remote) {
+      // Nothing goes out of this machine without passing the gate: it redacts, previews and takes the user's answer, or
+      // it refuses and this throws before a request exists.
+      const outcome = await egress({ text: cut, questions }, {
+        ...this.#egress,
+        destination: hostOf(this.#url),
+        ...(context?.node ? { node: context.node } : {}),
+        ...(context?.job ? { job: context.job } : {}),
+        ...(context?.task ? { task: context.task } : {}),
+        ...(context?.session ? { session: context.session } : {}),
+      })
+      if (outcome.verdict !== "send") throw new EgressRefused(outcome)
+      sent = outcome.text
+      egressSummary = summary(outcome)
+      body = JSON.stringify({ model: this.#model, state: outcome.text, questions: outcome.questions })
+    } else {
+      body = JSON.stringify({ model: this.#model, state: redact(cut), questions: wireQuestions(questions) })
+    }
     const started = Date.now()
     for (let attempt = 0; ; attempt++) {
       let response: Response
@@ -111,7 +160,13 @@ export class DecisionClient {
       if (response.status === 401) throw new DeciderError("decision server: API key rejected (401)")
       if (response.status !== 200) throw new DeciderError(`decision server: HTTP ${response.status}`)
       const payload = (await response.json()) as { model?: string; answers?: Record<string, unknown> }
-      return { answers: parseAnswers(questions, payload.answers ?? {}), model: payload.model ?? this.#model, latencyMs: Date.now() - started }
+      return {
+        answers: parseAnswers(questions, payload.answers ?? {}),
+        model: payload.model ?? this.#model,
+        latencyMs: Date.now() - started,
+        ...(sent !== undefined ? { sent } : {}),
+        ...(egressSummary ? { egress: egressSummary } : {}),
+      }
     }
   }
 }

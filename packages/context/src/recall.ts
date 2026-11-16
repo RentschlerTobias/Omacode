@@ -37,7 +37,7 @@ export async function recall(store: MemoryStore, embedder: Embedder | undefined,
   const found = await search(store, embedder, task.slice(0, 4000), { ...(o.project ? { project: o.project } : {}), task: "recall", limit: 20, ...(o.exclude ? { exclude: o.exclude } : {}) })
   let hits = [...found.hits]
   if (hits.length && decider) {
-    const asked = await decider.ask("N5m", { task: task.slice(0, 2000), role: o.role, entries: hits.map((h, i) => ({ i, text: h.entry.text.slice(0, 300) })) }, recallQuestions(hits), { job: o.session ?? "" }).catch(() => undefined)
+    const asked = await decider.ask("N5m", { task: task.slice(0, 2000), role: o.role, entries: hits.map((h, i) => ({ i, text: h.entry.text.slice(0, 300) })) }, recallQuestions(hits), { job: o.session ?? "", ...(o.session ? { session: o.session } : {}) }).catch(() => undefined)
     const a = asked?.decision.answers ?? {}
     if (Object.keys(a).length) hits = hits.filter((_, i) => { const x = a[`help.${i}`]; return x?.type === "noul" ? x.noul >= NOUL_FLOOR : false })
     else hits = hits.filter(plausible(found.vectors))

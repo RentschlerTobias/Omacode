@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { buildAgenda, nextProposal } from "./agenda.ts"
-import { Decider, RulesBackend, type DeciderMode } from "./backends.ts"
+import { Decider, rulesDecider, type DeciderMode } from "./backends.ts"
 import { createHash } from "node:crypto"
 
 import {
@@ -134,7 +134,7 @@ export class Runner {
     this.#d = deps
     this.#exec = deps.exec ?? defaultExec
     this.#journal = deps.journal ?? record
-    this.#decider = deps.decider ?? new Decider({ mode: "local", default: "rules", nodes: {}, urls: {} }, { rules: new RulesBackend() }, this.#journal)
+    this.#decider = deps.decider ?? rulesDecider(this.#journal)
   }
 
   #policies(job: Job, task?: string): Policies {

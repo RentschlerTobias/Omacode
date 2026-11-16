@@ -215,3 +215,38 @@ test("browser and playwright tool inputs are web inputs: placeholders are not re
     useVault(undefined)
   }
 })
+
+// A2-T6: the deterministic redaction of a payload that leaves the machine (src/egress.ts calls it). The vault keeps no
+// entries for paths and addresses — every request carries paths — so the gate numbers them itself, and it redacts
+// whether or not the context redaction is on.
+test("egress: the home path and the addresses are found; the rest of the path stays readable", async () => {
+  const { findIps, findPaths } = await import("../packages/micromanager/src/redact.ts")
+  assert.deepEqual(findPaths("a read of /home/alice/Repos/proj/src/main.ts").map((f) => f.value), ["/home/alice"])
+  assert.deepEqual(findPaths("~/Repos/proj and /Users/bob/x and C:\\Users\\carol\\x").map((f) => f.value), ["~", "/Users/bob", "C:\\Users\\carol"])
+  assert.deepEqual(findPaths("see src/main.ts and /etc/passwd and ./build"), [], "relative and system paths name nobody")
+  assert.deepEqual(findIps("host 10.0.0.7, version 1.2.3, port 8080").map((f) => f.value), ["10.0.0.7"])
+  // A four-part version is written exactly like an address, so the gate treats it as one: over-redacting a number costs
+  // a decision nothing, and missing an address costs the user their network.
+  assert.deepEqual(findIps("version 1.2.3.4").map((f) => f.value), ["1.2.3.4"])
+})
+
+test("egress: one function redacts secrets, structured data, paths and addresses, with or without a vault", async () => {
+  const { redactEgress } = await import("../packages/micromanager/src/redact.ts")
+  const text = "Mail anna.weber@firma.de about /home/alice/Repos/proj, token sk-abcdefghijklmnopqrstuv, host 10.0.0.7, value s3cr3t-from-env"
+  const out = redactEgress(text, ["s3cr3t-from-env"])
+  for (const raw of ["anna.weber@firma.de", "/home/alice", "sk-abcdefghijklmnopqrstuv", "10.0.0.7", "s3cr3t-from-env"]) assert.equal(out.includes(raw), false, raw)
+  assert.match(out, /email1@redacted\.invalid/)
+  assert.match(out, /PATH_1\/Repos\/proj/, "the user's name goes, the path stays usable")
+  assert.match(out, /IP_1/)
+  assert.match(out, /<secret>/)
+  // With a vault the same text gets the vault's stable placeholders instead of fresh numbers.
+  const v = vault()
+  const name = v.add("Anna Weber", "person")!
+  useVault(v)
+  try {
+    assert.match(redactEgress("Anna Weber reads /home/alice/x"), new RegExp(name))
+    assert.match(redactEgress("Anna Weber reads /home/alice/x"), /PATH_1\/x/)
+  } finally {
+    useVault(undefined)
+  }
+})

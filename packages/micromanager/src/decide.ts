@@ -24,10 +24,21 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize } from "node:path"
 
-import type { Decision, DecisionClient, Question } from "./decider.ts"
+import type { Decision, Question } from "./decider.ts"
+import { DeciderError } from "./decider.ts"
+import type { Decider } from "./backends.ts"
 import { WRITERS } from "./profile.ts"
 import { MICROMANAGER, roleByAgent } from "./roles.ts"
 import { stateDir } from "./store.ts"
+
+// The node a permission case is journalled under. It is not a configured backend of its own: the mode decides, and the
+// permission path only ever uses the cloud client (src/backends.ts cloudAnswers), until A2b-T1 trains the local model
+// on these cases.
+export const PERMISSION_NODE = "N13"
+
+export interface PermissionAsker {
+  ask(state: string, questions: Record<string, Question>, context?: { node: string; request?: Record<string, unknown> }): Promise<Decision>
+}
 
 export interface PermissionRequest {
   readonly sessionID: string
@@ -622,8 +633,29 @@ export function judge(decision: Decision, request: PermissionRequest, floors: Fl
 // hard rules (forbiddenOutside) and into the external_directory layers, never asked about: it is a decision the user
 // already made in the config, not one for Jev to re-litigate per request. Default empty: with no setting, a caller's
 // behaviour is exactly what it was before the setting existed.
+
+// The asker `decide()` takes: the journaling decider, never a raw client (A2-T2b). Each case goes through
+// Decider.ask, so the journal holds the request, the text that was sent, the questions and the answers, and the
+// caller cannot quietly use a client that skips the egress gate. A case the decider could not answer throws, and
+// decide() puts it to the user as it always did.
+export function permissionAsker(decider: Decider, options: { job?: string } = {}): PermissionAsker {
+  return {
+    async ask(state, questions, context) {
+      const request = context?.request
+      const asked = await decider.ask(context?.node ?? PERMISSION_NODE, { text: state }, questions, {
+        cloudAnswers: true,
+        ...(options.job ? { job: options.job } : {}),
+        ...(typeof request?.sessionID === "string" ? { session: request.sessionID } : {}),
+        ...(request ? { request } : {}),
+      })
+      if (asked.error) throw new DeciderError(asked.error)
+      return asked.decision
+    },
+  }
+}
+
 export async function decide(
-  client: DecisionClient | undefined,
+  asker: PermissionAsker | undefined,
   request: PermissionRequest,
   floors: Floors = DEFAULT_FLOORS,
   inspect: Inspect = inspectPaths,
@@ -682,11 +714,12 @@ export async function decide(
     }
   }
   if (preset) return { verdict: preset, reason: `preset by the user's policy (${preset})` }
-  if (!client) return { verdict: "user", reason: "no decision client" }
+  if (!asker) return { verdict: "user", reason: "no decision client" }
   try {
     const state = facts.length > 0 ? `${describe(request)}\n${relevanceFacts(facts)}` : describe(request)
     const questions = facts.length > 0 ? { ...PERMISSION_QUESTIONS, path_relevance: RELEVANCE_QUESTION } : PERMISSION_QUESTIONS
-    return judge(await client.ask(state, questions), request, floors)
+    const caseFacts = { sessionID: request.sessionID, agent: request.agent, action: request.action, resources: request.resources, directory: request.directory, task: request.task }
+    return judge(await asker.ask(state, questions, { node: PERMISSION_NODE, request: caseFacts }), request, floors)
   } catch (err) {
     return { verdict: "user", reason: `the decision client failed: ${err instanceof Error ? err.message : String(err)}` }
   }

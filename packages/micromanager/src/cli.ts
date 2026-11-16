@@ -75,6 +75,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
   if (command === "bench-guards") {
+    // Guards are local-only; the config is "local", so no cloud client is built and the egress gate is never consulted.
     const config = { ...DEFAULT_BACKENDS, urls: { ...DEFAULT_BACKENDS.urls, gliner: flag(args, "url") ?? DEFAULT_BACKENDS.urls.gliner } }
     const decider = new Decider(config, makeAskers(config, undefined), () => {})
     const cases = loadCases(flag(args, "cases") ?? "bench/guard_cases.json")
@@ -86,7 +87,12 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "bench-n7") {
     // N7 follows the configured decider mode, like the plugin: "local" asks the local server and reads no key,
     // "cloud" reads the key. The journal is not written, so bench runs never become training rows.
+    //
+    // The clients go through the same egress gate as the plugin's (A2-T6), and this process has nobody to show a preview
+    // to, so in cloud mode every payload is kept local and nothing leaves the machine. That is not a failure of the
+    // bench: it is the gate doing its job where no confirmation can arrive, and it is said out loud.
     const config = { ...DEFAULT_BACKENDS, mode: loadSettings().mode }
+    if (config.mode === "cloud") console.error("cloud bench: no preview channel in this process, so every decision is kept local and nothing is sent (A2-T6)")
     const decider = new Decider(config, makeAskers(config, cloudKey(config)), () => {})
     console.log(formatN7(await scoreN7(decider, loadN7(flag(args, "cases") ?? "bench/followup_cases.json"))))
     return 0

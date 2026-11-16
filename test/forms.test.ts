@@ -53,3 +53,32 @@ test("a job's control: started by the form or by having run before; options fall
   assert.deepEqual(lastOptions(project), { auto: false, parallel: true, review: true })
   assert.deepEqual(optionsOf({ auto: true }, lastOptions(project)), { auto: true, parallel: true, review: true })
 })
+
+// A2-T6: the preview a cloud send needs. The existing question path carries three answers, so "send", "keep it local"
+// and "cancel" fit it exactly; the form's header is what the plugin reads the answer by.
+test("the cloud preview asks the three answers the gate needs, and reads them back", async () => {
+  const { PreviewRequests, previewAnswer, previewForm, previewHeader, previewNote } = await import("../packages/micromanager/src/preview.ts")
+  const entries: Record<string, unknown>[] = []
+  const previews = new PreviewRequests((e) => entries.push(e), 50)
+  const request = { destination: "api.example.com", node: "N13", session: "ses_w", text: "the redacted text", questions: ["answer"], words: 3, changed: true, unredactable: false, replaced: ["email"] }
+  const { pending, answer, fresh } = previews.open(request)
+  assert.equal(fresh, true)
+  const form = previewForm(pending)
+  assert.equal(form[0]!.header, previewHeader(pending.id))
+  assert.match(form[0]!.header, /^Send S\d+$/)
+  assert.deepEqual(form[0]!.options.map((o) => o.label), ["Send it", "Keep it local", "Cancel"])
+  assert.match(form[0]!.question, /api\.example\.com/)
+  assert.match(form[0]!.question, /the redacted text/, "the preview shows the payload itself")
+  assert.ok(form[0]!.header.length <= 30)
+  assert.deepEqual(previewAnswer(["Send it"]), "send")
+  assert.deepEqual(previewAnswer(["Keep it local"]), "keep-local")
+  assert.deepEqual(previewAnswer(["Cancel"]), "cancel")
+  assert.equal(previewAnswer(["something else"]), undefined)
+  // A typed yes or no is taken the same way; a label the user wrote that is neither is no answer, and it keeps waiting.
+  assert.equal(previewAnswer(["yes"]), "send")
+  assert.equal(previewAnswer(["nein"]), "keep-local")
+  assert.match(previewNote(pending), new RegExp(formInput(form).slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))
+  assert.equal((await answer), "keep-local", "without an answer, nothing is sent")
+  assert.equal(entries.find((e) => e.event === "timeout")?.id, pending.id)
+  assert.equal(previews.get(pending.id), undefined, "the preview is gone once it is settled")
+})
