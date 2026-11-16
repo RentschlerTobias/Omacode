@@ -1179,6 +1179,11 @@ test("config migration: cloudOnly true becomes mode cloud and says so; false or 
   const lines: string[] = []
   assert.equal(parseMode('{"cloudOnly": true}', lines), "cloud")
   assert.equal(lines.length, 1, "one line for the upgrade output")
+  assert.equal(
+    lines[0],
+    'config: "cloudOnly": true is now "decider": { "mode": "cloud" } — "cloudOnly" was removed in A2 (D11 gave the decider two modes, and cloudOnly is not one), so this file names the mode it meant; write "mode": "local" to keep everything on this machine',
+    "A2-T9: the exact sentence, so a rewritten upgrade output has to be a deliberate change",
+  )
   assert.match(lines[0]!, /cloudOnly/)
   assert.match(lines[0]!, /"mode": "cloud"/)
   assert.match(lines[0]!, /removed in A2/)
@@ -1196,7 +1201,7 @@ test("config migration: cloudOnly true becomes mode cloud and says so; false or 
   const settings = loadSettings(path)
   assert.equal(settings.mode, "cloud")
   assert.equal(settings.migrations.length, 1)
-  assert.match(settings.migrations[0]!, /"mode": "cloud"/)
+  assert.equal(settings.migrations[0], lines[0], "the line the plugin logs is the one the parser produced")
 })
 
 test("feedback at the plan gate makes the planner write the plan again, with the feedback as a decision", async () => {

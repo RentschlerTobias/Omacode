@@ -1,7 +1,9 @@
 import assert from "node:assert/strict"
+import { readdirSync, readFileSync } from "node:fs"
+import { join } from "node:path"
 import { test } from "node:test"
 
-import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, label, makeAskers, rulesDecider, RulesBackend, type Asker, type BackendName, type CloudConsent } from "../packages/micromanager/src/backends.ts"
+import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, label, makeAskers, rulesDecider, RulesBackend, type Asker, type BackendConfig, type BackendName, type CloudConsent } from "../packages/micromanager/src/backends.ts"
 import { DecisionClient, DeciderError, type Question } from "../packages/micromanager/src/decider.ts"
 import { EgressRefused, type EgressRequest } from "../packages/micromanager/src/egress.ts"
 import { glinerRows, openJevRows, renderState, splitOf } from "../packages/micromanager/src/dataset.ts"
@@ -101,6 +103,75 @@ test("local mode builds no cloud client and never reads a key", () => {
   const d = new Decider(local, askers, () => {})
   assert.equal(d.backendFor("N5"), "gliner", "the cloud default is demoted to the local chain")
   assert.equal(d.backendFor("G0"), "gliner")
+})
+
+// A2-T9: in local mode nothing reads the cloud key and nothing reads the cloud URL. The config's cloud URL is a getter
+// that throws when it is touched, and the transport records every destination so a request that left this machine is
+// visible instead of being swallowed by the decider's fallback. The construction paths are the plugin's (cloudKey then
+// makeAskers), the CLI's two (bench-guards without a key, bench-n7 with cloudKey), and the runner's rules-only decider.
+test("local mode never reads the cloud key or the cloud URL, on any construction or backend path", async () => {
+  let keyReads = 0
+  const readKey = () => {
+    keyReads++
+    throw new Error("the cloud key was read in local mode")
+  }
+  // A fresh local config each time, so the cloud URL getter is armed again for each construction path.
+  const local = (): BackendConfig => ({
+    mode: "local",
+    default: DEFAULT_BACKENDS.default,
+    nodes: DEFAULT_BACKENDS.nodes,
+    urls: {
+      get gliner() {
+        return DEFAULT_BACKENDS.urls.gliner
+      },
+      get openjev() {
+        return DEFAULT_BACKENDS.urls.openjev
+      },
+      get cloud(): string {
+        throw new Error("the cloud URL was read in local mode")
+      },
+    },
+  })
+  const sent: { url: string; authorization: string | null }[] = []
+  const transport = (async (url: string, init: RequestInit) => {
+    sent.push({ url, authorization: new Headers(init.headers).get("Authorization") })
+    return Response.json({ model: "gliner", answers: {} })
+  }) as unknown as typeof fetch
+
+  // plugin.setup: cloudKey(backends) then makeAskers(backends, key, …, egress).
+  const plugin = local()
+  const pluginKey = cloudKey(plugin, readKey)
+  assert.equal(pluginKey, undefined)
+  const pluginAskers = makeAskers(plugin, pluginKey, transport, () => true, {
+    confirm: async () => {
+      throw new Error("a local payload was put to the egress gate")
+    },
+  })
+  assert.equal(pluginAskers.cloud, undefined)
+  // cli.ts bench-guards: makeAskers(config, undefined).
+  assert.equal(makeAskers(local(), undefined, transport, () => true).cloud, undefined)
+  // cli.ts bench-n7: cloudKey(config) then makeAskers(config, key).
+  const bench = local()
+  const benchKey = cloudKey(bench, readKey)
+  assert.equal(benchKey, undefined)
+  assert.equal(makeAskers(bench, benchKey, transport, () => true).cloud, undefined)
+  // runner.ts: a rules-only decider with no URL that could be read.
+  const rules = rulesDecider(() => {})
+  for (const node of ["N1", "N5", "N13", "G0"]) assert.equal(rules.backendFor(node), "rules", node)
+  assert.equal(keyReads, 0, "no construction path read the key")
+
+  // Every backend path of the decider: the local server answers, on loopback, with the local placeholder key.
+  const d = new Decider(plugin, pluginAskers, () => {})
+  for (const node of ["N1", "N5", "N13", "N13.grant", "N13.check_bug", "N17", "G0", "G0.injection", "G"]) {
+    const asked = await d.ask(node, { text: "run the tests" }, QUESTIONS, { session: "ses_w" })
+    assert.equal(asked.backend, "gliner", `${node} is answered on this machine`)
+  }
+  assert.ok(sent.length > 0, "the local server did answer")
+  for (const request of sent) {
+    assert.match(request.url, /^http:\/\/(127\.0\.0\.1|localhost):\d+\//, `a local run sent ${request.url}`)
+    assert.equal(request.authorization, "Bearer local", "the local server's placeholder, never a cloud key")
+  }
+  assert.equal(keyReads, 0, "and no ask read the key either")
 })
 
 test("cloud mode reads the key and builds the cloud client", () => {
@@ -367,25 +438,44 @@ test("the rulebook version is bumped, and every decision names it", async () => 
   assert.equal(entries[0]!.rulebook, RULEBOOK_VERSION)
 })
 
-// The old guard id is gone from the code the plugin runs and from the bench. Written in two pieces so this test
-// itself does not become the match it looks for; the roadmap and the dated logs in docs/plan.md are history.
-test("the removed guard appears nowhere in the code, the bench or the live docs", async () => {
-  const { readFileSync, readdirSync } = await import("node:fs")
-  const { join } = await import("node:path")
-  const needle = "refusal" + "_likely"
-  const files: string[] = []
+// A2-T4/A2-T9: the removed guard appears nowhere in the code the plugin runs, the bench measures, the tests read or
+// the live docs describe (README.md, docs/design.md). The scan is the repo's literal scan (test/literals.test.ts) in
+// miniature: it reads every file and fails naming each hit with file:line; its checker is also run over a fixture
+// below, so "no hit" is not the only outcome it can produce.
+//
+// docs/roadmap/omacode-roadmap.md and docs/plan.md are not scanned. The roadmap is the frozen task text that names the
+// removed guard on purpose, and docs/plan.md is the dated Phase-A record (2026-11) of the state before A2: history, not
+// code. The scan asserts that the roadmap still names it, so the exclusion is a real one and not a needle that stopped
+// matching anything.
+function scanFor(dirs: readonly string[], needle: string): string[] {
+  const hits: string[] = []
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === "node_modules" || entry.name === ".venv") continue
+      if (entry.name === "node_modules" || entry.name === ".venv" || entry.name === "dist") continue
       const path = join(dir, entry.name)
       if (entry.isDirectory()) walk(path)
-      else if (/\.(ts|json|md)$/.test(entry.name)) files.push(path)
+      else if (/\.(ts|tsx|js|json|md|yml|yaml|py|sh|txt|toml)$/.test(entry.name)) hits.push(...checkFile(path, readFileSync(path, "utf8"), needle))
     }
   }
-  for (const dir of ["packages", "bench", "test"]) walk(dir)
-  files.push("README.md", "docs/design.md")
-  const found = files.filter((f) => readFileSync(f, "utf8").includes(needle))
-  assert.deepEqual(found, [], `the removed guard still appears in ${found.join(", ")}`)
+  for (const dir of dirs) walk(dir)
+  return hits
+}
+
+function checkFile(path: string, text: string, needle: string): string[] {
+  const hits: string[] = []
+  for (const [index, line] of text.split("\n").entries()) if (line.includes(needle)) hits.push(`${path}:${index + 1}`)
+  return hits
+}
+
+test("the removed guard appears nowhere in the code, the bench, the tests or the live docs", () => {
+  const needle = "refusal" + "_likely"
+  const liveDocs = ["README.md", "docs/design.md"].flatMap((file) => checkFile(file, readFileSync(file, "utf8"), needle))
+  const hits = [...scanFor(["packages", "bench", "test"], needle), ...liveDocs]
+  assert.deepEqual(hits, [], `the removed guard still appears:\n${hits.map((hit) => `  ${hit}`).join("\n")}`)
+  // The checker reports a hit and names its line: the scan above is not a search for nothing.
+  assert.deepEqual(checkFile("bench/fixture.json", `{\n  "guard": "${needle}"\n}`, needle), ["bench/fixture.json:2"])
+  // The excluded history really names the guard, so the exclusion is doing the work it claims.
+  assert.match(readFileSync("docs/roadmap/omacode-roadmap.md", "utf8"), new RegExp(needle), "the roadmap names the removed guard")
 })
 
 // The plugin's consent in miniature: the answer it already holds, or a refusal. The state machine itself is tested
@@ -508,4 +598,33 @@ test("an overridden guard is scoped to its session, and a sensitive payload refu
   assert.equal(untouched.backend, "gliner")
   assert.match(String(entries.at(-1)!.consent), /changed nothing in \d+ words/)
   assert.equal(calls.filter((c) => c.startsWith("cloud:")).length, before, "still no cloud request")
+})
+
+// A2-T5/A2-T9: the override the guards need is the CloudOptIn's second answer, and it is a property of the session. The
+// consent here is the plugin's in miniature: it reads the opt-in for the ask's session, and nothing else.
+test("a guard reaches the cloud only with its session's override, and the override does not outlive the session", async () => {
+  const { CloudOptIn } = await import("../packages/micromanager/src/preview.ts")
+  const optIns = new CloudOptIn(() => {})
+  const consent: CloudConsent = {
+    async allows(session) {
+      return optIns.state(session ?? "no-session")
+    },
+  }
+  const calls: string[] = []
+  const askers = { cloud: fixed(jevAnswers, calls, "cloud"), gliner: fixed(jevAnswers, calls, "gliner"), rules: new RulesBackend() }
+  const d = new Decider({ ...DEFAULT_BACKENDS, mode: "cloud" }, askers, () => {}, consent)
+  const guard = () => d.ask("G0", { text: "a job" }, { harmful: QUESTIONS.harmful! }, { session: "ses_w" })
+
+  // No answer yet: the guard stays on this machine.
+  assert.equal((await guard()).backend, "gliner", "not opted in")
+  // "Cloud for this session": ordinary decisions may go, the guards may not. The second answer is separate.
+  optIns.remember("ses_w", undefined, "cloud")
+  assert.equal((await guard()).backend, "gliner", "a plain opt-in does not carry the guards")
+  // "Cloud and guards": now, and only now, the guard's question may leave.
+  optIns.remember("ses_w", undefined, "guards")
+  assert.equal((await guard()).backend, "cloud")
+  // The session ends: its answer and the override with it, so the same guard is local again.
+  optIns.drop(["ses_w"])
+  assert.equal((await guard()).backend, "gliner", "the override does not outlive its session")
+  assert.equal(calls.filter((c) => c.startsWith("cloud:")).length, 1, "one cloud ask, only while the override stood")
 })

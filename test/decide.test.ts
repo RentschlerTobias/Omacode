@@ -775,3 +775,113 @@ test("the grant and check_bug questions are journaled like every other permissio
   assert.match(String(check.sent), /Check: npm test/)
   assert.deepEqual(Object.keys(check.questions as object), ["check_bug"])
 })
+
+// A2-T9: cloud mode without a confirmation sends nothing from each direct call site. "No confirmation" covers both
+// shapes the plugin can meet: no preview channel at all (a headless run, the CLI's construction) and a user who keeps
+// the payload local or cancels it. The transport records every body, the journal says the decision stayed local, and
+// each caller falls back to the value it used before the ask existed.
+function unansweredCloud(kind: "none" | "keep-local" | "cancel") {
+  const bodies: { state?: string; questions?: unknown }[] = []
+  const previews: { node?: string; text: string }[] = []
+  const fetcher = (async (_url: string, init: RequestInit) => {
+    bodies.push(JSON.parse(String(init.body)) as { state?: string; questions?: unknown })
+    return Response.json({
+      model: "cloud",
+      answers: {
+        answer: { type: "choice", choice: "allow", confidence: 0.96, probabilities: { allow: 0.96, deny: 0.04 } },
+        needs_user: { type: "noul", noul: 0.1 },
+        risk: { type: "score", score: 0.6, confidence: 0.9, probabilities: {} },
+        harmless: { type: "noul", noul: 0.95 },
+        check_bug: { type: "noul", noul: 0.9 },
+      },
+    })
+  }) as unknown as typeof fetch
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  // The CLI's shape has no egress options at all; the plugin's has a confirm function that is not answered "send".
+  const askers = makeAskers(config, "k", fetcher, () => false, kind === "none" ? undefined : { confirm: async (request) => { previews.push(request); return kind === "cancel" ? "cancel" : "keep-local" } })
+  const consent = { async allows() { return { allow: true, guards: false, why: "test" } } }
+  return { decider: new Decider(config, askers, (e) => entries.push(e), consent), entries, bodies, previews }
+}
+
+test("cloud mode without a confirmation sends nothing from each permission call site", async () => {
+  for (const answer of ["none", "keep-local", "cancel"] as const) {
+    const expectedVerdict = answer === "none" ? "no-channel" : answer
+
+    // 1. decide()'s own permission asker (the hook's permission case).
+    const decided = unansweredCloud(answer)
+    const outcome = await decide(permissionAsker(decided.decider, { job: "job-1" }), req("shell", ["npm test"]))
+    assert.equal(outcome.verdict, "user", `${answer}: the user decides, as without a client`)
+    assert.match(outcome.reason, /kept local/, answer)
+    assert.equal(decided.bodies.length, 0, `${answer}: nothing was sent`)
+    assert.equal(decided.previews.length, answer === "none" ? 0 : 1, `${answer}: ${answer === "none" ? "no preview channel, so no preview" : "one preview before the answer"}`)
+    const d = decided.entries.find((x) => x.kind === "decision")!
+    assert.deepEqual([d.node, d.mode, d.backend, d.sentText, d.sent], ["N13", "cloud", "rules", false, undefined], `${answer}: the journal says it stayed local`)
+    assert.equal((d.egress as { verdict: string }).verdict, expectedVerdict)
+    assert.deepEqual(d.request, { sessionID: "ses_1", agent: "coder", action: "shell", resources: ["npm test"], directory: "/p", task: "Add a --verbose flag." }, "the request is kept")
+
+    // 2. the grant harmless check.
+    const grant = unansweredCloud(answer)
+    const harmless = await askGrantHarmless(grant.decider, { kind: "network", name: "docs.example.org", why: "the build fetches the docs", task: "T1 Build docs", session: "ses_w", job: "job-1" })
+    assert.equal(harmless, 0, `${answer}: no answer means "ask the user"`)
+    assert.equal(grant.bodies.length, 0, `${answer}: nothing was sent`)
+    assert.equal(grant.previews.length, answer === "none" ? 0 : 1, `${answer}: the grant payload was previewed once`)
+    const g = grant.entries.find((x) => x.kind === "decision")!
+    assert.deepEqual([g.node, g.mode, g.backend, g.sentText, g.sent], ["N13.grant", "cloud", "rules", false, undefined])
+    assert.equal((g.egress as { verdict: string }).verdict, expectedVerdict)
+    assert.equal((g.request as { name: string }).name, "docs.example.org", "the grant request is kept")
+
+    // 3. the check_bug prefilter.
+    const bug = unansweredCloud(answer)
+    const p = await askCheckBug(bug.decider, { task: "T1 Build docs", target: "npm test", problem: "the check is out of date", evidence: "line 4 expects 2", session: "ses_w", job: "job-1", taskId: "T1" })
+    assert.equal(p, 1, `${answer}: no answer means the check stands`)
+    assert.equal(bug.bodies.length, 0, `${answer}: nothing was sent`)
+    assert.equal(bug.previews.length, answer === "none" ? 0 : 1, `${answer}: the check_bug payload was previewed once`)
+    const c = bug.entries.find((x) => x.kind === "decision")!
+    assert.deepEqual([c.node, c.mode, c.backend, c.sentText, c.sent], ["N13.check_bug", "cloud", "rules", false, undefined])
+    assert.equal((c.egress as { verdict: string }).verdict, expectedVerdict)
+    assert.equal((c.request as { target: string }).target, "npm test", "the change request is kept")
+  }
+})
+
+// A2-T9: a permission path whose backend falls over is a degradation, and the decider journals it rather than leaving
+// the case silent. The asker turns the backend error into a thrown DeciderError (the plugin's grant and check_bug sites
+// catch it and carry on), and each case keeps its own default.
+function brokenCloudDecider(failure: "down" | "timeout") {
+  const attempted: string[] = []
+  const fetcher = (async (url: string) => {
+    attempted.push(url)
+    throw Object.assign(new Error(failure === "timeout" ? "the request timed out" : "connection refused"), { name: failure === "timeout" ? "TimeoutError" : "TypeError" })
+  }) as unknown as typeof fetch
+  const entries: Entry[] = []
+  const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+  const askers = makeAskers(config, "k", fetcher, () => false, { confirm: async () => "send" })
+  const consent = { async allows() { return { allow: true, guards: false, why: "test" } } }
+  return { decider: new Decider(config, askers, (e) => entries.push(e), consent), entries, attempted }
+}
+
+test("a permission path whose decider fails is journaled as a fallback, not silent", async () => {
+  for (const failure of ["down", "timeout"] as const) {
+    const broken = brokenCloudDecider(failure)
+    const outcome = await decide(permissionAsker(broken.decider, { job: "job-1" }), req("shell", ["npm test"]))
+    assert.equal(outcome.verdict, "user", `${failure}: the user decides`)
+    assert.match(outcome.reason, /the decision client failed: decision server unreachable: (TypeError|TimeoutError)/)
+    assert.equal(broken.attempted.length, 1, `${failure}: the cloud was tried once, then given up on`)
+    const e = broken.entries.find((x) => x.kind === "decision")!
+    assert.equal(e.kind, "decision")
+    assert.equal(e.node, "N13")
+    assert.equal(e.backend, "rules", `${failure}: the fallback is named in the journal`)
+    assert.equal(e.sentText, false)
+    assert.equal(e.sent, undefined)
+    assert.match(String(e.error), /decision server unreachable/)
+    assert.deepEqual(Object.keys(e.questions as object).sort(), ["answer", "needs_user", "risk"])
+    assert.deepEqual(Object.keys(e.answers as object), [], "rules answered nothing, so the caller's default stands")
+
+    // The grant site: the same failure is journaled, and the caller gets its safe default (0 = ask the user).
+    const grant = brokenCloudDecider(failure)
+    assert.equal(await askGrantHarmless(grant.decider, { kind: "env", name: "API_TOKEN", why: "the check needs it", task: "T1", session: "ses_w", job: "job-1" }), 0)
+    const g = grant.entries.find((x) => x.kind === "decision")!
+    assert.deepEqual([g.node, g.backend, g.sentText], ["N13.grant", "rules", false])
+    assert.match(String(g.error), /decision server unreachable/)
+  }
+})

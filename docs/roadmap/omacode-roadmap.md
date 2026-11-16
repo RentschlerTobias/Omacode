@@ -476,27 +476,33 @@ redaction is enforced **inside** it. `refusal_likely` is gone and the rulebook r
 
 **Tasks**
 
-- [ ] **A2-T1 — Modes.** `decider.mode: "local" | "cloud"`. Backends: `gliner` (local), `openjev` (local, disabled
+- [x] **A2-T1 — Modes.** `decider.mode: "local" | "cloud"`. Backends: `gliner` (local), `openjev` (local, disabled
   when no server is installed), `cloud` (was `typesafe`), `rules`. `cloudOnly` is removed; `default`/`nodes` become
   per-node overrides only. Config migration maps old values and **logs the migrated mode loudly** (`cloudOnly: true`
   must not silently become `mode: cloud` without a line in the upgrade output).
-- [ ] **A2-T2 — Demote, don't delete.** Remove the **keyring requirement** and the implicit default. One client,
+  - *Reality:* no backend was ever parsed from the file — `default`/`nodes` lived only in `DEFAULT_BACKENDS` — so migration applies to the mode only, and a stale backend id falls back to `rules` with the type error it always was.
+- [x] **A2-T2 — Demote, don't delete.** Remove the **keyring requirement** and the implicit default. One client,
   constructible only when `mode === "cloud"`. No keyring read in `local` mode.
-- [ ] **A2-T2b — Journal permission decisions.** Route `decide()` through the decider so each permission case records
+  - *Reality:* the keyring and the implicit default are gone; one class, constructible only in cloud mode, and local mode reads neither key nor URL (a test makes the URL getter throw).
+- [x] **A2-T2b — Journal permission decisions.** Route `decide()` through the decider so each permission case records
   the request, the **state text sent**, the questions, and the answers. Today `plugin.ts:1798` calls the raw client and
   only `Decider.ask` journals (`backends.ts:113`), so the inputs cannot be reproduced for training. `capture()`
   (`packages/context/src/capture.ts:52,63`) has the same shape: it takes a raw `Asker`, not the `Decider`, so `N17`
   decisions are unjournaled too. (Was A2b-T1; it belongs here because A2-T9 depends on it.)
-- [ ] **A2-T3 — Rename.** `jev.ts` → `decider.ts`; `Jev` → `DecisionClient`; `JevError` → `DeciderError`. Docs say
+  - *Reality:* the `decision` entry gained `mode`, `request`, `sent` and `egress`; the preview answer is its own entry, like a grant, because it arrives long before the decision exists. `sent` is the JSON state the client posted, not a bare string.
+- [x] **A2-T3 — Rename.** `jev.ts` → `decider.ts`; `Jev` → `DecisionClient`; `JevError` → `DeciderError`. Docs say
   "decision client". The local servers keep the same wire format.
-- [ ] **A2-T4 — Drop `refusal_likely`.** Remove from `catalog.ts`, `gate.ts`, `backends.ts`, `schema.ts`, tests, docs,
+  - *Reality:* `JevOptions`/`apiKey` moved with the class (`DecisionClientOptions`/`cloudApiKey`); the local servers' wire format is untouched.
+- [x] **A2-T4 — Drop `refusal_likely`.** Remove from `catalog.ts`, `gate.ts`, `backends.ts`, `schema.ts`, tests, docs,
   bench. Guards become `injection`, `harmful`, `sensitive`. **Bump the rulebook version.** The eval re-run moves to
   A2b, because the labels come from the journal and the cloud client is being demoted in this same job.
-- [ ] **A2-T5 — Cloud mode.** Every node may ask cloud, after the T6 flow: per-session opt-in, re-confirmed per session;
+  - *Reality:* **no rulebook existed yet** (C1-T1 ships it), so the version was introduced as `RULEBOOK_VERSION = 2` and is journalled on every decision; the bench re-run stays with A2b. The routing that used the removed number is an `uncensored` reroute, so runtime behaviour stays.
+- [x] **A2-T5 — Cloud mode.** Every node may ask cloud, after the T6 flow: per-session opt-in, re-confirmed per session;
   journal records mode, backend and that text was sent; guards stay local unless overridden **for that session only**.
   **"Unredactable" is defined:** the payload carries a `sensitive` guard flag, **or** redaction changed nothing in a
   non-trivial text (> 20 words). Overriding is refused for unredactable payloads.
-- [ ] **A2-T6 — Redaction, enforced in one place.** Deterministic redaction (emails, paths, tokens, keys, IPs, env
+  - *Reality:* the opt-in is per session, forgotten when the session ends, and re-asked after twelve hours or a different real job id; memory/compaction paths pass a source rather than a job, so only `job-…` ids count as a change. A root micromanager session has no parent to put the form to and stays local; delegated workers can opt in.
+- [x] **A2-T6 — Redaction, enforced in one place.** Deterministic redaction (emails, paths, tokens, keys, IPs, env
   secrets) implemented **inside `DecisionClient`** — or one wrapper that every call goes through — because four sites
   hold a raw client and would otherwise bypass it, all constructed at `plugin.ts:1004`: `plugin.ts:1148` (grant
   harmless check), `plugin.ts:1184` (`check_bug`), `plugin.ts:1798` (`decide()`), and
@@ -507,10 +513,13 @@ redaction is enforced **inside** it. `refusal_likely` is gone and the rulebook r
     ("send", "keep local", "cancel");
   - local NER ⇒ redact names/orgs, preview, allow "send";
   - no confirmation, no request.
-- [ ] **A2-T7 — Service rename.** `decider/jev-decider.service` → `decider/decider.service`; package/script `decider`.
-- [ ] **A2-T8 — Docs.** `README.md`, `docs/design.md` §20/§21, tool descriptions; and a note that `cloud` without NER
+  - *Reality:* the gate lives in `DecisionClient.ask`, the only place a request is made, so no raw client, CLI or test can bypass it; the preview rides the existing deferred-form path with Send/Keep local/Cancel. The two detectors it lacked (home-path prefix, IPv4) were added next to the existing ones.
+- [x] **A2-T7 — Service rename.** `decider/jev-decider.service` → `decider/decider.service`; package/script `decider`.
+  - *Reality:* the unit, the pyproject project/script and `uv.lock` are `decider`; the server's startup line says so too.
+- [x] **A2-T8 — Docs.** `README.md`, `docs/design.md` §20/§21, tool descriptions; and a note that `cloud` without NER
   costs a confirmation round-trip per call, which may be worse than `local` + ask.
-- [ ] **A2-T9 — Tests.**
+  - *Reality:* README and design §20/§21 describe the modes, the demoted client and the round trip cloud-without-NER costs; the old design sections still say Jev, which is history rather than a tool description.
+- [x] **A2-T9 — Tests.**
   - `local` mode: **no cloud key and no cloud URL** is read or constructed. (Not "no client": the local backends are
     the same client class — `backends.ts:55-56`.)
   - `cloud` mode without confirmation sends nothing, from **each** of the four direct call sites.
@@ -519,7 +528,8 @@ redaction is enforced **inside** it. `refusal_likely` is gone and the rulebook r
   - permission path degradation is journaled (T2b), not silent.
   - migration from `cloudOnly: true` reports the new mode.
 
-**Files:** `packages/micromanager/src/{backends,decider,catalog,gate,config,plugin,plan,runner}.ts`,
+
+  - *Reality:* the audit filled the gaps it found (local never reads the cloud URL, all four sites send nothing without a confirmation, guard override through the real `CloudOptIn`, degradation journaled, exact migration sentence). The inline `plugin.ts` hook bodies are proven at the function they call, not end to end — the same limit A1-T9 recorded; a decider that throws before journaling is structurally unjournalable and says so.**Files:** `packages/micromanager/src/{backends,decider,catalog,gate,config,plugin,plan,runner}.ts`,
 `packages/context/src/capture.ts`, `decider/`, `docs/design.md`, `README.md`,
 `test/{backends,decide,guard,session,runner,permissions}.test.ts`.
 

@@ -164,3 +164,39 @@ test("N17 is journaled with the text it sent, and a memory write names the decis
   const write = entries.find((e) => e.kind === "memory.write")!
   assert.equal(write.decision, decision.id, "the write names the decision that made it")
 })
+
+// A2-T9: the fourth direct call site, N17, without a confirmation. The transport records every body; with no preview
+// channel at all, or with the user keeping it local or cancelling, nothing is sent, the decision is journaled as kept
+// local, and the memory write says it was made without the cloud.
+test("N17 without a confirmation sends nothing and the journal says the decision stayed local", async () => {
+  for (const kind of ["none", "keep-local", "cancel"] as const) {
+    const s = new MemoryStore(dir(), { git: false })
+    s.add({ scope: "project", project: "p", text: "The parser skips empty lines before the header", pinned: false })
+    const entries: Record<string, unknown>[] = []
+    const bodies: { state?: string }[] = []
+    const previews: { node?: string; text: string }[] = []
+    const fetcher = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)) as { state?: string })
+      return Response.json({ model: "cloud", answers: { lasting: { type: "noul", noul: 0.9 } } })
+    }) as unknown as typeof fetch
+    const config = { ...DEFAULT_BACKENDS, mode: "cloud" as const }
+    const askers = makeAskers(config, "k", fetcher, () => false, kind === "none" ? undefined : { confirm: async (request) => { previews.push(request); return kind === "cancel" ? "cancel" : "keep-local" } })
+    const consent = { async allows() { return { allow: true, guards: false, why: "test" } } }
+    const decider = new Decider(config, askers, (e) => entries.push(e), consent)
+
+    const verdict = await capture(s, undefined, decider, { text: "Tests run with uv run pytest; mail anna.weber@firma.de if they fail", source: "LEARNED ses_w" }, { project: "p", session: "ses_w", journal: (e) => entries.push(e) })
+    assert.equal(verdict.kind, "added", kind)
+    assert.equal(bodies.length, 0, `${kind}: nothing was sent`)
+    assert.equal(previews.length, kind === "none" ? 0 : 1, `${kind}: ${kind === "none" ? "no preview channel" : "the payload was previewed once"}`)
+    if (previews.length) assert.equal(previews[0]!.node, "N17")
+
+    const decision = entries.find((e) => e.kind === "decision")!
+    assert.deepEqual([decision.node, decision.mode, decision.backend, decision.sentText, decision.sent], ["N17", "cloud", "rules", false, undefined], `${kind}: the journal says it stayed local`)
+    assert.equal((decision.egress as { verdict: string }).verdict, kind === "none" ? "no-channel" : kind)
+    assert.deepEqual(Object.keys(decision.questions as object).sort(), ["lasting", "scope", "useful"])
+
+    const write = entries.find((e) => e.kind === "memory.write")!
+    assert.equal(write.jev, false, `${kind}: the write knows no decision client answered`)
+    assert.equal(write.decision, decision.id)
+  }
+})
