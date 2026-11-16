@@ -39,6 +39,7 @@
     "./runner": "./src/runner.ts",
     "./paths": "./src/paths.ts",
     "./png": "./src/png.ts",
+    "./stage": "./src/stage.ts",
     "./storyboard": "./src/storyboard.ts",
     "./qa": "./src/qa.ts",
     "./comfyui": "./src/comfyui.ts",
