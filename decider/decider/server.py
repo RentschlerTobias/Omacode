@@ -276,7 +276,7 @@ def main() -> None:
     if not args.no_preload:
         classifier.preload()
     server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner"))
-    print(f"jev-decider on http://{args.host}:{args.port} ({args.model}, CPU)", flush=True)
+    print(f"decider on http://{args.host}:{args.port} ({args.model}, CPU)", flush=True)
     server.serve_forever()
 
 

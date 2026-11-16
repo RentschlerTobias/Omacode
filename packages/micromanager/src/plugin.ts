@@ -12,9 +12,9 @@ import { cloudRegistry, configPath, loadPicks, loadSettings } from "./config.ts"
 import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
 import { injected, injectionScore } from "./gate.ts"
 import { backstop, DELEGATION_TOOLS, delegationRole, notRouted, resultText, rewriteResult, routeDelegation, unownedDelegation, type ChildSession, type ToolCall } from "./hooks.ts"
-import { Jev, apiKey, redact, type Question as JevQuestion } from "./jev.ts"
+import { redact, type Question as DecisionQuestion } from "./decider.ts"
 import { journalPath, record } from "./journal.ts"
-import { DEFAULT_BACKENDS, Decider, makeAskers } from "./backends.ts"
+import { DEFAULT_BACKENDS, Decider, backendNotes, cloudClient, cloudKey, makeAskers } from "./backends.ts"
 import { look, missingVisualEvidence } from "./look.ts"
 import { runBrowser } from "./browser.ts"
 import { readPick } from "./pick.ts"
@@ -902,7 +902,7 @@ const plugin = {
     if (!claim("micromanager")) return
     const log = logger(ctx)
     const settings = loadSettings()
-    const { cloudOnly, parallel, perModel, trials, budget, notify, routing, floors, decisions, allowOutside, error } = settings
+    const { mode, migrations, parallel, perModel, trials, budget, notify, routing, floors, decisions, allowOutside, error } = settings
     // The leaf skills the workers load, registered into OpenCode instead of linked into its config directory: a
     // package install has no checkout to link from, and the skills ship in this package. Read once per start, like
     // the agents; the set is what a brief may name (src/skills.ts).
@@ -1040,7 +1040,7 @@ const plugin = {
       // delegation that names its contract already is not asked.
       const named = d.contract ?? (planned ? planned.contract?.id : undefined)
       // Measured against a contract: whether the evolver could do it instead (src/evolver.ts), in the same ask.
-      const questions: Record<string, JevQuestion> = named ? { difficulty: CLASSIFY.difficulty!, local_block: LOCAL_BLOCK } : { difficulty: CLASSIFY.difficulty!, open_ended: OPEN_ENDED }
+      const questions: Record<string, DecisionQuestion> = named ? { difficulty: CLASSIFY.difficulty!, local_block: LOCAL_BLOCK } : { difficulty: CLASSIFY.difficulty!, open_ended: OPEN_ENDED }
       const asked = await decider.ask("N5", { task, checks: d.checks }, questions, {}).catch(() => undefined)
       const answer = asked?.decision.answers.difficulty
       const difficulty = answer?.type === "score" ? Math.max(0, Math.min(4, answer.score)) / 4 : undefined
@@ -1053,8 +1053,11 @@ const plugin = {
       record({ kind: "assess", sessionID, role, difficulty, retry, learned, trials: n, openEnded, decision: asked?.id })
       return { difficulty, trials: n, ...(openEnded ? { openEnded } : {}), ...(localBlock ? { localBlock } : {}) }
     }
-    const registry = cloudOnly ? cloudRegistry(settings.registry) : settings.registry
+    const registry = mode === "cloud" ? cloudRegistry(settings.registry) : settings.registry
     if (error) log("warn", `config ignored, defaults used: ${error}`)
+    // The upgrade output of a config from before A2: one line per migrated key (src/config.ts parseMode), at warn, where
+    // the memory migration reports too. A cloudOnly: true must never become cloud mode without this line.
+    for (const line of migrations) log("warn", line)
 
     await ctx.agent.transform((draft) => {
       try {
@@ -1064,9 +1067,15 @@ const plugin = {
       }
     })
 
-    const key = apiKey()
-    const jev = key ? new Jev(key) : undefined
-    if (!jev) log("warn", "no Jev key (JEV_API_KEY or the keyring entry service=typesafe key=jev): every question goes to the user")
+    // The decider's mode (A2-T1): in "local" mode no key is read and no cloud URL is touched; in "cloud" mode the
+    // key comes from JEV_API_KEY or the keyring, and without it every question goes to the user.
+    const backends = { ...DEFAULT_BACKENDS, mode }
+    const key = cloudKey(backends)
+    const client = cloudClient(backends, key)
+    if (mode === "cloud" && !client) log("warn", key ? "cloud mode, but no cloud URL is configured: every question goes to the user" : "cloud mode, but no decision key (JEV_API_KEY or the keyring entry service=typesafe key=jev): every question goes to the user")
+    // A backend that is off says why, once, at start (openjev without a server installed, for one): a missing backend
+    // is a state, not a mode (D11).
+    for (const note of backendNotes(backends)) log("info", note)
 
     // The sub-task each agent works on, for Jev's context: the micromanager's last delegation per role agent, and
     // the task of each worker session the runner started.
@@ -1214,9 +1223,9 @@ const plugin = {
         decided(t.verdict, "plugin", t.text.slice(0, 200))
         return t.text
       }
-      if (t.verdict === "jev" && jev) {
+      if (t.verdict === "jev" && client) {
         try {
-          const answer = (await jev.ask(grantState(kind, name, why, owner.task, value), { harmless: harmlessQuestion(kind) })).answers.harmless
+          const answer = (await client.ask(grantState(kind, name, why, owner.task, value), { harmless: harmlessQuestion(kind) })).answers.harmless
           const p = answer?.type === "noul" ? answer.noul : 0
           if (p >= GRANT_FLOOR) {
             addGrant(where.project, jobId, kind, name, true)
@@ -1225,7 +1234,7 @@ const plugin = {
           }
           decided("user", "jev", `harmless ${p.toFixed(2)} < ${GRANT_FLOOR}`)
         } catch (err) {
-          log("warn", `Jev on ${GRANT_IDS[kind]} ${name} failed: ${String(err)}`)
+          log("warn", `the decision client on ${GRANT_IDS[kind]} ${name} failed: ${String(err)}`)
         }
       }
       const { pending, answer, fresh, batch } = SHARED.grantRequests.open({ kind, name, why, sessionID, parent: owner.parent, task: owner.task, project: where.project, jobId, secrets: kind === "network" ? facts.secrets : [] })
@@ -1250,9 +1259,9 @@ const plugin = {
         native.recordChange(here.project, here.job.id, here.task.id, r.kind, a, id, r.target)
         if (!a.accepted && a.by !== "timeout") addGrant(here.project, here.job.id, "check", normalTarget(r.target), false)
       }
-      if (r.kind === "check_bug" && jev) {
+      if (r.kind === "check_bug" && client) {
         try {
-          const answer = (await jev.ask(`A worker's check failed and the worker says the check itself is wrong.\nTask: ${task}\nCheck: ${r.target}\nProblem: ${r.problem}\nEvidence: ${r.evidence.slice(0, 2000)}`, { check_bug: CHECK_BUG })).answers.check_bug
+          const answer = (await client.ask(`A worker's check failed and the worker says the check itself is wrong.\nTask: ${task}\nCheck: ${r.target}\nProblem: ${r.problem}\nEvidence: ${r.evidence.slice(0, 2000)}`, { check_bug: CHECK_BUG })).answers.check_bug
           const p = answer?.type === "noul" ? answer.noul : 1
           if (p < CHECK_BUG_FLOOR) {
             const a: ChangeAnswer = { accepted: false, by: "jev", note: "the evidence does not show the check is wrong" }
@@ -1260,7 +1269,7 @@ const plugin = {
             return changeResult({ id: "The request", target: r.target }, a)
           }
         } catch (err) {
-          log("warn", `Jev on a check change failed: ${String(err)}`)
+          log("warn", `the decision client on a check change failed: ${String(err)}`)
         }
       }
       const by = route(r.kind)
@@ -1950,7 +1959,7 @@ const plugin = {
       // A worker session reads inside its own worktree (its directory), so the read-only-inside fast path applies to a
       // worker's inspection instead of asking Jev, whose confidence on those sits below the read floor.
       const root = runnerSessions.has(evaluation.sessionID) ? workerDirs.get(evaluation.sessionID) ?? ctx.location?.directory : undefined
-      const outcome = await decide(jev, request, floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
+      const outcome = await decide(client, request, floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
       // A worker of the plugin's, also one adopted after a restart and continued by its session, which the prompt hook
       // does not claim again (live run, 2026-10-27: such a worker's request was neither paused nor refused, so OpenCode
       // parked it with nobody to answer, and the worker waited for good).
@@ -2002,7 +2011,7 @@ const plugin = {
     }
     // Values that are secret whatever their shape: the server's own secret variables, the project's .env files, the
     // Jev key. After the plugin record, which stays the first thing an instance writes.
-    if (vault && settings.redact.secrets) for (const value of knownSecrets(process.env, project, [apiKey() ?? ""])) vault.add(value, "secret", "known")
+    if (vault && settings.redact.secrets) for (const value of knownSecrets(process.env, project, [key ?? ""])) vault.add(value, "secret", "known")
     if (!project) {
       log("warn", "no project directory: the micromanager tools are not installed")
       return
@@ -2014,7 +2023,6 @@ const plugin = {
     } catch (err) {
       record({ kind: "adopt", directory: project, error: String(err) })
     }
-    const backends = { ...DEFAULT_BACKENDS, cloudOnly }
     const decider = new Decider(backends, makeAskers(backends, key))
     // Memory beyond the session (src/context/): core entries in every prompt, recalled notes in a worker's brief and at
     // the micromanager's user turns, LEARNED lines and the memory tools through search and Jev. Off by itself when its
@@ -2057,7 +2065,7 @@ const plugin = {
     }
     const recents = new RecentRecalls()
     const readerAgent = (agent?: string) => { const r = agent ? roleByAgent(agent) : undefined; return Boolean(r && !WRITERS.has(r.id)) }
-    if (cloudOnly) log("info", "cloud only: no local models, guards on cloud Jev")
+    log("info", mode === "cloud" ? "decider: cloud mode (redacted, previewed; guards local)" : "decider: local mode (nothing leaves this machine)")
     // The loop watchdog judges the planner and worker sessions the runner starts; a signal interrupts the session
     // and the runner reads why (design.md §10.1).
     const watchdog = SHARED.watchdog
@@ -2200,7 +2208,7 @@ const plugin = {
         // The host's models, and with local models on the local servers' state too: the planner and the runner's own
         // workers route over the registry, which names models the host may not have (any more).
         availability: async () => {
-          const map = cloudOnly ? new Map<string, Availability>() : await probe(registry)
+          const map = mode === "cloud" ? new Map<string, Availability>() : await probe(registry)
           for (const m of registry) if (!(await hostModels(m.id))) map.set(m.id, { ...map.get(m.id), reachable: false })
           return map
         },
@@ -2210,7 +2218,7 @@ const plugin = {
         },
         parentID,
         cancelled: cancel ? () => cancel.cancelled : undefined,
-        cloudOnly,
+        mode,
         budget,
         parallel,
         perModel,

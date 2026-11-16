@@ -35,7 +35,7 @@ test("Jev decides per result; dropped ones become a stub and stay dropped in lat
     },
   }
   const journal: Record<string, unknown>[] = []
-  const comp = new Compactor(new Decider({ ...DEFAULT_BACKENDS, default: "typesafe" }, { typesafe: jev }, () => {}), (e) => journal.push(e), { startChars: 1000 })
+  const comp = new Compactor(new Decider({ ...DEFAULT_BACKENDS, default: "gliner" }, { gliner: jev }, () => {}), (e) => journal.push(e), { startChars: 1000 })
   const msgs = history([{ tool: "list_tasks", size: 9000 }, { tool: "list_tasks", size: 9000 }, { tool: "read", size: 100 }, { tool: "read", size: 100 }])
   const r = await comp.apply("ses_1", msgs)
   assert.equal(r.asked, 2)

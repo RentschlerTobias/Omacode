@@ -2,7 +2,7 @@
 // per node and question, how often the model would have decided alone, how often it would have been wrong, and
 // how well its confidence matches its accuracy. Floors change only together with a run of this.
 
-import type { Answer } from "./jev.ts"
+import type { Answer } from "./decider.ts"
 import { labeled, options, type Labeled } from "./dataset.ts"
 import type { Entry } from "./journal.ts"
 

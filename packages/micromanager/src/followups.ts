@@ -2,7 +2,7 @@
 // a verdict per item. Pure, so the runner and the N7 bench (npm run bench-n7) decide the same way.
 
 import { CHOICE_FLOOR, followUpQuestions, NOUL_FLOOR } from "./catalog.ts"
-import type { Answer } from "./jev.ts"
+import type { Answer } from "./decider.ts"
 import type { FollowUp } from "./state.ts"
 
 export interface N7Context {

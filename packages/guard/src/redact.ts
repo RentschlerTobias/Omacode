@@ -605,7 +605,7 @@ export async function scanNames(vault: Vault, texts: readonly string[], s: NameS
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// The process-wide vault, for callers that only have text (src/jev.ts)
+// The process-wide vault, for callers that only have text (src/decider.ts)
 
 let active: Vault | undefined
 

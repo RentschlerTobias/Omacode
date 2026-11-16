@@ -4,7 +4,7 @@
 
 import type { Asked } from "./backends.ts"
 import { CHOICE_FLOOR, CLASSIFY, NOUL_FLOOR, roleChoice, RISKS, skillQuestion, type Risk } from "./catalog.ts"
-import type { Question } from "./jev.ts"
+import type { Question } from "./decider.ts"
 import { recallQuestions, recalled } from "./memory.ts"
 import { resolvePolicy, type Policies } from "./policy.ts"
 import { ROLES, TEST_RUNNERS, roleById, type Role, type Rule } from "./roles.ts"

@@ -1,6 +1,11 @@
-// TypeSafe Jev (System One): program state + typed questions in, typed answers with probabilities out.
-// Wire format: POST https://api.typesafe.ai/v1/systemone {model, state, questions} -> {model, answers, usage}
-// (the same shape the oc-voice project uses in decision/systemone.py).
+// The decision client: program state + typed questions in, typed answers with probabilities out. It was src/jev.ts
+// before A2-T3; the name says what it is, because it now serves the cloud service and the local decision servers
+// alike. Wire format (the Jev format, unchanged): POST https://api.typesafe.ai/v1/systemone {model, state, questions}
+// -> {model, answers, usage} (the same shape the oc-voice project uses in decision/systemone.py).
+//
+// This class is URL-agnostic on purpose: the local GLiNER/Open-Jev servers speak the same wire format. The cloud
+// client — the cloud URL and a key — is built in one place only, src/backends.ts cloudClient, and only when the
+// decider's mode is "cloud" (D11/D19). In "local" mode no key is read and no cloud URL is touched.
 
 import { execFileSync } from "node:child_process"
 
@@ -9,7 +14,7 @@ import { mapStrings, scrub } from "./redact.ts"
 export type Question =
   | { type: "choice"; instructions: string; criteria: Record<string, string> } // option id -> meaning
   | { type: "score"; instructions: string; criteria: string[] } // rubric levels, lowest first
-  | { type: "noul"; instructions: string } // a statement; Jev returns the probability that it is true
+  | { type: "noul"; instructions: string } // a statement; the service returns the probability that it is true
 
 export type Answer =
   | { type: "choice"; choice: string; confidence: number; probabilities: Record<string, number> }
@@ -22,9 +27,9 @@ export interface Decision {
   readonly latencyMs: number
 }
 
-export class JevError extends Error {}
+export class DeciderError extends Error {}
 
-export interface JevOptions {
+export interface DecisionClientOptions {
   readonly url?: string
   readonly model?: string
   readonly timeoutMs?: number
@@ -33,8 +38,9 @@ export interface JevOptions {
   readonly fetch?: typeof fetch
 }
 
-// The key: JEV_API_KEY, else the desktop keyring (secret-tool store --label="TypeSafe Jev API key" service typesafe key jev).
-export function apiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
+// The cloud key: JEV_API_KEY, else the desktop keyring (secret-tool store --label="TypeSafe Jev API key" service
+// typesafe key jev). Only src/backends.ts cloudKey calls this, and only in "cloud" mode: a local start reads neither.
+export function cloudApiKey(env: NodeJS.ProcessEnv = process.env): string | undefined {
   if (env.JEV_API_KEY) return env.JEV_API_KEY
   try {
     const key = execFileSync("secret-tool", ["lookup", "service", "typesafe", "key", "jev"], {
@@ -62,7 +68,7 @@ function wireQuestions(questions: Record<string, Question>): Record<string, Ques
   return copy
 }
 
-export class Jev {
+export class DecisionClient {
   readonly #key: string
   readonly #url: string
   readonly #model: string
@@ -71,7 +77,7 @@ export class Jev {
   readonly #maxStateChars: number
   readonly #fetch: typeof fetch
 
-  constructor(key: string, options: JevOptions = {}) {
+  constructor(key: string, options: DecisionClientOptions = {}) {
     this.#key = key
     this.#url = options.url ?? "https://api.typesafe.ai/v1/systemone"
     this.#model = options.model ?? "jev-latest"
@@ -96,14 +102,14 @@ export class Jev {
           signal: AbortSignal.timeout(this.#timeoutMs),
         })
       } catch (err) {
-        throw new JevError(`Jev unreachable: ${err instanceof Error ? err.name : String(err)}`)
+        throw new DeciderError(`decision server unreachable: ${err instanceof Error ? err.name : String(err)}`)
       }
       if ((response.status === 429 || response.status === 529) && attempt < this.#retries) {
         await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** attempt))
         continue
       }
-      if (response.status === 401) throw new JevError("Jev: API key rejected (401)")
-      if (response.status !== 200) throw new JevError(`Jev: HTTP ${response.status}`)
+      if (response.status === 401) throw new DeciderError("decision server: API key rejected (401)")
+      if (response.status !== 200) throw new DeciderError(`decision server: HTTP ${response.status}`)
       const payload = (await response.json()) as { model?: string; answers?: Record<string, unknown> }
       return { answers: parseAnswers(questions, payload.answers ?? {}), model: payload.model ?? this.#model, latencyMs: Date.now() - started }
     }
@@ -111,7 +117,7 @@ export class Jev {
 }
 
 function num(value: unknown, what: string): number {
-  if (typeof value !== "number" || Number.isNaN(value)) throw new JevError(`Jev: missing numeric ${what}`)
+  if (typeof value !== "number" || Number.isNaN(value)) throw new DeciderError(`decision server: missing numeric ${what}`)
   return value
 }
 
@@ -127,13 +133,13 @@ export function parseAnswers(questions: Record<string, Question>, raw: Record<st
     if (!data) continue
     if (question.type === "choice") {
       const choice = data.choice
-      if (typeof choice !== "string" || !(choice in question.criteria)) throw new JevError(`Jev: ${id}: choice not offered`)
+      if (typeof choice !== "string" || !(choice in question.criteria)) throw new DeciderError(`decision server: ${id}: choice not offered`)
       answers[id] = { type: "choice", choice, confidence: num(data.confidence, `${id}.confidence`), probabilities: probs(data.probabilities) }
     } else if (question.type === "score") {
       answers[id] = { type: "score", score: num(data.score, `${id}.score`), confidence: num(data.confidence, `${id}.confidence`), probabilities: probs(data.probabilities) }
     } else {
       const noul = num(data.noul, `${id}.noul`)
-      if (noul < 0 || noul > 1) throw new JevError(`Jev: ${id}: noul outside 0..1`)
+      if (noul < 0 || noul > 1) throw new DeciderError(`decision server: ${id}: noul outside 0..1`)
       answers[id] = { type: "noul", noul }
     }
   }

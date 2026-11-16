@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import type { Asked } from "../packages/micromanager/src/backends.ts"
-import type { Answer } from "../packages/micromanager/src/jev.ts"
+import type { Answer } from "../packages/micromanager/src/decider.ts"
 import { choosePipeline, citationCheck, parseReview, readerCount, researchPath, TEST_FILE } from "../packages/micromanager/src/pipelines.ts"
 import { classifyQuestions, combine, narrowing, profileText, WRITERS, type Skill } from "../packages/micromanager/src/profile.ts"
 import type { Acceptance, Task } from "../packages/micromanager/src/state.ts"
@@ -13,7 +13,7 @@ const task = (over: Partial<Task> = {}): Task => ({
 })
 const acc: Acceptance[] = [{ id: "A1", text: "mean works", verify: "npm test" }]
 
-const asked = (answers: Record<string, Answer>): Asked => ({ id: "d1", backend: "typesafe", decision: { answers, model: "jev", latencyMs: 1 } })
+const asked = (answers: Record<string, Answer>): Asked => ({ id: "d1", backend: "cloud", decision: { answers, model: "jev", latencyMs: 1 } })
 const choice = (c: string, confidence = 0.9): Answer => ({ type: "choice", choice: c, confidence, probabilities: {} })
 const noul = (p: number): Answer => ({ type: "noul", noul: p })
 const score = (s: number): Answer => ({ type: "score", score: s, confidence: 0.9, probabilities: {} })

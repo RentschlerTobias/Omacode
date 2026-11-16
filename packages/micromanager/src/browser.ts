@@ -16,6 +16,7 @@ import { basename, dirname, join, resolve, sep } from "node:path"
 import type { Browser, BrowserContext, Video } from "playwright-core"
 
 import { findChromium, hostAllowed, lookTarget, MAX_IMAGE_BYTES, resolverRules, serveDir } from "./look.ts"
+import { findTool } from "./which.ts"
 
 // A run is bounded in every dimension a worker could spend the host's time and space on.
 export const MAX_STEPS = 80
@@ -181,20 +182,6 @@ function artifactFile(root: string, name: string, fallback: string): string {
   return full
 }
 
-function findTool(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const exts = process.platform === "win32" ? [".exe", ".cmd", ""] : [""]
-  for (const dir of (env.PATH ?? "").split(":").filter(Boolean)) {
-    for (const ext of exts) {
-      const file = join(dir, name + ext)
-      try {
-        if (statSync(file).isFile()) return file
-      } catch {
-        // not here
-      }
-    }
-  }
-  return undefined
-}
 
 // Playwright records video through its own ffmpeg build, which `playwright install` puts beside the browsers. A system
 // ffmpeg is enough for that role (spike, 2026-10-30: a 1.9 s WebM, frames readable), so a missing download is filled

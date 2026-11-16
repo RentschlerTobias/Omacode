@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto"
 
-import type { Answer, Question } from "./jev.ts"
+import type { Answer, Question } from "./decider.ts"
 import type { Entry } from "./journal.ts"
 
 export interface Labeled {
@@ -54,7 +54,7 @@ export function target(row: Labeled): { probs: number[]; source: string } | unde
     if (index < 0 || index >= opts.length) return undefined
     return { probs: opts.map((_, i) => (i === index ? 1 : 0)), source: row.label.source }
   }
-  if (row.entry.backend !== "typesafe" || !row.answer) return undefined
+  if (row.entry.backend !== "cloud" || !row.answer) return undefined
   const a = row.answer
   if (a.type === "noul") return { probs: [1 - a.noul, a.noul], source: "jev" }
   const p = opts.map((o, i) => a.probabilities[o] ?? a.probabilities[String(i)] ?? 0)

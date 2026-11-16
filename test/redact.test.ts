@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import { parseRedact } from "../packages/micromanager/src/config.ts"
-import { Jev, redact, type Question } from "../packages/micromanager/src/jev.ts"
+import { DecisionClient, redact, type Question } from "../packages/micromanager/src/decider.ts"
 import {
   DEFAULT_LABELS, findPii, findSecrets, guardedValue, ibanValid, knownSecrets, luhn, mapStrings, plausibleEntity, prose, requestTexts, restoreScope, scanNames, scrub,
   useVault, Vault,
@@ -186,7 +186,7 @@ test("Jev: question texts sent to api.typesafe.ai are redacted; the caller's cop
       q: { type: "choice", instructions: "Anna asks about s3cr3t-Val-9876", criteria: { allow: "allowed", deny: "denied" } },
     }
     const original = questions.q.instructions
-    await new Jev("local", { url: "http://127.0.0.1:8781", fetch: fakeFetch }).ask("Anna asks", questions)
+    await new DecisionClient("local", { url: "http://127.0.0.1:8781", fetch: fakeFetch }).ask("Anna asks", questions)
     const sent = JSON.parse(bodies[0]!) as { state: string; questions: Record<string, { instructions: string }> }
     assert.ok(!JSON.stringify(sent).includes("Anna"), "the wire body has no real name")
     assert.ok(!JSON.stringify(sent).includes("s3cr3t-Val-9876"), "the wire body has no secret")

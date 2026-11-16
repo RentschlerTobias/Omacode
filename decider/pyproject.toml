@@ -1,5 +1,5 @@
 [project]
-name = "jev-decider"
+name = "decider"
 version = "0.1.0"
 description = "Local GLiNER2 decision server for micromanager, speaking the TypeSafe Jev wire format"
 requires-python = ">=3.12"
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-jev-decider = "decider.server:main"
+decider = "decider.server:main"
 
 # CPU-only torch: the 4060 stays free for llama-swap and the NPU for Whisper.
 [tool.uv.sources]

@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/src/backends.ts"
 import { checkGuards, flagsWithoutUser, gateAnswer, gateQuestion } from "../packages/micromanager/src/gate.ts"
-import type { Decision } from "../packages/micromanager/src/jev.ts"
+import type { Decision } from "../packages/micromanager/src/decider.ts"
 import {
   addNodes, applyAnswer, applyShortcut, decisionsText, frontier, instruction, matchSessionShortcut, nextStep, parseTree,
   type DesignTree,

@@ -30,7 +30,7 @@ function fakeEmbedder(down = false): Embedder {
 
 function jev(answer: (questions: Record<string, unknown>) => Record<string, unknown>): Decider {
   const asker: Asker = { ask: async (_state, q) => ({ answers: answer(q as Record<string, unknown>) as never, model: "jev", latencyMs: 1 }) }
-  return new Decider({ ...DEFAULT_BACKENDS, default: "typesafe" }, { typesafe: asker }, () => {})
+  return new Decider({ ...DEFAULT_BACKENDS, default: "gliner" }, { gliner: asker }, () => {})
 }
 
 test("store: entries are Markdown files; the index follows hand edits; core stays within its budget", () => {

@@ -12,7 +12,7 @@
 
 import { NOUL_FLOOR } from "./catalog.ts"
 import type { Decider } from "./backends.ts"
-import type { Question } from "./jev.ts"
+import type { Question } from "./decider.ts"
 
 // The context hook's message shapes (opencode 2.0.18, seen in the spike).
 interface Part {

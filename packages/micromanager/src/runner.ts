@@ -6,7 +6,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { buildAgenda, nextProposal } from "./agenda.ts"
-import { Decider, RulesBackend } from "./backends.ts"
+import { Decider, RulesBackend, type DeciderMode } from "./backends.ts"
 import { createHash } from "node:crypto"
 
 import {
@@ -22,7 +22,7 @@ import {
   runGate, taskDir, workingDiff, type Exec, type GateResult,
 } from "./integration.ts"
 import { checkTimeoutOf } from "./worktree/git.ts"
-import { redact } from "./jev.ts"
+import { redact } from "./decider.ts"
 import { learnQuestions, readMemory, RECALL_MAX, writeMemory } from "./memory.ts"
 import { record } from "./journal.ts"
 import { HEADER } from "./hooks.ts"
@@ -77,7 +77,7 @@ export interface RunnerDeps {
   readonly watch?: (sessionID: string, maxSteps: number) => void // the loop watchdog starts judging a session
   readonly stopped?: (sessionID: string) => Signal | undefined // why the watchdog stopped a session, if it did
   readonly unchecked?: Unchecked // what G0 does when nothing local could check a job
-  readonly cloudOnly?: boolean // local models are switched off (the user's choice for now): nothing may need them
+  readonly mode?: DeciderMode // "cloud" switches the local models off: nothing may need them (default "local")
   readonly skills?: readonly Skill[] // the skills the decision model may pick per task (design.md §13.1)
   readonly installedSkills?: ReadonlySet<string> // the skills a brief may name: linked into OpenCode by install.sh
   readonly cancelled?: () => boolean // the user stopped the job (stop_job); checked around every session turn
@@ -134,7 +134,7 @@ export class Runner {
     this.#d = deps
     this.#exec = deps.exec ?? defaultExec
     this.#journal = deps.journal ?? record
-    this.#decider = deps.decider ?? new Decider({ default: "rules", nodes: {}, urls: {} }, { rules: new RulesBackend() }, this.#journal)
+    this.#decider = deps.decider ?? new Decider({ mode: "local", default: "rules", nodes: {}, urls: {} }, { rules: new RulesBackend() }, this.#journal)
   }
 
   #policies(job: Job, task?: string): Policies {
@@ -291,12 +291,12 @@ export class Runner {
   }
 
   // A job from triage or a confirmed checkpoint to a validated plan at the plan gate.
-  // In cloud-only mode a job is local-only only by the user's choice. A local-only flag that came from the "nothing
+  // In cloud mode a job is local-only only by the user's choice. A local-only flag that came from the "nothing
   // local could check it" default (the GLiNER server was down) is dropped.
   #cloudFlags(job: Job): void {
-    if (this.#d.cloudOnly && job.flags?.localOnly && job.flags.gate && !job.flags.gate.checked) {
+    if (this.#d.mode === "cloud" && job.flags?.localOnly && job.flags.gate && !job.flags.gate.checked) {
       job.flags = { ...job.flags, localOnly: false }
-      job.lessons.push("cloud only: the local-only default of an unchecked goal was dropped")
+      job.lessons.push("cloud mode: the local-only default of an unchecked goal was dropped")
     }
   }
 
@@ -378,12 +378,12 @@ export class Runner {
     excludeFromGit(this.#d.project)
     moveJob(job, "triage")
     const gate = await checkGuards(this.#decider, goal, job.id)
-    const flags = flagsWithoutUser(gate, this.#d.unchecked ?? (this.#d.cloudOnly ? "cloud" : "local"), this.#d.cloudOnly)
+    const flags = flagsWithoutUser(gate, this.#d.unchecked ?? (this.#d.mode === "cloud" ? "cloud" : "local"), this.#d.mode ?? "local")
     if (flags === "ask_user") {
       job.flags = { gate }
       moveJob(job, "ask_user")
       saveJob(this.#d.project, job)
-      return { kind: "gate", job, text: `[job ${job.id}] Only the user can answer the local check, so ask them now: show the question below word for word, call no tool, and end your turn. Their reply reaches the plugin by itself.\n\n${gateQuestion(gate, this.#d.cloudOnly)}` }
+      return { kind: "gate", job, text: `[job ${job.id}] Only the user can answer the local check, so ask them now: show the question below word for word, call no tool, and end your turn. Their reply reaches the plugin by itself.\n\n${gateQuestion(gate, this.#d.mode ?? "local")}` }
     }
     job.flags = flags
     return this.#triage(job)
@@ -574,8 +574,8 @@ export class Runner {
     this.#job = job
     this.#cloudFlags(job)
     // Never quietly to the cloud: a job that must stay on this machine waits while local models are switched off.
-    if (this.#d.cloudOnly && job.flags?.localOnly) {
-      this.#stop(job, "this job must stay on this machine, but local models are switched off (cloudOnly); the user can let it go to the cloud, or switch local models on")
+    if (this.#d.mode === "cloud" && job.flags?.localOnly) {
+      this.#stop(job, "this job must stay on this machine, but local models are switched off (decider mode cloud); the user can let it go to the cloud, or switch the decider to local mode")
       saveJob(this.#d.project, job)
       return job
     }
@@ -965,7 +965,7 @@ export class Runner {
       // A follow-up is text a model wrote, so it passes the local guards like a goal before it can become a task.
       if (v.kind === "task") {
         const guard = await checkGuards(this.#decider, `${item.what}. ${item.why}`, job.id, task.id)
-        if (guard.flagged.includes("sensitive") && !job.flags?.localOnly && !this.#d.cloudOnly) {
+        if (guard.flagged.includes("sensitive") && !job.flags?.localOnly && this.#d.mode !== "cloud") {
           job.flags = { ...job.flags, localOnly: true }
           this.#say(`a follow-up of ${task.id} looks sensitive: the rest of the job stays on this machine`)
         }

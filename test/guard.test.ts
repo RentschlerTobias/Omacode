@@ -5,7 +5,7 @@ import { DEFAULT_BACKENDS, Decider, type Asker } from "../packages/micromanager/
 import { drift } from "../packages/micromanager/src/bench.ts"
 import { checkGuards, injected, injectionScore } from "../packages/micromanager/src/gate.ts"
 import { resultText, rewriteResult } from "../packages/micromanager/src/hooks.ts"
-import { redact } from "../packages/micromanager/src/jev.ts"
+import { redact } from "../packages/micromanager/src/decider.ts"
 
 // A local guard backend whose answers come from a function of the asked text.
 function decider(score: (text: string, call: number) => Record<string, number>) {

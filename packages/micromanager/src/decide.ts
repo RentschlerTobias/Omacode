@@ -24,7 +24,7 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, normalize } from "node:path"
 
-import type { Decision, Jev, Question } from "./jev.ts"
+import type { Decision, DecisionClient, Question } from "./decider.ts"
 import { WRITERS } from "./profile.ts"
 import { MICROMANAGER, roleByAgent } from "./roles.ts"
 import { stateDir } from "./store.ts"
@@ -623,7 +623,7 @@ export function judge(decision: Decision, request: PermissionRequest, floors: Fl
 // already made in the config, not one for Jev to re-litigate per request. Default empty: with no setting, a caller's
 // behaviour is exactly what it was before the setting existed.
 export async function decide(
-  jev: Jev | undefined,
+  client: DecisionClient | undefined,
   request: PermissionRequest,
   floors: Floors = DEFAULT_FLOORS,
   inspect: Inspect = inspectPaths,
@@ -682,12 +682,12 @@ export async function decide(
     }
   }
   if (preset) return { verdict: preset, reason: `preset by the user's policy (${preset})` }
-  if (!jev) return { verdict: "user", reason: "no Jev key" }
+  if (!client) return { verdict: "user", reason: "no decision client" }
   try {
     const state = facts.length > 0 ? `${describe(request)}\n${relevanceFacts(facts)}` : describe(request)
     const questions = facts.length > 0 ? { ...PERMISSION_QUESTIONS, path_relevance: RELEVANCE_QUESTION } : PERMISSION_QUESTIONS
-    return judge(await jev.ask(state, questions), request, floors)
+    return judge(await client.ask(state, questions), request, floors)
   } catch (err) {
-    return { verdict: "user", reason: `Jev failed: ${err instanceof Error ? err.message : String(err)}` }
+    return { verdict: "user", reason: `the decision client failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }

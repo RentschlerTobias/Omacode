@@ -11,7 +11,7 @@
 // only id, title, agent, model, metadata, permissions and location on), so the title and the metadata name the writer.
 
 import { lastAssistantText } from "./brief.ts"
-import { redact } from "./jev.ts"
+import { redact } from "./decider.ts"
 import { roleById, type Role } from "./roles.ts"
 import { toModel, type SessionApi } from "./runner.ts"
 

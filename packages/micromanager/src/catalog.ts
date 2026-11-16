@@ -1,7 +1,7 @@
 // The decision model's question wordings and their floors, in one place (design.md §14, §21). A floor belongs to
 // its wording and its backend: change a wording only together with a new run of npm run eval / the guard bench.
 
-import type { Question } from "./jev.ts"
+import type { Question } from "./decider.ts"
 
 // --- G0: the local-first gate (design.md §21) -----------------------------------------------------------
 // Worded separately and calibrated together, so that uncensored work is never filed as harmful.

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { test } from "node:test"
 
 import { DEFAULT_FLOORS, decide, hardRule, judge, type PermissionRequest } from "../packages/micromanager/src/decide.ts"
-import { Jev, JevError, parseAnswers, redact, type Decision } from "../packages/micromanager/src/jev.ts"
+import { DecisionClient, DeciderError, parseAnswers, redact, type Decision } from "../packages/micromanager/src/decider.ts"
 
 const req = (
   action: string,
@@ -32,7 +32,7 @@ function fakeJev(answer: Decision | Error) {
       return answer
     },
   }
-  return jev as unknown as Jev & { calls: string[] }
+  return jev as unknown as DecisionClient & { calls: string[] }
 }
 
 test("Jev answers itself when it is sure enough for the risk class", async () => {
@@ -77,7 +77,7 @@ test("hard rules always go to the user, without asking Jev", async () => {
 
 test("without Jev, or when it fails, the user is asked", async () => {
   assert.equal((await decide(undefined, req("shell", ["npm test"]))).verdict, "user")
-  const failed = await decide(fakeJev(new JevError("Jev: HTTP 500")), req("shell", ["npm test"]))
+  const failed = await decide(fakeJev(new DeciderError("Jev: HTTP 500")), req("shell", ["npm test"]))
   assert.equal(failed.verdict, "user")
   assert.match(failed.reason, /HTTP 500/)
 })
@@ -91,8 +91,8 @@ test("the client sends the wire format, retries a 429 once, and masks secrets", 
     if (calls === 1) return new Response("", { status: 429 })
     return Response.json({ model: "jev-1", answers: { ok: { type: "noul", noul: 0.9 } } })
   }) as unknown as typeof fetch
-  const jev = new Jev("k", { fetch: fakeFetch, retries: 1 })
-  const got = await jev.ask("token sk-abcdefghijklmnopqrstuv in a log", { ok: { type: "noul", instructions: "It is fine." } })
+  const client = new DecisionClient("k", { fetch: fakeFetch, retries: 1 })
+  const got = await client.ask("token sk-abcdefghijklmnopqrstuv in a log", { ok: { type: "noul", instructions: "It is fine." } })
   assert.equal(calls, 2)
   assert.deepEqual(got.answers.ok, { type: "noul", noul: 0.9 })
   assert.equal(bodies[0]?.model, "jev-latest")

@@ -5,7 +5,7 @@
 
 import { CHECKPOINT, NOUL_FLOOR } from "./catalog.ts"
 import type { Decider } from "./backends.ts"
-import type { Answer } from "./jev.ts"
+import type { Answer } from "./decider.ts"
 import type { Progress, Signal } from "./watchdog.ts"
 
 export type Verdict = "continue" | "fresh" | "handback" | "nudge"

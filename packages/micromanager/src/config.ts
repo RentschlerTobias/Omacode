@@ -2,6 +2,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 
+import type { DeciderMode } from "./backends.ts"
 import { DEFAULT_FLOORS, type Floors } from "./decide.ts"
 import { validatePolicies, type PolicySet } from "./policy.ts"
 import { DEFAULT_REGISTRY, mergeRegistry, type ModelEntry } from "./registry.ts"
@@ -181,12 +182,29 @@ export function parseTrialGrace(text: string): Grace {
   return { factor: (g.factor as number | undefined) ?? DEFAULT_GRACE.factor, minMs: minutes(g.minMinutes, DEFAULT_GRACE.minMs), maxMs: minutes(g.maxMinutes, DEFAULT_GRACE.maxMs) }
 }
 
-// "cloudOnly": true (the default for now, the user's choice of 2026-10-05) routes no task to a local model and asks
-// cloud Jev for the guards instead of the local GLiNER server. false brings the local fleet and GLiNER back.
-export function parseCloudOnly(text: string): boolean {
-  const raw = (JSON.parse(stripComments(text)) as { cloudOnly?: unknown }).cloudOnly ?? true
-  if (typeof raw !== "boolean") throw new Error("cloudOnly must be true or false")
-  return raw
+// "decider": { "mode": "local" | "cloud" }. "local" is the mode from day one (D21): every decision stays on this
+// machine. "cloud" may send a decision to the cloud decision client — after deterministic redaction and, without a
+// local NER, a preview and confirmation (D13). There is no hybrid (D11); a missing backend is a state, not a mode.
+//
+// The key before A2 was "cloudOnly": true becomes mode "cloud" and false (or an absent key) becomes "local". The true
+// case is reported, because an old file must not become cloud mode silently; the lines come back from loadSettings and
+// plugin.setup logs each one (src/plugin.ts), where the memory migration reports too.
+export function parseMode(text: string, migrations: string[] = []): DeciderMode {
+  const raw = JSON.parse(stripComments(text)) as { decider?: unknown; cloudOnly?: unknown }
+  if (raw.decider !== undefined && (typeof raw.decider !== "object" || raw.decider === null || Array.isArray(raw.decider))) {
+    throw new Error('decider must be an object, e.g. { "mode": "local" }')
+  }
+  const decider = raw.decider as { mode?: unknown } | undefined
+  if (decider?.mode !== undefined) {
+    if (raw.cloudOnly !== undefined) throw new Error('use "decider": { "mode": … } or the old "cloudOnly", not both')
+    if (decider.mode !== "local" && decider.mode !== "cloud") throw new Error('decider.mode must be "local" or "cloud"')
+    return decider.mode
+  }
+  if (raw.cloudOnly === undefined) return "local"
+  if (typeof raw.cloudOnly !== "boolean") throw new Error("cloudOnly must be true or false")
+  if (!raw.cloudOnly) return "local"
+  migrations.push('config: "cloudOnly": true is now "decider": { "mode": "cloud" } — "cloudOnly" was removed in A2 (D11 gave the decider two modes, and cloudOnly is not one), so this file names the mode it meant; write "mode": "local" to keep everything on this machine')
+  return "cloud"
 }
 
 // "githubBacklog": the GitHub repositories ("owner/name") whose issues labelled micromanager are part of the backlog
@@ -278,13 +296,16 @@ export function parseMemory(text: string): MemorySettings {
   return { enabled: m.enabled ?? true, embedding }
 }
 
-// With cloudOnly, local models stay in the registry (they show up in the journal's ranking) but are never routed to.
+// With mode "cloud", local models stay in the registry (they show up in the journal's ranking) but are never routed to.
 export function cloudRegistry(registry: readonly ModelEntry[]): ModelEntry[] {
   return registry.map((m) => (m.location === "local" ? { ...m, disabled: true } : m))
 }
 
 export interface Settings {
-  readonly cloudOnly: boolean
+  readonly mode: DeciderMode // the decider's mode: "local" (D21) or "cloud", never a hybrid
+  // One line per config key that was migrated to its new name or shape (A2, the "cloudOnly" -> "decider.mode" move);
+  // plugin.setup logs them as warnings, so an old config cannot change behaviour without saying so.
+  readonly migrations: readonly string[]
   readonly parallel: number
   readonly perModel: number
   readonly trials: number
@@ -314,7 +335,8 @@ export interface Settings {
 // The settings a config file that is missing or broken falls back to. One place, so the two returns below cannot drift
 // apart and a setting added here is never left out of the error path.
 const DEFAULTS: Omit<Settings, "registry"> = {
-  cloudOnly: true,
+  mode: "local",
+  migrations: [],
   parallel: 3,
   perModel: 2,
   trials: DEFAULT_TRIALS,
@@ -346,7 +368,8 @@ export function loadSettings(path = configPath()): Settings & { error?: string }
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY } // no file: the defaults
   }
   try {
-    return { ...DEFAULTS, cloudOnly: parseCloudOnly(text), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), unsandboxed: parseUnsandboxed(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text) }
+    const migrations: string[] = []
+    return { ...DEFAULTS, mode: parseMode(text, migrations), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), unsandboxed: parseUnsandboxed(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text), migrations }
   } catch (err) {
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY, error: `${path}: ${String(err)}` }
   }

@@ -4,7 +4,7 @@
 // user (Phase A9 showed the available fine-tune flags legitimate security work as harmful). The user's answer
 // sets the job's flags: local only, uncensored allowed, or on as it is.
 
-import type { Decider } from "./backends.ts"
+import type { Decider, DeciderMode } from "./backends.ts"
 import { GUARD_FLOOR, GUARDS } from "./catalog.ts"
 
 import type { GateResult, Guard, JobFlags } from "@omacode/state/schema"
@@ -51,17 +51,17 @@ export const injected = (score: number | undefined): boolean => (score ?? 0) >= 
 // What the job does when nothing local could check it. "local" is the privacy-first default (user, 2026-10-04).
 export type Unchecked = "local" | "user" | "cloud"
 
-// cloudOnly: sensitive and refusal_likely only choose local models, and there are none; only injection and harmful
-// ask the user. (Cloud Jev on the guard bench, 2026-10-05: injection and harmful 100 % recall with 0 % false alarms,
-// sensitive a false alarm on 92 % of harmless cases.)
-export function flagsWithoutUser(result: GateResult, unchecked: Unchecked = "local", cloudOnly = false): JobFlags | "ask_user" {
+// mode "cloud": sensitive only chooses local models, and there are none; only injection and harmful ask the user.
+// (The cloud Jev on the guard bench, 2026-10-05: injection and harmful 100 % recall with 0 % false alarms, sensitive a
+// false alarm on 92 % of harmless cases.)
+export function flagsWithoutUser(result: GateResult, unchecked: Unchecked = "local", mode: DeciderMode = "local"): JobFlags | "ask_user" {
   if (!result.checked) return unchecked === "user" ? "ask_user" : { localOnly: unchecked === "local", gate: result }
-  const asks = cloudOnly ? result.flagged.filter((g) => g === "injection" || g === "harmful") : result.flagged
+  const asks = mode === "cloud" ? result.flagged.filter((g) => g === "injection" || g === "harmful") : result.flagged
   return asks.length === 0 ? { gate: result } : "ask_user"
 }
 
 // The question the micromanager puts to the user when the gate flagged something.
-export function gateQuestion(result: GateResult, cloudOnly = false): string {
+export function gateQuestion(result: GateResult, mode: DeciderMode = "local"): string {
   const what: Record<Guard, string> = {
     injection: "the text may try to change the agents' rules (injection)",
     harmful: "it may ask for help to harm people or attack systems you do not own",
@@ -73,7 +73,7 @@ export function gateQuestion(result: GateResult, cloudOnly = false): string {
     "The local check flagged this job:",
     ...lines,
     "The check is not calibrated yet, so you decide. Answer with one of:",
-    ...(cloudOnly
+    ...(mode === "cloud"
       ? ['"continue" (go on as normal, in the cloud) or "stop". Local models are switched off for now.']
       : ['"always local" (keep everything on this machine), "use uncensored" (local uncensored models only),', '"continue" (go on as normal), or "stop".']),
   ].join("\n")
