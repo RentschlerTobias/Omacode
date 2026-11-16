@@ -949,15 +949,20 @@ no narration.
 
 **Tasks**
 
-- [ ] **B2-T1 — HyperFrames adapter.** `preview`, `render`, `present`, `snapshot`, `check`, `lint`; Studio/browser
+- [x] **B2-T1 — HyperFrames adapter.** `preview`, `render`, `present`, `snapshot`, `check`, `lint`; Studio/browser
   open action; never render decks.
-- [ ] **B2-T2 — Video spec.** `video.json`: scenes, duration, fps, engine, audio, checks, output.
-- [ ] **B2-T3 — Storyboard/script.** Beat sheet + script + shot list; acceptance per scene.
-- [ ] **B2-T4 — QA.** ffprobe, black/freeze/flash detection, silence, transcript, frame sampling, VLM; 3-round fix
+  - *Reality:* the engine's runtime moved into `adapters/hyperframes.ts` and both adapters share it; the video adapter renders, snapshots, checks, lints and previews, and its preview needs `--foreground --force-new` or `cancel` leaves a detached server holding the port. `open` cannot open a desktop app headless and reports that need instead of pretending. Size comes from the composition root (the CLI has only preset resolutions), fps/format/quality are argv, and the deck can never reach `render` (argv plus a type guard).
+- [x] **B2-T2 — Video spec.** `video.json`: scenes, duration, fps, engine, audio, checks, output.
+  - *Reality:* video is version 2 on its own, with `engine`, `audio`, `output` and per-scene `acceptance`; a v1 video is refused by number.
+- [x] **B2-T3 — Storyboard/script.** Beat sheet + script + shot list; acceptance per scene.
+  - *Reality:* the storyboard is a markdown table a human can edit, parsed strictly; the handoff now goes plan → storyboard → scenes, so a plan's scenes gain acceptance and the 5 s default has one home.
+- [x] **B2-T4 — QA.** ffprobe, black/freeze/flash detection, silence, transcript, frame sampling, VLM; 3-round fix
   loop; only safe auto-fixes.
-- [ ] **B2-T5 — Tests.** Schema; adapter invocation; QA fixtures; deck-render guard.
+  - *Reality:* QA reads the encoded file, not the browser: ffprobe for stream/format, ffmpeg for ten frames and a silence pass. A freeze is an identical frame **across a cut**, not any repeated frame, or every static title card would fail. Black is luminance ≤ 8 because this writer's ground is 16. Silence, transcript and VLM are `skippable` (no narration, no local model, D13/D21). The fix loop applies only extend/shift/gain within caps, never a wording change, and stops after three rounds.
+- [x] **B2-T5 — Tests.** Schema; adapter invocation; QA fixtures; deck-render guard.
 
-**Files:** `packages/artifact/src/adapters/{hyperframes,video}.ts`, `skills/video/`, `test/video.test.ts`.
+
+  - *Reality:* the audit found a real defect and fixed it: a scene's clip was written as an `<img>`, which the engine would encode as a broken image; it is now a `<video muted autoplay loop playsinline>`, with a test and the clip/picture split. The motion path is scanned for generative endpoints and has none.**Files:** `packages/artifact/src/adapters/{hyperframes,video}.ts`, `skills/video/`, `test/video.test.ts`.
 
 **Checks:** `npm run typecheck`, `npm test`; render a 5 s demo; ffprobe/QA.
 

@@ -8,6 +8,12 @@
 // on a parsed ffprobe envelope, and the fix loop on a stub. One end-to-end run then renders the 5 s demo and asks the
 // adapter for every check, so the report a person reads is exercised once against a real file.
 //
+// B2-T5's acceptance is the last two tests: a plan.md in a temp project becomes a video spec through the handoff, a
+// storyboard, scenes, a render, the adapter's QA, a loop that applies one safe repair and refuses one content change, and
+// a final report where every check has a status — with no generative model named anywhere in the package. The one real
+// film there is 640×360 and five seconds, and it repeats a card across its cut on purpose, so the QA pass has a fault to
+// find and the fix loop has something to repair.
+//
 // A real 5 s render is the slow test. The demo is 640x360, two scenes, draft quality and no audio: small enough that a
 // host limitation is worth skipping rather than waiting out, and real enough that `ffprobe` measures an actual file.
 
@@ -15,7 +21,7 @@ import assert from "node:assert/strict"
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import { test, type TestContext } from "node:test"
 
 import {
@@ -38,6 +44,7 @@ import {
   type HostRunner,
 } from "../packages/artifact/src/adapter.ts"
 import { assertRegistry, evaluate, type CheckResult } from "../packages/artifact/src/checks.ts"
+import { sha256File } from "../packages/artifact/src/provenance.ts"
 import {
   QA_CHECK_IDS,
   QA_ROUNDS,
@@ -54,7 +61,10 @@ import {
   type SafeFix,
 } from "../packages/artifact/src/qa.ts"
 import { createHostRunner, hostRunnerFor } from "../packages/artifact/src/runner.ts"
-import { parseSpec, specVersionOf, SPEC_VERSIONS, type DeckSpec, type VideoSpec } from "../packages/artifact/src/spec.ts"
+import { parseSpec, specVersionOf, SPEC_VERSIONS, type DeckSpec, type Scene, type VideoSpec } from "../packages/artifact/src/spec.ts"
+import { parseStoryboard, renderStoryboard, storyboardFromPlan, type Storyboard } from "../packages/artifact/src/storyboard.ts"
+import { artifactsRootFor, specFromPlan } from "../packages/micromanager/src/artifact/handoff.ts"
+import { renderPlanDoc, type PlanDoc } from "../packages/micromanager/src/plandoc.ts"
 import { frame } from "./harness.ts"
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -572,6 +582,54 @@ test("probe, sample times, and the three skips: no audio, no speech model, no vi
   assert.deepEqual(readSilence("silence_start: 4\n", 5), [{ start: 4, end: 5 }])
 })
 
+test("a film with an audio track is measured for silence, and only a gain inside the cap answers it", () => {
+  const probe = readProbe(
+    JSON.stringify({
+      format: { duration: "4.000000" },
+      streams: [
+        { index: 0, codec_type: "video", width: 320, height: 180, r_frame_rate: "24/1" },
+        { index: 1, codec_type: "audio" },
+      ],
+    }),
+  )
+  assert.ok(probe)
+  assert.equal(probe.audio, true, "the fixture's second stream is an audio track")
+
+  const measured = qaChecks({
+    file: "video.mp4",
+    duration: 4,
+    probe,
+    samples: [sample(0.5, "one", 64), sample(1.5, "one", 64), sample(2.5, "two", 160), sample(3.5, "two", 160)],
+    silence: { segments: [{ start: 1, end: 3 }] },
+  })
+  const silence = checkIn(measured, "video.silence")
+  assert.equal(silence.status, "failed")
+  assert.match(silence.text, /1–3 s/)
+
+  // The two other ways a film with audio is not measured: the pass did not run, and ffmpeg refused. Both are a skip with
+  // the reason, because a check that never decoded the track has not heard it.
+  const unmeasured: QaReport["checks"] = qaChecks({ file: "video.mp4", duration: 4, probe })
+  assert.equal(checkIn(unmeasured, "video.silence").status, "skipped")
+  assert.match(checkIn(unmeasured, "video.silence").text, /did not run/)
+  const refused = qaChecks({ file: "video.mp4", duration: 4, probe, silence: { segments: [], reason: "ffmpeg is not runnable" } })
+  assert.equal(checkIn(refused, "video.silence").status, "skipped")
+  assert.match(checkIn(refused, "video.silence").text, /not runnable/)
+
+  // The third allowlisted repair: raising the level of the quiet stretch. It is a fix only when the report measured the
+  // silence and the gain is a raise inside ×2.
+  const report: QaReport = { checks: measured, sceneIds: ["one", "two"], frames: [], passed: false }
+  assert.deepEqual(classifyFix({ op: "gain", from: 1, to: 3, gain: 1.5 }, report).fix, {
+    op: "gain",
+    from: 1,
+    to: 3,
+    gain: 1.5,
+  })
+  assert.match(classifyFix({ op: "gain", from: 1, to: 3, gain: 2.5 }, report).reason ?? "", /above the cap of 2/)
+  assert.match(classifyFix({ op: "gain", from: 3, to: 1, gain: 1.5 }, report).reason ?? "", /is not after/)
+  assert.match(classifyFix({ op: "gain", from: 1, to: 3, gain: 1 }, report).reason ?? "", /does not raise the level/)
+  assert.match(classifyFix({ op: "gain", from: 1, to: 3, gain: 1.5 }, reportWith(undefined)).reason ?? "", /no video\.silence failure/)
+})
+
 test("evaluate sees the transcript and the VLM as skips, not as passes", (t) => {
   const job = jobFor(t)
   const spec = demo()
@@ -772,6 +830,91 @@ test("openEditor hands the project to the studio, and a host without the app is 
   assert.ok(call, "the adapter asked the engine to open the project")
   assert.equal(call.args[0], "open")
   assert.equal(call.args.includes("present"), false)
+
+  // The other half of the honest answer: a CLI that says it handed the project over is a success, reported in its own words
+  // and not turned into a refusal.
+  const opened = videoAdapter()
+  const openedRunner = fakeRunner(passed("0.9.54\n"), passed("HyperFrames Studio is open\n"))
+  const { ctx: openedCtx, logs } = harnessFor(job, openedRunner)
+  await opened.prepare(demo(), openedCtx)
+  await opened.openEditor!(openedCtx)
+  assert.ok(logs.some((line) => line.includes("HyperFrames Studio is open")), logs.join(" | "))
+})
+
+test("preview asks for a foreground studio on a free port, with the network and the software renderer", async (t) => {
+  const job = jobFor(t)
+  const calls: HostRunInput[] = []
+  // The server run resolves as soon as the caller cancels it, which is how the adapter's preview ends; the fake stops
+  // before it ever answers a port so the start is bounded and the test reads the argv rather than a page.
+  const runner: HostRunner = {
+    async run(input: HostRunInput): Promise<HostRunResult> {
+      calls.push(input)
+      if (input.args[0] === "preview") return { ...failed(-1), cancelled: true }
+      return passed("0.9.54\n")
+    },
+    cancel(): void {},
+  }
+  const { ctx } = harnessFor(job, runner)
+  const adapter = videoAdapter()
+  await adapter.prepare(demo(), ctx)
+  const started = await adapter.preview(ctx)
+  assert.equal(started.started, false)
+  assert.match(started.output, /stopped before it answered/)
+
+  const call = calls.find((entry) => entry.args[0] === "preview")
+  assert.ok(call, "the adapter asked the engine for a preview server")
+  // The project directory, not a spec path: the studio opens the page the prepare step wrote.
+  assert.deepEqual(call.args.slice(0, 2), ["preview", resolve(job)])
+  assert.ok(call.args.includes("--no-open"), `preview must not open a second browser: ${call.args.join(" ")}`)
+  // A non-interactive shell makes the CLI daemonize the studio; `--foreground` keeps the process the runner owns, so
+  // `cancel()` is what stops the server instead of a detached process outliving the job.
+  assert.ok(call.args.includes("--foreground"), `the studio must stay the job's foreground: ${call.args.join(" ")}`)
+  assert.ok(call.args.includes("--force-new"), "a second studio on the job's page is a second server")
+  const port = Number(call.args[call.args.indexOf("--port") + 1])
+  assert.ok(Number.isInteger(port) && port > 0, `the preview names its port: ${call.args.join(" ")}`)
+  for (const flag of BROWSER_GPU_ARGS) assert.ok(call.args.includes(flag), `the studio must pass ${flag}`)
+  // The one networked video run: the page is served inside the child's namespace, so only a shared network reaches it.
+  assert.equal(call.network, true)
+  assert.equal(call.cwd, resolve(job))
+  assert.deepEqual(call.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+})
+
+test("the check verb is one JSON check in the job, wrapped, and the lint verb is its own static pass", async (t) => {
+  const job = jobFor(t)
+  const calls: HostRunInput[] = []
+  const runner: HostRunner = {
+    async run(input: HostRunInput): Promise<HostRunResult> {
+      calls.push(input)
+      if (input.args[0] === "check") {
+        return passed(JSON.stringify({ ok: true, lint: { ok: true, findings: [] }, runtime: { ok: true, findings: [] } }))
+      }
+      if (input.args[0] === "lint") return passed(JSON.stringify({ ok: true, findings: [] }))
+      return passed("0.9.54\n")
+    },
+    cancel(): void {},
+  }
+  const { ctx } = harnessFor(job, runner)
+  const adapter = videoAdapter()
+  await adapter.prepare(demo(), ctx)
+  // One definition, so the check stays the mechanical pass and does not start the QA sampler: what is under test is the
+  // argv, and the QA pass already has its own tests beside a rendered file.
+  const results = await adapter.check(ctx, VIDEO_CHECKS.filter((def) => def.id === "video.count"))
+  assert.equal(results[0]?.status, "passed")
+
+  const check = calls.find((entry) => entry.args[0] === "check")
+  assert.ok(check, "the adapter asked the engine to check the project")
+  assert.deepEqual(check.args, ["check", "--json", ...BROWSER_GPU_ARGS])
+  assert.equal(check.cwd, resolve(job))
+  assert.deepEqual(check.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+  // A check reads a local file: it narrows the adapter's network permission to nothing and the runner keeps it wrapped.
+  assert.equal(check.network, undefined)
+
+  const lint = await adapter.lint(ctx)
+  assert.equal(lint.ok, true)
+  const lintCall = calls.find((entry) => entry.args[0] === "lint")
+  assert.ok(lintCall, "the adapter asked for the static pass")
+  assert.deepEqual(lintCall.args, ["lint", "--json"])
+  assert.equal(lintCall.network, undefined)
 })
 
 test("every video call goes through hyperframesRun, which names the engine and the declared environment", async (t) => {
@@ -794,6 +937,36 @@ test("every video call goes through hyperframesRun, which names the engine and t
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
+test("a scene's clip becomes a video element, a picture stays an image", async (t) => {
+  const job = jobFor(t)
+  const adapter = videoAdapter()
+  const runner = await hostRunnerFor(adapter, { jobDir: job, timeoutMs: 240_000 })
+  const { ctx } = harnessFor(job, runner)
+  const spec = parsedVideo({
+    kind: "video",
+    version: 2,
+    job: "clips",
+    brief: "a film whose scene is a clip",
+    engine: "hyperframes",
+    fps: 24,
+    size: { width: 640, height: 360 },
+    scenes: [
+      { id: "clip", title: "A clip", duration: 2, asset: "clips/a.mp4", acceptance: ["the clip plays"] },
+      { id: "pic", title: "A picture", duration: 1, asset: "clips/a.png", acceptance: ["the picture shows"] },
+    ],
+  })
+  mkdirSync(join(job, "clips"), { recursive: true })
+  writeFileSync(join(job, "clips", "a.png"), Buffer.from("png bytes stand in\n"))
+  writeFileSync(join(job, "clips", "a.mp4"), Buffer.from("mp4 bytes stand in\n"))
+
+  await adapter.prepare(spec, ctx)
+  const html = readFileSync(join(job, "index.html"), "utf8")
+  // An `<img>` pointing at an mp4 is a broken image that the engine would encode into the film without complaint.
+  assert.match(html, /<video class="asset" src="clips\/a\.mp4" muted autoplay loop playsinline><\/video>/)
+  assert.match(html, /<img class="asset" src="clips\/a\.png"/)
+  assert.equal(html.includes('<img class="asset" src="clips/a.mp4"'), false)
+})
+
 // The engine, through the real host runner. Each test skips only when the host says it cannot run a program.
 
 test("a five second, 640x360 demo renders to an mp4 inside the job, and ffprobe measures about five seconds", async (t) => {
@@ -1015,6 +1188,321 @@ test("the preview server starts on a free port, serves the project and stops whe
   // The runner is one-run-at-a-time: cancelling the server is what frees it, and the port closing is how a test sees it.
   const closed = await portClosed(port)
   assert.equal(closed, true, "cancel() must stop the preview server")
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The job's acceptance (B2-T5). §5 B2 asks for "brief → storyboard → scenes → render → QA → fix → final, without any
+// generative model". The two tests below build that sentence out of the real parts: a plan.md in a temp project, the
+// handoff's spec, the storyboard, the adapter's steps through the real host runner, the installed engine and its ffmpeg.
+
+test(
+  "brief → storyboard → scenes → render → QA → fix → final, and the loop hands back what it could not fix",
+  { timeout: 240_000 },
+  async (t) => {
+    const project = mkdtempSync(join(tmpdir(), "mm-b2-accept-"))
+    t.after(() => rmSync(project, { recursive: true, force: true }))
+    const jobDir = join(project, "job")
+    mkdirSync(jobDir)
+    const jobId = "job-1"
+    const brief = "a five second film about the release"
+    const root = artifactsRootFor(project, jobId)
+
+    // plan.md's one promoted clip, at the path promote.ts writes and with the hash plan.md records. The bytes are a
+    // placeholder: an encode would need the engine before the handoff, and the handoff is about which bytes the plan handed
+    // over, not about decoding them.
+    const clipPath = "t1/release.mp4"
+    const clip = await promotedFile(root, "t1", "release.mp4", "the plan's bytes, not an encode\n")
+    const planMd = renderPlanDoc(
+      { id: jobId },
+      {
+        goal: brief,
+        findings: ["the release is one idea"],
+        decisions: ["one card per beat"],
+        openQuestions: [],
+        tasks: [{ id: "t1", title: "Make the card", role: "worker", files: [], acceptance: [] }],
+        artifacts: [clip],
+        risks: [],
+      },
+    )
+
+    // Brief → the spec a build job is handed: the plan's bytes verified, the clip a scene.
+    const handoff = await specFromPlan({ planMd, artifactsRoot: root, kind: "video", job: jobId, brief })
+    assert.deepEqual(handoff.errors, [])
+    const handed = handoff.spec
+    assert.ok(handed !== undefined && handed.kind === "video", "the handoff must produce a video spec")
+    if (!handed || handed.kind !== "video") return
+    assert.equal(handed.version, 2)
+    assert.equal(handed.engine, "hyperframes")
+    assert.equal(handed.brief, brief)
+    assert.deepEqual(
+      handed.scenes.map((scene) => [scene.id, scene.duration, scene.asset]),
+      [["t1-release-mp4", 5, clipPath]],
+    )
+    assert.deepEqual(handoff.used, [{ task: "t1", path: clipPath, sha256: clip.sha256 }])
+    // The two things plan.md does not carry — a duration and an acceptance line — are the storyboard's, and the handoff says
+    // both rather than inventing them quietly.
+    assert.ok(handoff.warnings.some((line) => line.includes("default 5 s")), handoff.warnings.join("; "))
+    assert.ok(handoff.warnings.some((line) => line.includes("carries no acceptance")), handoff.warnings.join("; "))
+
+    // Spec → storyboard. The handoff's scene is the first beat; the closing card is the second, and the two cards carry the
+    // same words on purpose: a title repeated across the cut is a freeze, which is the fault this film has to have for the
+    // loop to have something a safe fix can answer. Both beats are 2.5 s, so the finished film is the five seconds the
+    // brief asks for. The clip is left out of the beats for the adapter's own reason: a scene's asset is drawn as a still
+    // `<img>`, so a title card is what a placeholder clip can honestly become.
+    const board = storyboardFromPlan({
+      job: jobId,
+      goal: brief,
+      findings: ["the release is one idea"],
+      decisions: ["one card per beat"],
+      scenes: [
+        { id: handed.scenes[0]!.id, title: "the release", duration: 2.5, captions: ["the release"] },
+        {
+          id: "closing",
+          title: "the release",
+          duration: 2.5,
+          captions: ["the release"],
+          acceptance: ["the URL is on screen for the whole beat"],
+        },
+      ],
+    })
+    assert.deepEqual(board.errors, [])
+    const storyboard = board.storyboard
+    assert.ok(storyboard !== undefined, board.errors.join("; "))
+    if (storyboard === undefined) return
+    assert.equal(storyboard.duration, 5)
+    assert.deepEqual(
+      storyboard.beats.map((beat) => [beat.id, beat.at, beat.acceptance.length > 0]),
+      [
+        ["t1-release-mp4", 0, true],
+        ["closing", 2.5, true],
+      ],
+    )
+    // The board is a document before it is a film: it renders to the table a person edits and parses back to the same beats.
+    assert.deepEqual(parseStoryboard(renderStoryboard(storyboard)).storyboard, storyboard)
+
+    // Scenes: the beats in time order, as the contract's scenes. The film is the size the prompt for this test bounds it to.
+    const filmOf = (scenes: readonly Scene[]): VideoSpec => {
+      const parsed = parseSpec("video", {
+        kind: "video",
+        version: specVersionOf("video"),
+        job: jobId,
+        brief,
+        engine: "hyperframes",
+        fps: 24,
+        size: { width: 640, height: 360 },
+        output: { format: "mp4", quality: "low" },
+        scenes,
+      })
+      assert.deepEqual(parsed.errors, [])
+      assert.ok(parsed.spec !== undefined && parsed.spec.kind === "video")
+      return parsed.spec as VideoSpec
+    }
+    let film = filmOf(scenesOf(storyboard))
+
+    // The adapter, through the runner the adapter itself built the allowlist for. Nothing below fakes a program: prepare
+    // asks the engine, render encodes, snapshot photographs each midpoint and check reads the encoded file.
+    const adapter = videoAdapter()
+    const runner = await hostRunnerFor(adapter, { jobDir, timeoutMs: 240_000 })
+    const { ctx, logs } = harnessFor(jobDir, runner)
+    try {
+      await adapter.prepare(film, ctx)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (hostLimitation(message)) return t.skip(`no HyperFrames through the runner here: ${message}`)
+      throw error
+    }
+
+    const renders: number[] = []
+    const applied: SafeFix[] = []
+    let photographed = false
+    let final: readonly CheckResult[] = []
+    let outcome: Awaited<ReturnType<typeof qaRounds>>
+    try {
+      outcome = await qaRounds({
+        render: async (round) => {
+          renders.push(round)
+          await adapter.prepare(film, ctx)
+          await adapter.render(ctx)
+          if (!photographed) {
+            // The scene frames are the snapshot's, taken once: a fixed repair moves a cut, not the number of scenes.
+            await adapter.snapshot(ctx)
+            photographed = true
+          }
+        },
+        qa: async () => {
+          // The adapter's own check is the report the loop reads: the mechanical rules and the QA pass over the file it
+          // just rendered, one status per check. The first round's report is what the fixer answers.
+          final = await adapter.check(ctx, VIDEO_CHECKS)
+          return reportOf(final, film)
+        },
+        fixes: {
+          propose: async (report) => {
+            assert.ok(
+              report.checks.some((check) => check.id === "video.freeze" && check.status === "failed"),
+              `a fix is offered only for a failure the film has: ${report.checks
+                .map((check) => `${check.id}=${check.status}`)
+                .join(" ")}`,
+            )
+            return [
+              // The safe repair: a quarter second on the first card, inside the 500 ms cap, answering the freeze.
+              { op: "extend", scene: film.scenes[0]!.id, ms: 250 },
+              // The content change: the same repair carrying a new caption. No safe fix may rewrite what a scene says.
+              { op: "extend", scene: film.scenes[0]!.id, ms: 250, caption: "a rewritten line" },
+            ]
+          },
+          apply: async (fix) => {
+            applied.push(fix)
+            if (fix.op !== "extend") assert.fail(`the loop applied a ${fix.op}, which this fixture never proposes`)
+            // The repair reaches the film: the scene really is a quarter second longer, and the next render is of that film.
+            film = filmOf(
+              film.scenes.map((scene) =>
+                scene.id === fix.scene ? { ...scene, duration: scene.duration + fix.ms / 1000 } : scene,
+              ),
+            )
+          },
+        },
+      })
+    } catch (error) {
+      if (error instanceof assert.AssertionError) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      if (hostLimitation(message)) return t.skip(`no renderer or sampler through the runner here: ${message}`)
+      throw error
+    }
+
+    assert.deepEqual(renders, [1, 2, 3], "three renders is the whole budget")
+    assert.equal(outcome.stopped, "rounds")
+    // The safe repair was applied once per round it was proposed; the content change was reported, never applied.
+    assert.deepEqual(applied, [
+      { op: "extend", scene: "t1-release-mp4", ms: 250 },
+      { op: "extend", scene: "t1-release-mp4", ms: 250 },
+    ])
+    assert.deepEqual(outcome.applied, applied)
+    assert.equal(outcome.refused.length, 2, outcome.refused.map((entry) => entry.reason).join("; "))
+    for (const entry of outcome.refused) {
+      assert.match(entry.reason, /wording/, JSON.stringify(entry))
+      assert.equal((entry.fix as { caption?: string }).caption, "a rewritten line")
+    }
+    // Every round looked at the film and failed it on the frame the cut repeats, so the loop had something to repair and the
+    // film still had it when the budget ran out.
+    for (const round of outcome.rounds) {
+      assert.ok(round.failed.includes("video.freeze"), `round ${round.round} failed: ${round.failed.join(", ")}`)
+    }
+    // What a person gets: the failure, and the sentence that says the budget is what stopped the loop.
+    assert.ok(
+      outcome.needsHuman.some((line) => line.startsWith("video.freeze:")),
+      outcome.needsHuman.join("; "),
+    )
+    assert.ok(
+      outcome.needsHuman.some((line) => line.includes("no pass cleared them in 3 rounds")),
+      outcome.needsHuman.join("; "),
+    )
+
+    // The final report: every check the registry has, each with a status, over the film the repairs left behind (two
+    // extends made it 5.5 s). The three absences are skips with their reasons, not green lines.
+    assert.deepEqual(
+      final.map((result) => result.id),
+      VIDEO_CHECKS.map((def) => def.id),
+    )
+    for (const result of final) assert.ok(["passed", "failed", "skipped"].includes(result.status), result.id)
+    const coverage = evaluate(VIDEO_CHECKS, final)
+    assert.deepEqual(coverage.invalid, [])
+    assert.deepEqual(coverage.missing, [])
+    assert.deepEqual(
+      coverage.failed.map((result) => result.id),
+      ["video.freeze"],
+    )
+    assert.equal(final.find((result) => result.id === "video.duration")?.output, "5.5 s across 2 scenes")
+    for (const id of ["video.silence", "video.transcript", "video.vlm"]) {
+      const result = final.find((entry) => entry.id === id)
+      assert.equal(result?.status, "skipped", `${id} is a skip, not a pass`)
+      assert.ok((result?.reason ?? "").length > 0, `${id} must say why it did not run`)
+    }
+    // The film really was rendered: the file is in the job, the engine said which version made it, and the frame rules read
+    // that file rather than a page (the probe's duration and size are in the black check's sentence).
+    assert.ok(existsSync(join(jobDir, "video.mp4")), "the render wrote the file")
+    assert.ok(
+      logs.some((line) => /^HyperFrames \S+ made this video$/.test(line)),
+      logs.join(" | "),
+    )
+    assert.match(
+      final.find((result) => result.id === "video.black")?.output ?? "",
+      /sampled of the .* s file \(640×360, 24 fps\)/,
+    )
+  },
+)
+
+test("the motion path names no generative endpoint and has no client to call one (B2: without any generative model)", () => {
+  const source = new URL("../packages/artifact/src/", import.meta.url)
+  const files = readdirSync(source, { recursive: true, encoding: "utf8" })
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => ({ name, text: readFileSync(new URL(name, source), "utf8") }))
+  assert.ok(files.length >= 10, "the walk must see the package, not an empty list")
+
+  // B2's acceptance is "without any generative model": B2b and B5 own ComfyUI, the local weights (Wan 2.2, Mochi,
+  // CogVideoX) and the optional cloud API, and D13/D21 refuse a cloud model for a check. So the artifact package must not
+  // name one. The scan reads the text as it is written — string literals and import specifiers are where an endpoint URL
+  // or a model id would land — because a comment may name the thing the package does not do (runner.ts says a ComfyUI
+  // worker is one reason the host runner exists) and prose is not a call. The second half is the client: the package has
+  // no `fetch`, so no code path here can call an endpoint even without a name.
+  const names = ["comfyui", "stable-diffusion", "wan", "mochi", "cogvideo", "openai", "anthropic", "gemini"]
+  const named = new RegExp(`["'\`][^"'\`\\n]*\\b(?:${names.join("|")})\\b`, "i")
+  assert.deepEqual(
+    files.filter((file) => named.test(file.text)).map((file) => file.name),
+    [],
+    "no generative endpoint or model name may be written in the artifact package",
+  )
+  assert.deepEqual(
+    files.filter((file) => /\bfetch\s*\(|XMLHttpRequest/.test(file.text)).map((file) => file.name),
+    [],
+    "every program an artifact needs is reached through the host runner; the package has no HTTP client of its own",
+  )
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The helpers the acceptance test is built from: one promoted file, the beats in time order, and the report the loop reads.
+
+// One promoted file, written where promote.ts would have put it, and the plan.md entry that describes it.
+const promotedFile = async (
+  root: string,
+  task: string,
+  path: string,
+  content: string,
+): Promise<PlanDoc["artifacts"][number]> => {
+  const dest = join(root, task, ...path.split("/"))
+  mkdirSync(dirname(dest), { recursive: true })
+  writeFileSync(dest, content)
+  return { task, path, bytes: Buffer.byteLength(content), sha256: await sha256File(dest) }
+}
+
+// The beats in time order, as the contract's scenes: a beat's length is the board's duration minus its start, and the
+// words a beat carries are what the frame shows (a title and its caption).
+function scenesOf(board: Storyboard): Scene[] {
+  return board.beats.map((beat, index) => {
+    const end = index + 1 < board.beats.length ? board.beats[index + 1]!.at : board.duration
+    return {
+      id: beat.id,
+      title: beat.words ?? beat.id,
+      ...(beat.words !== undefined ? { captions: [beat.words] } : {}),
+      duration: Math.round((end - beat.at) * 1000) / 1000,
+      acceptance: [...beat.acceptance],
+    }
+  })
+}
+
+// The report the fix loop reads, from the adapter's own check results: every check with its status, and the film's scene
+// ids so an `extend` that names a scene nothing has is refused. `QaCheck`'s id type is the QA pass's six ids, but the loop
+// reasons about every failure the report has, so the wider id set is carried as it arrives.
+const reportOf = (results: readonly CheckResult[], spec: VideoSpec): QaReport => ({
+  checks: results.map(
+    (result): QaCheck => ({
+      id: result.id as QaCheck["id"],
+      status: result.status,
+      text: result.output ?? result.reason ?? result.id,
+    }),
+  ),
+  sceneIds: spec.scenes.map((scene) => scene.id),
+  frames: [],
+  passed: results.every((result) => result.status !== "failed"),
 })
 
 // Whether the port refuses a connection, tried until it does or the deadline passes. Every wait is bounded so a server

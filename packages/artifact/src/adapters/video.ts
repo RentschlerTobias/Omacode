@@ -274,7 +274,16 @@ function sceneHtml(scene: VideoScene, spec: VideoSpec, index: number, source: Sc
   ]
   if (source.title !== undefined) lines.push(`        <h2>${escapeHtml(source.title)}</h2>`)
   if (source.asset !== undefined) {
-    lines.push(`        <img class="asset" src="${escapeHtml(source.asset)}" alt="${escapeHtml(source.title ?? "")}" />`)
+    // A scene's asset may be a picture or a clip, and the element says which: an `<img>` pointing at an mp4 renders as a
+    // broken image, and the engine would happily encode that into the film. A clip plays muted from its start, which is
+    // what a composition captures frame by frame; the scene's own start and duration still decide where it is seen.
+    const file = source.asset.slice(source.asset.lastIndexOf("/") + 1).toLowerCase()
+    const clip = [".mp4", ".webm", ".mov"].some((extension) => file.endsWith(extension))
+    lines.push(
+      clip
+        ? `        <video class="asset" src="${escapeHtml(source.asset)}" muted autoplay loop playsinline></video>`
+        : `        <img class="asset" src="${escapeHtml(source.asset)}" alt="${escapeHtml(source.title ?? "")}" />`,
+    )
   }
   const captions = source.captions ?? []
   if (captions.length > 0) {
