@@ -293,6 +293,22 @@ const imagesOutputsRule: Rule<ImagesSpec> = {
 
 const IMAGES_RULES: readonly Rule<ImagesSpec>[] = [imagesPrompts, imagesOutputsRule]
 
+// The suffix the image adapter gives a stand-in (B5-T5): a slot with a checkpoint writes `<slot>.png`, and a slot with
+// nothing declared writes `<slot>.placeholder.png`. The gate counts both as outputs — a set made of placeholders is a
+// thing a person can look at and fill in — and names the second here, because "2 outputs" over two diagrams is exactly
+// the silent pass this file exists to prevent. A warning rather than a verdict: the absence is declared in the spec and
+// the check that owns the pixels is `images.placeholder`, not this rule.
+const IMAGE_PLACEHOLDER_SUFFIX = ".placeholder.png"
+
+function placeholderWarnings(input: QualityInput): readonly string[] {
+  if (input.spec.kind !== "images" || input.outputs === undefined) return []
+  const placeholders = input.outputs.filter((path) => path.endsWith(IMAGE_PLACEHOLDER_SUFFIX))
+  if (placeholders.length === 0) return []
+  return [
+    `${placeholders.length} ${placeholders.length === 1 ? "placeholder stands in" : "placeholders stand in"} for a picture: ${placeholders.join(", ")}`,
+  ]
+}
+
 // One rule list per kind, read in declaration order. The switch is what narrows the spec to the list that belongs to
 // it; a kind added to ARTIFACT_KINDS without a case here would leave this function without an answer, which the
 // compiler refuses.
@@ -330,6 +346,8 @@ export function qualityGate(input: QualityInput): QualityReport {
   return {
     ship: verdicts.every((verdict) => verdict.ok),
     verdicts,
-    warnings: humanSkips(coverage, input.defs),
+    // The skips a person still owes, then the files that are not pictures: both are things the artifact ships with and
+    // the report has to say, and neither is a reason to hold it back.
+    warnings: [...humanSkips(coverage, input.defs), ...placeholderWarnings(input)],
   }
 }

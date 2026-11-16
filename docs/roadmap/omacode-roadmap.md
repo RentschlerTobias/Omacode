@@ -917,23 +917,30 @@ files.
 
 **Tasks**
 
-- [ ] **B5-T1 — Image spec.** `images.json`: slots, prompts, model, seed, size, refs, negative.
-- [ ] **B5-T2 — ComfyUI client (shared).** `/prompt`, `/history`, `/view`, `/ws`, `/object_info`, `/upload/image`;
+- [x] **B5-T1 — Image spec.** `images.json`: slots, prompts, model, seed, size, refs, negative.
+  - *Reality:* images is version 2 on its own: a `model` on the set and on a slot (name, file, sha256), so a set can name the checkpoint a hash policy will judge.
+- [x] **B5-T2 — ComfyUI client (shared).** `/prompt`, `/history`, `/view`, `/ws`, `/object_info`, `/upload/image`;
   local or remote; used by B2b.
-- [ ] **B5-T3 — Cloud API optional.** Keys; budget; terms.
-- [ ] **B5-T4 — Model/license registry + unknown-hash policy.** Wan 2.2, Mochi, CogVideoX, FLUX schnell, Qwen-Image,
+  - *Reality:* the client answers every call with a value, never a throw; `/ws` carries progress and `/history` decides completion, so a dropped socket loses nothing and polling is the same path. A remote server must be declared in code (`allowRemote`), never in a spec. One graph per slot, because prompt, size and seed are per slot.
+- [x] **B5-T3 — Cloud API optional.** Keys; budget; terms.
+  - *Reality:* implemented as an honest **refusal**: the egress gate lives in the plugin, the artifact package may not import it, and a second gate would be a second answer to whether a payload may leave. `cloudImageBackend` names the missing gate, budget ledger and terms instead of calling anything.
+- [x] **B5-T4 — Model/license registry + unknown-hash policy.** Wan 2.2, Mochi, CogVideoX, FLUX schnell, Qwen-Image,
   SDXL. Enforcement in the adapter, resolved **by file hash**:
   - hash on the blocklist ⇒ refuse;
   - hash known and allowed ⇒ proceed;
   - **hash unknown ⇒ refuse and ask**, offering to register it with its license and territory — never a silent allow.
   A workflow can load any checkpoint on disk, so a declared name proves nothing.
   Per-variant SPDX: CogVideoX weights are not simply Apache-2.0 (verify).
-- [ ] **B5-T5 — VLM checks.** Prompt checklist, style consistency, provenance; placeholders when no model.
-- [ ] **B5-T6 — GPU contention.** One render at a time via the host runner; `artifactd`'s lock arrives in B6.
-- [ ] **B5-T7 — Tests.** Fake ComfyUI; manifest; VLM fixtures; blocklisted hash refused; **unknown hash refused**;
+  - *Reality:* the registry is seeded with the six named models and the published hashes; CogVideoX-5B is recorded as `LicenseRef-CogVideoX` because its LICENSE is not Apache-2.0 (commercial use needs registration with the licensor). Claims that could not be checked on this machine are marked with what was read, not asserted. A declared-but-unknown, blocked or territory-refused checkpoint still refuses; only "no model declared" becomes a placeholder.
+- [x] **B5-T5 — VLM checks.** Prompt checklist, style consistency, provenance; placeholders when no model.
+  - *Reality:* the deterministic parts run — prompt words reach the workflow, colours are compared across slots, the resolved checkpoint/licence/territory is on the record — and the vision review is `skippable` with the D13/D21 reason. A set without a checkpoint renders labelled placeholder PNGs (checkerboard, no text: a bitmap font would be a second thing to be wrong about), the `images.placeholder` check names them, and the gate ships them as a warning.
+- [x] **B5-T6 — GPU contention.** One render at a time via the host runner; `artifactd`'s lock arrives in B6.
+  - *Reality:* the adapter runs no program (socket only), so it holds its own single render slot and the runner's `another run is active` rule is asserted against a real runner; the cross-process lock is B6's.
+- [x] **B5-T7 — Tests.** Fake ComfyUI; manifest; VLM fixtures; blocklisted hash refused; **unknown hash refused**;
   registration flow; placeholder path.
 
-**Files:** `packages/artifact/src/adapters/{comfyui,image}.ts`, `skills/image/`, `test/image.test.ts`.
+
+  - *Reality:* the audit ran the whole chain over the fake server: plan → spec → render → manifest → checks → gate `ship`, and the unknown-hash variant refuses with zero requests. It also named the placeholder gap, which the last change closed; the VLM fixtures the plan asks for have no model to run, so the skip is what is proven.**Files:** `packages/artifact/src/adapters/{comfyui,image}.ts`, `skills/image/`, `test/image.test.ts`.
 
 **Checks:** `npm run typecheck`, `npm test`; one image if models exist; dry-run otherwise.
 

@@ -23,11 +23,13 @@
 
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { test, type TestContext } from "node:test"
 
+import { artifactsRootFor, specFromPlan } from "../packages/micromanager/src/artifact/handoff.ts"
+import { renderPlanDoc, type PlanDoc } from "../packages/micromanager/src/plandoc.ts"
 import {
   IMAGE_CHECKS,
   imageAdapter,
@@ -53,7 +55,8 @@ import {
   registryWith,
   type ModelRegistry,
 } from "../packages/artifact/src/models.ts"
-import { readPng } from "../packages/artifact/src/png.ts"
+import { encodePng as writePng, readPng } from "../packages/artifact/src/png.ts"
+import { manifestOf, sha256File, verifyManifest } from "../packages/artifact/src/provenance.ts"
 import { qualityGate } from "../packages/artifact/src/quality.ts"
 import { createHostRunner } from "../packages/artifact/src/runner.ts"
 import { parseSpec, SPEC_VERSIONS, type ImagesSpec } from "../packages/artifact/src/spec.ts"
@@ -223,7 +226,28 @@ test("a version 1 image set is refused by number, and the sentence names 2", () 
   assert.deepEqual(stale.errors, ["version: an images spec is version 2, got 1"])
 })
 
-test("a slot with no model and a set with no model is refused at prepare, before any request", async (t) => {
+// The encoder the placeholder needs. It lives in `png.ts` beside the reader, and the round trip is the whole claim: the
+// checks open a placeholder with `readPng`, so a writer and a reader that agree only in this file's comments would be
+// two guesses. Three by two, two colours, alpha carried through.
+test("the package's own PNG writer round-trips through its reader", () => {
+  const bytes = writePng({
+    width: 3,
+    height: 2,
+    pixel: (x, y) => (x === 0 && y === 0 ? [255, 0, 0, 255] : [0, 0, 255, 128]),
+  })
+  const picture = pngOf(bytes)
+  assert.deepEqual([picture.width, picture.height], [3, 2])
+  assert.deepEqual(picture.at(0, 0), [255, 0, 0, 255])
+  assert.deepEqual(picture.at(1, 0), [0, 0, 255, 128])
+  assert.deepEqual(picture.at(0, 1), [0, 0, 255, 128])
+  assert.deepEqual(picture.at(2, 1), [0, 0, 255, 128])
+})
+
+// What replaced the two tests that used to stand here. They refused a set with no checkpoint at prepare and kept the
+// placeholder B5-T5 names open as a tripwire; the acceptance is "placeholders otherwise", so a set that declares
+// nothing now renders a labelled stand-in per slot. The policy around a declared checkpoint does not soften — unknown,
+// unhashed, blocked and territory-refused all still refuse, as the tests above and the second half below prove.
+test("a set with no model renders placeholders of the right size, passes the checks and ships with them named", async (t) => {
   const fake = await fakeFor(t)
   const dir = jobDir(t)
   const without = v2()
@@ -236,9 +260,119 @@ test("a slot with no model and a set with no model is refused at prepare, before
   const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
-  await assert.rejects(adapter.prepare(spec, ctx), /slot "hero" has no model and the set declares none, so there is no checkpoint to load/)
-  assert.deepEqual(fake.requests, [])
-  assert.equal(existsSync(join(dir, "workflows")), false)
+  const prepared = await adapter.prepare(spec, ctx)
+  // No checkpoint means no graph: the slot is planned as a placeholder and the run's notes say which ones, the way the
+  // deck names a missing asset.
+  assert.deepEqual(fake.requests, [], "a set with no checkpoint must not reach the server")
+  assert.equal(existsSync(join(dir, "workflows/hero.json")), false, "no graph exists for a slot with no checkpoint")
+  assert.equal(existsSync(join(dir, "workflows/wide.json")), false)
+  const note = prepared.notes?.find((line) => line.startsWith("2 placeholders:"))
+  assert.ok(note !== undefined, prepared.notes?.join("; "))
+  assert.match(note, /2 placeholders/)
+  assert.match(note, /"hero"/)
+  assert.match(note, /"wide"/)
+
+  const rendered = await adapter.render(ctx)
+  assert.deepEqual(rendered.outputs, ["images/hero.placeholder.png", "images/wide.placeholder.png"])
+  assert.equal(fake.prompts.length, 0, "a placeholder needs no queue entry")
+
+  const hero = pngOf(readFileSync(join(dir, "images/hero.placeholder.png")))
+  assert.deepEqual([hero.width, hero.height], [64, 48])
+  const wide = pngOf(readFileSync(join(dir, "images/wide.placeholder.png")))
+  assert.deepEqual([wide.width, wide.height], [32, 16])
+
+  // A pattern, not a picture: a black border and a checkerboard of magenta and cyan, neither of which any generator in
+  // this palette would make, and no text — the file name and the check carry the label.
+  assert.deepEqual(hero.at(0, 0), [0, 0, 0, 255])
+  assert.deepEqual(hero.at(3, 3), [255, 0, 170, 255])
+  assert.deepEqual(hero.at(9, 3), [0, 229, 255, 255])
+
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const byId = new Map(results.map((result) => [result.id, result]))
+  const placeholder = byId.get("images.placeholder")
+  assert.equal(placeholder?.status, "passed", JSON.stringify(results))
+  assert.match(placeholder?.output ?? "", /placeholder/)
+  assert.match(placeholder?.output ?? "", /"hero"/)
+  assert.match(placeholder?.output ?? "", /"wide"/)
+  assert.match(placeholder?.output ?? "", /images\/hero\.placeholder\.png/)
+  for (const id of ["images.count", "images.files", "images.size", "images.prompt", "images.provenance", "images.style"]) {
+    assert.equal(byId.get(id)?.status, "passed", `${id}: ${JSON.stringify(byId.get(id))}`)
+  }
+  const coverage = evaluate(IMAGE_CHECKS, results)
+  assert.deepEqual(coverage.invalid, [])
+  assert.deepEqual(coverage.failed, [])
+  assert.deepEqual(coverage.skipped.map((result) => result.id), ["images.vlm"])
+
+  // The gate ships a set made of placeholders — they are outputs and the count is honest — and says in the report which
+  // files are stand-ins, so the absence is never a silent pass.
+  const report = qualityGate({ spec, defs: IMAGE_CHECKS, results, outputs: rendered.outputs })
+  assert.equal(report.ship, true, JSON.stringify(report.verdicts))
+  const outputs = report.verdicts.find((verdict) => verdict.id === "images.outputs")
+  assert.equal(outputs?.ok, true)
+  assert.match(outputs?.why ?? "", /2 outputs for 2 slots/)
+  assert.match(report.warnings.join("; "), /hero\.placeholder\.png/)
+  assert.match(report.warnings.join("; "), /wide\.placeholder\.png/)
+
+  // One slot with no model and another that declares an unknown hash is still the whole set refused, not a placeholder
+  // beside a graph nobody can vouch for.
+  const mixed = v2()
+  delete mixed["model"]
+  mixed["slots"] = [
+    { id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } },
+    {
+      id: "wide",
+      prompt: "a wide gradient",
+      size: { width: 32, height: 16 },
+      model: { name: "Unknown", file: "unknown.safetensors", sha256: "e".repeat(64) },
+    },
+  ]
+  const refusedDir = jobDir(t)
+  await assert.rejects(adapter.prepare(parsed(mixed), context(refusedDir)), /slot "wide": .*is not in the model registry/)
+  assert.deepEqual(fake.requests, [], "the refused set made no request at all")
+  assert.equal(existsSync(join(refusedDir, "images")), false, "no placeholder stood in for the refused slot")
+
+  // And a checkpoint that is named but has no hash to resolve is the same refusal, not a placeholder with a better name:
+  // a name proves nothing, because a workflow can load any checkpoint on disk.
+  const bare = v2()
+  bare["model"] = { name: "SDXL base", file: "sdxl-base.safetensors" }
+  bare["slots"] = [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }]
+  const bareDir = jobDir(t)
+  await assert.rejects(adapter.prepare(parsed(bare), context(bareDir)), (error: Error) => {
+    assert.match(error.message, /^images: slot "hero": /)
+    assert.match(error.message, /has no sha256 to resolve/)
+    return true
+  })
+  assert.equal(existsSync(join(bareDir, "images")), false)
+})
+
+test("a placeholder file that is truncated after the render fails the check, naming the slot", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const without = v2()
+  delete without["model"]
+  without["slots"] = [
+    { id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } },
+    { id: "wide", prompt: "a wide gradient", size: { width: 32, height: 16 } },
+  ]
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+  await adapter.prepare(parsed(without), ctx)
+  await adapter.render(ctx)
+
+  const path = join(dir, "images/hero.placeholder.png")
+  writeFileSync(path, readFileSync(path).subarray(0, 30))
+
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const placeholder = results.find((result) => result.id === "images.placeholder")
+  assert.equal(placeholder?.status, "failed", JSON.stringify(results))
+  assert.match(placeholder?.reason ?? "", /placeholder/)
+  assert.match(placeholder?.reason ?? "", /"hero"/)
+  assert.match(placeholder?.reason ?? "", /images\/hero\.placeholder\.png/)
+  // The slot that is still readable is not blamed, and the file check says the same thing about the bytes: a stand-in
+  // nobody can open is an absence with extra steps.
+  assert.doesNotMatch(placeholder?.reason ?? "", /"wide"/)
+  assert.equal(results.find((result) => result.id === "images.files")?.status, "failed")
+  assert.equal(results.find((result) => result.id === "images.count")?.status, "passed")
 })
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -450,6 +584,7 @@ test("two slots render two pictures sequentially, at their own sizes, and every 
       ["images.size", "passed"],
       ["images.prompt", "passed"],
       ["images.provenance", "passed"],
+      ["images.placeholder", "passed"],
       ["images.style", "passed"],
       ["images.vlm", "skipped"],
     ],
@@ -465,16 +600,16 @@ test("a different checkpoint on one slot gets its own workflow, while the other 
   const project: ImageProject = await writeImageProject(parsed(v2()), dir)
 
   assert.deepEqual(
-    project.slots.map((slot) => slot.model.name),
+    project.slots.map((slot) => slot.model?.name),
     ["SDXL base", "FLUX schnell"],
   )
   assert.notEqual(project.slots[0]?.workflow, project.slots[1]?.workflow)
 
-  const first = JSON.parse(readFileSync(join(dir, project.slots[0]!.workflow), "utf8")) as Record<
+  const first = JSON.parse(readFileSync(join(dir, project.slots[0]!.workflow!), "utf8")) as Record<
     string,
     { inputs: Record<string, unknown> }
   >
-  const second = JSON.parse(readFileSync(join(dir, project.slots[1]!.workflow), "utf8")) as Record<
+  const second = JSON.parse(readFileSync(join(dir, project.slots[1]!.workflow!), "utf8")) as Record<
     string,
     { inputs: Record<string, unknown> }
   >
@@ -684,6 +819,42 @@ test("a blocklisted hash is refused by name and reason before the server is aske
   assert.equal(existsSync(join(dir, "workflows")), false)
 })
 
+test("a licence that permits no EU use is refused by the adapter, and allowed for the territory it names", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  // A hash this table knows, in a registry that records it as US-only. The blocklist is empty on purpose: the refusal
+  // being tested is the territory, not a block.
+  const hash = digest("weights whose licence is US-only")
+  const registry: ModelRegistry = {
+    models: [{ name: "US only", spdx: "Apache-2.0", territories: ["US"], use: "tests", hashes: [hash], verified: "listed in this test" }],
+    blocked: [],
+  }
+  const spec = parsed({
+    ...v2(),
+    model: { name: "US only", file: "us-only.safetensors", sha256: hash },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 32, height: 16 } }],
+  })
+
+  // The default territory is the EU, and the adapter refuses with the licence and the territories that would work.
+  await assert.rejects(adapterFor(t, fake, { registry }).prepare(spec, context(dir)), (error: Error) => {
+    assert.match(error.message, /may not be used in EU/)
+    assert.match(error.message, /Apache-2\.0/)
+    assert.match(error.message, /permits US/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [])
+  assert.equal(existsSync(join(dir, "workflows")), false)
+
+  // The same hash resolved for the territory the licence names proceeds: the refusal was about the territory, not the
+  // weights, and the caller states the territory in code rather than the spec.
+  const us = adapterFor(t, fake, { registry, territory: "US" })
+  const usCtx = context(dir)
+  const prepared = await us.prepare(spec, usCtx)
+  assert.ok(prepared.notes?.some((note) => /resolved by sha256 for use in US/.test(note)), prepared.notes?.join("; "))
+  const rendered = await us.render(usCtx)
+  assert.deepEqual(rendered.outputs, ["images/hero.png"])
+})
+
 test("the file in the job decides the hash, not the name the spec declared", async (t) => {
   const fake = await fakeFor(t)
   const dir = jobDir(t)
@@ -885,8 +1056,8 @@ test("the vision review is skipped with the D13/D21 reason while the determinist
   assert.deepEqual(coverage.failed, [])
   assert.deepEqual(coverage.skipped.map((result) => result.id), ["images.vlm"])
 
-  // And a skipped `images.vlm` is declared skippable, so the gate ships with the absence as a warning (B5-T5's
-  // "placeholders when no model" is exactly this: a named absence, not a green line).
+  // And a skipped `images.vlm` is declared skippable, so the gate ships with the absence as a warning: the review did
+  // not happen, and the report says so instead of showing a green line where a look should be.
   const report = qualityGate({ spec: twoSlots(), defs: IMAGE_CHECKS, results, outputs: rendered.outputs })
   assert.equal(report.ship, true, JSON.stringify(report.verdicts))
   assert.ok(report.warnings.some((warning) => /images\.vlm was skipped/.test(warning)), JSON.stringify(report.warnings))
@@ -1021,6 +1192,192 @@ test("the cloud image backend is absent without a key, and refuses with its reas
   // The adapter has no cloud option at all: there is no configuration in this round under which a picture comes from a
   // host, which is what "absent with a refusal reason" means rather than a backend that half works.
   assert.equal("cloud" in imageAdapter(), false)
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The job's acceptance (B5-T7). §5 B5 asks for "images work when a model exists, placeholders otherwise, and an unknown
+// or EU-excluded checkpoint is refused rather than silently used". The first test below is the whole chain for the
+// model-that-exists half: a plan.md rendered by the plugin's own renderer, one promoted picture, the handoff's images
+// spec, the adapter against the fake server, the manifest, the checks and the gate. The second is the same chain with
+// one unknown hash, where the refusal has to leave the server's request log empty.
+
+// What a plan leaves behind for an image set: the promoted PNG at the path plan.md records, and the document that
+// describes it. The picture is a real PNG, because plan.md's artifact table hashes bytes and an image slot's prompt
+// comes from the file's name.
+const imagePlanFixture = async (
+  t: TestContext,
+  options: { readonly width?: number; readonly height?: number; readonly colour?: readonly number[] } = {},
+): Promise<{ root: string; planMd: string; asset: string; sha256: string; bytes: number; brief: string }> => {
+  const project = mkdtempSync(join(tmpdir(), "mm-image-plan-"))
+  t.after(() => rmSync(project, { recursive: true, force: true }))
+  const root = artifactsRootFor(project, "job-1")
+  const asset = "t1/hero.png"
+  const bytes = png(options.width ?? 64, options.height ?? 48, options.colour ?? [90, 120, 200, 255])
+  const promoted = join(root, ...asset.split("/"))
+  mkdirSync(dirname(promoted), { recursive: true })
+  writeFileSync(promoted, bytes)
+  const sha256 = await sha256File(promoted)
+
+  const brief = "images for the release"
+  const plan: PlanDoc = {
+    goal: brief,
+    findings: [],
+    decisions: [],
+    openQuestions: [],
+    tasks: [{ id: "t1", title: "Mock it up", role: "worker", files: [], acceptance: [] }],
+    artifacts: [{ task: "t1", path: "hero.png", bytes: bytes.length, sha256 }],
+    risks: [],
+  }
+  return { root, planMd: renderPlanDoc({ id: "job-1" }, plan), asset, sha256, bytes: bytes.length, brief }
+}
+
+test("the manifest records every rendered picture, and a rewritten picture is detected as changed", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+  await adapter.prepare(twoSlots(), ctx)
+  const rendered = await adapter.render(ctx)
+
+  const manifest = await manifestOf(
+    dir,
+    rendered.outputs.map((path) => ({ path, source: "model" as const })),
+  )
+  assert.deepEqual(manifest.assets.map((entry) => entry.path), ["images/hero.png", "images/wide.png"])
+  for (const entry of manifest.assets) {
+    assert.equal(entry.source, "model")
+    assert.ok(entry.bytes > 0, `${entry.path} has bytes`)
+    assert.equal(entry.sha256, await sha256File(join(dir, entry.path)), `${entry.path}'s hash is its file's`)
+  }
+  assert.deepEqual(await verifyManifest(dir, manifest), { ok: true, missing: [], changed: [], outside: [] })
+
+  // Same path, different bytes, still a valid PNG: only the manifest's hash can tell that the set changed. This is the
+  // case a size or a picture check would call fine, which is why the manifest exists.
+  writeFileSync(join(dir, "images/wide.png"), png(32, 16, [10, 200, 10, 255]))
+  assert.deepEqual(await verifyManifest(dir, manifest), {
+    ok: false,
+    missing: [],
+    changed: ["images/wide.png"],
+    outside: [],
+  })
+})
+
+test("a plan's promoted picture becomes an image set that renders, manifests, checks out and ships", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const fixture = await imagePlanFixture(t)
+
+  const handoff = await specFromPlan({
+    planMd: fixture.planMd,
+    artifactsRoot: fixture.root,
+    kind: "images",
+    job: "job-1",
+    brief: fixture.brief,
+  })
+  assert.deepEqual(handoff.errors, [])
+  const briefed = handoff.spec
+  assert.ok(briefed !== undefined && briefed.kind === "images", "the handoff must produce an image spec")
+  if (!briefed || briefed.kind !== "images") return
+
+  // plan.md's artifact table is all the handoff has: one file becomes one slot, its stem the prompt, the default size
+  // stated as a warning. The version is B5-T1's 2, and the promoted file is recorded at the plan's hash.
+  assert.equal(briefed.version, 2)
+  assert.deepEqual(
+    briefed.slots.map((slot) => [slot.id, slot.prompt, slot.size]),
+    [["t1-hero-png", "hero", { width: 1024, height: 1024 }]],
+  )
+  assert.deepEqual(handoff.used, [{ task: "t1", path: fixture.asset, sha256: fixture.sha256 }])
+  assert.equal(briefed.model, undefined, "plan.md carries no checkpoint column, so the handoff cannot name one")
+  assert.ok(
+    handoff.warnings.some((line) => line.includes(fixture.asset) && line.includes("the file's name")),
+    handoff.warnings.join("; "),
+  )
+
+  // The checkpoint is the build job's decision, not the plan's: plan.md has no column for it, so the caller declares
+  // one on the spec and parses it again. Without that declaration the set renders placeholders (the test above): a
+  // labelled set with a reason rather than a default checkpoint nobody chose.
+  const withModel = parseSpec("images", {
+    ...briefed,
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
+  })
+  assert.deepEqual(withModel.errors, [])
+  const spec = withModel.spec
+  assert.ok(spec !== undefined && spec.kind === "images")
+  if (!spec || spec.kind !== "images") return
+
+  // Stage the promoted file into the job under the path the spec names: the plan's bytes, not a copy that claims them.
+  const staged = join(dir, ...fixture.asset.split("/"))
+  mkdirSync(dirname(staged), { recursive: true })
+  copyFileSync(join(fixture.root, ...fixture.asset.split("/")), staged)
+  assert.equal(await sha256File(staged), spec.assets?.[0]?.sha256, "the staged bytes are the plan's bytes")
+
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+  const prepared = await adapter.prepare(spec, ctx)
+  assert.ok(prepared.notes?.some((note) => /resolved by sha256 for use in EU/.test(note)), prepared.notes?.join("; "))
+
+  const rendered = await adapter.render(ctx)
+  assert.deepEqual(rendered.outputs, ["images/t1-hero-png.png"])
+  assert.equal(fake.prompts.length, 1, "one slot, one graph")
+  const picture = pngOf(readFileSync(join(dir, "images/t1-hero-png.png")))
+  assert.deepEqual([picture.width, picture.height], [1024, 1024], "the prompt's size reached the graph")
+
+  // What the job left: the plan's input at the hash plan.md recorded, and the picture the server made. Both paths are
+  // resolved inside the job by `manifestOf`, and the manifest verifies unchanged.
+  const manifest = await manifestOf(dir, [
+    { path: fixture.asset, source: "input" },
+    ...rendered.outputs.map((path) => ({ path, source: "model" as const })),
+  ])
+  assert.deepEqual(
+    manifest.assets.map((entry) => [entry.path, entry.source]),
+    [
+      [fixture.asset, "input"],
+      ["images/t1-hero-png.png", "model"],
+    ],
+  )
+  assert.equal(manifest.assets[0]?.sha256, fixture.sha256, "the manifest carries the plan's own hash")
+  assert.equal(manifest.assets[0]?.bytes, fixture.bytes)
+  assert.deepEqual(await verifyManifest(dir, manifest), { ok: true, missing: [], changed: [], outside: [] })
+
+  // The checks and the gate: every required check has a result, none failed, and the only skip is the vision review
+  // D13/D21 forbid. The set ships with that absence stated, which is the honest half of B5-T5.
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const coverage = evaluate(IMAGE_CHECKS, results)
+  assert.deepEqual(coverage.invalid, [])
+  assert.deepEqual(coverage.failed, [])
+  assert.deepEqual(coverage.missing, [])
+  assert.deepEqual(coverage.skipped.map((result) => result.id), ["images.vlm"])
+
+  const report = qualityGate({ spec, defs: IMAGE_CHECKS, results, outputs: rendered.outputs })
+  assert.equal(report.ship, true, JSON.stringify(report.verdicts))
+  assert.match(report.warnings.join("; "), /images\.vlm was skipped/)
+  assert.deepEqual(
+    report.verdicts.map((verdict) => verdict.id),
+    ["checks.contract", "checks.skipped", "images.prompts", "images.outputs"],
+  )
+
+  // The same plan and the same chain with one unknown hash. A fresh fake is the point: its log must be empty, not
+  // "empty except for the run that succeeded", so "refused rather than silently used" is a number and not a sentence.
+  const untrusted = await fakeFor(t)
+  const refusedDir = jobDir(t)
+  const unknown = parseSpec("images", {
+    ...briefed,
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: "f".repeat(64) },
+  })
+  assert.deepEqual(unknown.errors, [])
+  assert.ok(unknown.spec !== undefined && unknown.spec.kind === "images")
+  if (!unknown.spec || unknown.spec.kind !== "images") return
+
+  await assert.rejects(adapterFor(t, untrusted).prepare(unknown.spec, context(refusedDir)), (error: Error) => {
+    assert.match(error.message, /^images: slot "t1-hero-png": /)
+    assert.match(error.message, /is not in the model registry, so it is refused/)
+    assert.match(error.message, /registerModel\(\{ hash, name, license, territory \}\)/)
+    return true
+  })
+  assert.equal(untrusted.prompts.length, 0, "the refused job sent no /prompt")
+  assert.deepEqual(untrusted.requests, [], "the refused job made no request at all")
+  assert.equal(existsSync(join(refusedDir, "workflows")), false, "no workflow was written for the refused set")
+  assert.equal(existsSync(join(refusedDir, "images")), false, "no picture was written for the refused set")
 })
 
 test("no dependency was added for HTTP, WebSocket, multipart or PNG", () => {

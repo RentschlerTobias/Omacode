@@ -23,6 +23,13 @@
 // hash and licence still attached. Whether the pixels show what the prompt asked is a vision model's question; no local
 // one is configured and D13/D21 refuse a cloud one for a check, so `images.vlm` is declared skippable and skipped with
 // that reason, never a green line pretending to be a look.
+//
+// A set that declares no checkpoint at all is not refused: it has no model to load and therefore no picture, and a job
+// whose product is "two labelled files and a reason" is a product a person can look at. Those slots render as
+// `<slot>.placeholder.png` — a deterministic checkerboard, sized like the slot — and `images.placeholder` names them, so
+// the absence travels as a named fact instead of as a failure to produce anything. What does not soften is the policy
+// above: a checkpoint that is declared but unknown, blocked or refused for the territory is still a refusal, because
+// there is a model to judge and it cannot be used.
 
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
@@ -41,7 +48,7 @@ import {
   type Territory,
 } from "../models.ts"
 import { insidePath } from "../paths.ts"
-import { readPng, type Rgba } from "../png.ts"
+import { encodePng, readPng, type Rgba } from "../png.ts"
 import { sha256File } from "../provenance.ts"
 import type { ImageModel, ImagesSpec, Slot } from "../spec.ts"
 
@@ -53,6 +60,43 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // Where the adapter writes, relative to the job. Both names are its own, so no slot can choose where a byte lands.
 const WORKFLOW_DIR = "workflows"
 const OUTPUT_DIR = "images"
+
+// A slot with no checkpoint is a labelled file, not a missing one: the suffix keeps it beside the real picture's path so
+// a reader who was promised `images/hero.png` finds `images/hero.placeholder.png` next to where it would have been, and
+// the check's output, the run's notes and the gate's warning all spell it out.
+const PLACEHOLDER_SUFFIX = ".placeholder.png"
+
+// Why a slot has no workflow and no picture: nothing was declared to make one with. It is a fact about the spec, and it
+// travels in the plan so the check knows which slots are stand-ins without re-deriving the rule.
+const NO_MODEL = "no checkpoint is declared for this slot or for its set"
+
+// The placeholder's pixels. Two colours nothing in the deck's or the video's palette uses (#ff00aa and #00e5ff against
+// the deck's #101014 ground and #7aa2ff accent), in a checkerboard coarse enough to survive scaling and a border that
+// makes the frame read as a frame rather than a fill. The point is that no generator would produce this: a checkerboard
+// of magenta and cyan is a diagram of "there is no picture here", and the same slot always gets the same pixels, so two
+// runs of one job are one file.
+//
+// No text is drawn, and the reason is the font: block letters would need a bitmap font, and a hand-rolled 5x7 face is a
+// second thing to be wrong about whose only job is to spell a slot id that the file name already carries. The label is
+// the name `<slot>.placeholder.png` and the check that names the slot beside it; the pixels only have to say "not a
+// picture", which a checkerboard does at any size without a glyph table.
+const PLACEHOLDER_BORDER = [0, 0, 0, 255] as const
+const PLACEHOLDER_LIGHT = [255, 0, 170, 255] as const
+const PLACEHOLDER_DARK = [0, 229, 255, 255] as const
+
+// A square of an eighth of the short side keeps about eight cells across it whatever the slot's size, and a four-pixel
+// floor keeps the pattern legible on a thumbnail. The border is proportional and never eats the whole frame.
+function placeholderPixels(
+  size: { readonly width: number; readonly height: number },
+): (x: number, y: number) => readonly [number, number, number, number] {
+  const square = Math.max(4, Math.round(Math.min(size.width, size.height) / 8))
+  const border = Math.max(1, Math.min(4, Math.floor(Math.min(size.width, size.height) / 16)))
+  return (x, y) => {
+    if (x < border || y < border || x >= size.width - border || y >= size.height - border) return PLACEHOLDER_BORDER
+    const cell = (Math.floor(x / square) + Math.floor(y / square)) % 2
+    return cell === 0 ? PLACEHOLDER_LIGHT : PLACEHOLDER_DARK
+  }
+}
 
 const shown = (value: unknown): string => JSON.stringify(value) ?? String(value)
 const many = (count: number, noun: string): string => `${count} ${noun}${count === 1 ? "" : "s"}`
@@ -210,16 +254,18 @@ function imageProblem(spec: ImagesSpec): string | undefined {
     }
 
     const model = modelOf(spec, slot)
-    if (model === undefined) {
-      return `slot ${shown(slot.id)} has no model and the set declares none, so there is no checkpoint to load`
-    }
-    if (!model.name) return `slot ${shown(slot.id)}: model name must not be empty`
-    if (model.file !== undefined) {
-      const problem = checkpointProblem(model.file)
-      if (problem) return `slot ${shown(slot.id)}: model file ${shown(model.file)} ${problem}`
-    }
-    if (model.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(model.sha256)) {
-      return `slot ${shown(slot.id)}: model sha256 ${shown(model.sha256)} is not a lowercase sha256 digest`
+    // No checkpoint declared means no graph to write and no picture to make, which is a placeholder, not a refusal: the
+    // slot is still a well-formed request, and refusing here would hide the set behind a slot nobody asked to generate.
+    // Everything a declared model says is still held to its rule.
+    if (model !== undefined) {
+      if (!model.name) return `slot ${shown(slot.id)}: model name must not be empty`
+      if (model.file !== undefined) {
+        const problem = checkpointProblem(model.file)
+        if (problem) return `slot ${shown(slot.id)}: model file ${shown(model.file)} ${problem}`
+      }
+      if (model.sha256 !== undefined && !/^[0-9a-f]{64}$/.test(model.sha256)) {
+        return `slot ${shown(slot.id)}: model sha256 ${shown(model.sha256)} is not a lowercase sha256 digest`
+      }
     }
 
     for (const ref of slot.refs ?? []) {
@@ -299,19 +345,26 @@ export function imageWorkflow(input: WorkflowInput): Record<string, unknown> {
 // One slot as the adapter runs it: the resolved model, the seed that will be written into the graph, the two job-relative
 // paths it reads and writes, and the refs the job may upload later. The checks read this rather than the JSON on disk, so
 // a slot the writer planned and a slot the check looks for cannot disagree.
+//
+// `model`, `checkpoint` and `workflow` are absent exactly when the slot is a placeholder: nothing was declared to load,
+// so no decision was made and no graph was written. Keeping them optional rather than inventing a stand-in model is what
+// stops a check from vouching for a checkpoint the set never named.
 export interface ImageSlotPlan {
   readonly id: string
   readonly prompt: string
   readonly negative?: string
   readonly size: { readonly width: number; readonly height: number }
   readonly seed: number
-  readonly model: ImageModel
+  readonly model?: ImageModel
   // The registry's answer for this slot. Optional in the type because a cast could hand the writer a plan without one,
   // and the provenance check then has a sentence instead of a crash.
   readonly checkpoint?: ModelDecision
-  readonly workflow: string
+  readonly workflow?: string
   readonly output: string
   readonly refs: readonly string[]
+  // Why this slot is a labelled stand-in instead of a picture. Named after the reason rather than a boolean so the run's
+  // notes can say it without a second sentence.
+  readonly placeholder?: string
 }
 
 export interface ImageProject {
@@ -338,10 +391,11 @@ function fileInJob(dir: string, value: string, slot: string): string {
   return target
 }
 
-// Write one workflow per slot and lay out the job. The same spec always writes the same bytes: no clock, no random id, no
-// seed this file invented twice. Every refusal happens before the first directory is made, and the checkpoints are
-// resolved before the first workflow is written: a job whose model is unknown leaves no graph behind for a later step
-// to send.
+// Write one workflow per slot that has a checkpoint, and lay out the job. The same spec always writes the same bytes: no
+// clock, no random id, no seed this file invented twice. Every refusal happens before the first directory is made, and
+// the checkpoints are resolved before the first workflow is written: a job whose model is unknown leaves no graph behind
+// for a later step to send. A slot with nothing declared gets no graph at all — there is no checkpoint to load — and is
+// planned as a placeholder the render will write.
 export async function writeImageProject(
   spec: ImagesSpec,
   jobDir: string,
@@ -355,24 +409,25 @@ export async function writeImageProject(
     for (const ref of slot.refs ?? []) fileInJob(dir, ref, slot.id)
   }
 
-  // Decisions first, files second. The graph is built here too, so a checkpoint refusal leaves nothing half-written.
+  // Decisions first, files second. The graph is built here too, so a checkpoint refusal leaves nothing half-written —
+  // including the case where an earlier slot is a placeholder and a later one names a hash nobody recorded: the refusal
+  // is still the whole set's, not one slot's.
   const prepared: {
     readonly slot: Slot
-    readonly model: ImageModel
-    readonly checkpoint: ModelDecision
     readonly seed: number
-    readonly workflow: string
-    readonly graph: Record<string, unknown>
+    readonly model?: ImageModel
+    readonly checkpoint?: ModelDecision
+    readonly workflow?: string
+    readonly graph?: Record<string, unknown>
   }[] = []
   for (const slot of spec.slots) {
     const model = modelOf(spec, slot)
+    const seed = seedFor(spec.job, slot.id, slot.seed)
     if (model === undefined) {
-      // `imageProblem` refused this above; the guard keeps the type honest rather than a `!` on a value a cast could
-      // have made absent after the check.
-      throw new Error(`images: slot ${shown(slot.id)} has no model`)
+      prepared.push({ slot, seed })
+      continue
     }
     const checkpoint = await checkpointDecision(model, slot.id, dir, options)
-    const seed = seedFor(spec.job, slot.id, slot.seed)
     prepared.push({
       slot,
       model,
@@ -401,21 +456,25 @@ export async function writeImageProject(
   const slots: ImageSlotPlan[] = []
   const workflows: string[] = []
   for (const entry of prepared) {
-    const path = join(dir, entry.workflow)
-    writeFileSync(path, `${JSON.stringify(entry.graph, null, 2)}\n`, { mode: 0o600 })
-    chmodSync(path, 0o600)
-    workflows.push(entry.workflow)
+    if (entry.workflow !== undefined && entry.graph !== undefined) {
+      const path = join(dir, entry.workflow)
+      writeFileSync(path, `${JSON.stringify(entry.graph, null, 2)}\n`, { mode: 0o600 })
+      chmodSync(path, 0o600)
+      workflows.push(entry.workflow)
+    }
+    const placeholder = entry.checkpoint === undefined
     slots.push({
       id: entry.slot.id,
       prompt: entry.slot.prompt,
       ...(entry.slot.negative !== undefined ? { negative: entry.slot.negative } : {}),
       size: { width: entry.slot.size.width, height: entry.slot.size.height },
       seed: entry.seed,
-      model: entry.model,
-      checkpoint: entry.checkpoint,
-      workflow: entry.workflow,
-      output: `${OUTPUT_DIR}/${entry.slot.id}.png`,
+      ...(entry.model !== undefined ? { model: entry.model } : {}),
+      ...(entry.checkpoint !== undefined ? { checkpoint: entry.checkpoint } : {}),
+      ...(entry.workflow !== undefined ? { workflow: entry.workflow } : {}),
+      output: `${OUTPUT_DIR}/${entry.slot.id}${placeholder ? PLACEHOLDER_SUFFIX : ".png"}`,
       refs: [...(entry.slot.refs ?? [])],
+      ...(placeholder ? { placeholder: NO_MODEL } : {}),
     })
   }
   return { dir, workflows, slots }
@@ -463,6 +522,14 @@ export const IMAGE_CHECKS: readonly CheckDef[] = [
     level: "L1",
     kind: "images",
     title: "every slot carries the checkpoint, hash and licence that made it",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "images.placeholder",
+    level: "L1",
+    kind: "images",
+    title: "every slot with no checkpoint is a named placeholder file",
     run: "argv",
     required: true,
   },
@@ -609,13 +676,30 @@ function checkpointNameOf(graph: Record<string, unknown>): string | undefined {
   return undefined
 }
 
+// One line naming the slots that carry a stand-in, and nothing when every slot has a picture. The deck's missing assets
+// get the same shape (B3-T6): a placeholder is a named absence, so the run's notes, the check's output and the gate's
+// warning all say which slot is a diagram and why, in one wording.
+function placeholderNote(slots: readonly ImageSlotPlan[]): string | undefined {
+  const placeholders = slots.filter((slot) => slot.placeholder !== undefined)
+  if (placeholders.length === 0) return undefined
+  const list = placeholders.map((slot) => `${shown(slot.id)} (${slot.placeholder})`).join(", ")
+  return `${many(placeholders.length, "placeholder")}: ${list}`
+}
+
 // The prompt checklist (B5-T5). The content words of the prompt the author wrote have to be in the positive text the
 // graph carries. "The picture shows them" is the vision review's question and is skipped; "the server was asked for
 // them" is a fact about two files, and it is the failure that is invisible in a report and obvious in the picture.
+//
+// A placeholder slot has no graph and no request, so there is no positive text its prompt could have failed to reach.
+// Counting it as a checked prompt would be the green line this file avoids; the note names it and `images.placeholder`
+// owns the fact.
 function promptVerdict(input: ImageResultInput): Verdict {
   const problems: string[] = []
   let words = 0
+  let asked = 0
   for (const slot of input.project.slots) {
+    if (slot.placeholder !== undefined || slot.workflow === undefined) continue
+    asked += 1
     words += contentWords(slot.prompt).length
     const read = readWorkflow(input.project.dir, slot.workflow)
     if (read.graph === undefined) {
@@ -631,15 +715,23 @@ function promptVerdict(input: ImageResultInput): Verdict {
     if (missing.length > 0) problems.push(`${slot.id} asked for ${missing.join(", ")}, which its workflow does not carry`)
   }
   if (problems.length > 0) return failed(problems.join("; "))
-  return passed(`${many(words, "prompt word")} from ${many(input.project.slots.length, "prompt")} reach their workflows`)
+  const note = placeholderNote(input.project.slots)
+  if (asked === 0) return passed(`no slot has a workflow, so no prompt was sent anywhere${note !== undefined ? `; ${note}` : ""}`)
+  return passed(
+    `${many(words, "prompt word")} from ${many(asked, "prompt")} reach their workflows${note !== undefined ? `; ${note}` : ""}`,
+  )
 }
 
 // Provenance presence (B5-T5): every slot's checkpoint is still the one a registry allowed, with the name, hash,
 // licence and territory that decision carried, and the workflow on disk still names it. A rewritten workflow is the
 // interesting case: the plan says SDXL and the graph says something nobody resolved.
+//
+// A placeholder slot has no checkpoint because none was declared, which is a fact and not a missing record: there is
+// nothing to vouch for, so it is left out of the count and named in the note instead.
 function provenanceVerdict(input: ImageResultInput): Verdict {
   const problems: string[] = []
-  for (const slot of input.project.slots) {
+  const checked = input.project.slots.filter((slot) => slot.placeholder === undefined)
+  for (const slot of checked) {
     const checkpoint = slot.checkpoint
     if (checkpoint === undefined) {
       problems.push(`${slot.id} has no resolved checkpoint`)
@@ -651,6 +743,10 @@ function provenanceVerdict(input: ImageResultInput): Verdict {
     if (!(checkpoint.territories.includes(checkpoint.territory) || checkpoint.territories.includes("world"))) {
       problems.push(`${slot.id}'s licence does not permit ${checkpoint.territory}`)
     }
+    if (slot.workflow === undefined || slot.model === undefined) {
+      problems.push(`${slot.id} has no workflow to load its checkpoint from`)
+      continue
+    }
     const read = readWorkflow(input.project.dir, slot.workflow)
     if (read.graph === undefined) {
       problems.push(`${slot.id}: ${read.problem}`)
@@ -661,19 +757,48 @@ function provenanceVerdict(input: ImageResultInput): Verdict {
     if (named !== wanted) problems.push(`${slot.id}'s workflow loads ${shown(named)}, not ${shown(wanted)}`)
   }
   if (problems.length > 0) return failed(problems.join("; "))
-  const hashes = new Set(input.project.slots.map((slot) => slot.checkpoint?.hash))
+  const note = placeholderNote(input.project.slots)
+  const stand = note !== undefined ? `; ${note}` : ""
+  if (checked.length === 0) return passed(`no slot names a checkpoint, so there is no licence or territory to vouch for${stand}`)
+  const hashes = new Set(checked.map((slot) => slot.checkpoint?.hash))
   return passed(
-    `${many(hashes.size, "checkpoint")} named with a hash, a licence and a territory, and still the one each workflow loads`,
+    `${many(hashes.size, "checkpoint")} named with a hash, a licence and a territory, and still the one each workflow loads${stand}`,
   )
 }
 
+// The placeholder check (B5-T5). A slot with no checkpoint has no picture and, by construction, no graph: the file it
+// ships is the labelled frame the render wrote. Passing means that file is where the plan said and the reader accepts
+// it, because a stand-in nobody can open is an absence with extra steps. The sentence names every slot and the word
+// "placeholder", so a report cannot show a green line and leave a reader to find the stand-ins for themselves.
+function placeholderVerdict(input: ImageResultInput): Verdict {
+  const slots = input.project.slots.filter((slot) => slot.placeholder !== undefined)
+  if (slots.length === 0) return passed("every slot loaded the checkpoint it names, so no file is a placeholder")
+  const problems: string[] = []
+  for (const slot of slots) {
+    const file = input.files.find((entry) => entry.slot === slot.id)
+    if (file === undefined || !file.present) {
+      problems.push(`placeholder slot ${shown(slot.id)} has no file at ${slot.output}`)
+      continue
+    }
+    if (file.problem !== undefined) {
+      problems.push(`placeholder slot ${shown(slot.id)}'s file ${slot.output} ${file.problem}`)
+    }
+  }
+  if (problems.length > 0) return failed(problems.join("; "))
+  const note = placeholderNote(input.project.slots)
+  return passed(`${note}; each is a PNG the reader accepts: ${slots.map((slot) => slot.output).join(", ")}`)
+}
+
 // The set's own look (B5-T5): a 4×4×4 colour histogram and two luma numbers per picture, compared with the slot that
-// best represents the set. Deterministic and cheap; `image-qa.ts` owns the arithmetic and the thresholds.
+// best represents the set. Deterministic and cheap; `image-qa.ts` owns the arithmetic and the thresholds. A placeholder
+// is not a generated picture, so comparing its checkerboard with a photograph would say more about the diagram than
+// about the set; the stand-ins are left out and `images.placeholder` is where they are accounted for.
 function styleVerdict(input: ImageResultInput): Verdict {
   const problems: string[] = []
   const styles: SlotStyle[] = []
+  const stand = new Set(input.project.slots.filter((slot) => slot.placeholder !== undefined).map((slot) => slot.id))
   for (const file of input.files) {
-    if (!file.present) continue
+    if (!file.present || stand.has(file.slot)) continue
     let picture: Rgba
     try {
       const decoded = readPng(new Uint8Array(readFileSync(join(input.project.dir, file.path))))
@@ -707,6 +832,8 @@ function verdictFor(id: string, input: ImageResultInput): Verdict | undefined {
       return promptVerdict(input)
     case "images.provenance":
       return provenanceVerdict(input)
+    case "images.placeholder":
+      return placeholderVerdict(input)
     case "images.style":
       return styleVerdict(input)
     case "images.vlm":
@@ -807,6 +934,28 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
 
     for (const slot of current.slots) {
       if (stopping || ctx.signal?.aborted) throw new Error("images: the render was cancelled")
+
+      // A placeholder needs no server: the picture is the one this package draws, and drawing it is the whole render.
+      // It is written here rather than at `prepare` so a job's files are what its render produced, and so a second
+      // render overwrites the same bytes instead of stacking a second version of the same absence.
+      if (slot.placeholder !== undefined) {
+        const bytes = encodePng({
+          width: slot.size.width,
+          height: slot.size.height,
+          pixel: placeholderPixels(slot.size),
+        })
+        const path = join(current.dir, slot.output)
+        writeFileSync(path, bytes, { mode: 0o600 })
+        chmodSync(path, 0o600)
+        outputs.push(slot.output)
+        ctx.log(`images: slot ${shown(slot.id)} wrote the placeholder ${slot.output} (${slot.size.width}×${slot.size.height})`)
+        continue
+      }
+
+      if (slot.workflow === undefined) {
+        fail(slot.id, "its plan has neither a workflow nor a placeholder, so there is nothing to run", ctx)
+        continue
+      }
 
       let workflow: Record<string, unknown>
       try {
@@ -910,12 +1059,18 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
       failures = []
       stopping = false
 
-      const models = new Set(project.slots.map((slot) => slot.model.file ?? slot.model.name))
+      const models = new Set(
+        project.slots.flatMap((slot) => (slot.model === undefined ? [] : [slot.model.file ?? slot.model.name])),
+      )
       const refs = project.slots.reduce((total, slot) => total + slot.refs.length, 0)
       const territory = options.territory ?? DEFAULT_TERRITORY
-      const declarations = project.slots.filter((slot) => slot.checkpoint?.verified !== true).length
+      const declarations = project.slots.filter(
+        (slot) => slot.checkpoint !== undefined && slot.checkpoint.verified !== true,
+      ).length
       const notes = [
-        `${many(project.slots.length, "slot")} across ${many(models.size, "checkpoint")}, one workflow per slot`,
+        models.size === 0
+          ? `${many(project.slots.length, "slot")}, none with a checkpoint: the render writes one placeholder per slot`
+          : `${many(project.slots.length, "slot")} across ${many(models.size, "checkpoint")}, ${many(project.workflows.length, "workflow")}`,
         `every checkpoint was resolved by sha256 for use in ${territory}; ${
           declarations === 0
             ? "all were hashed from a file on this machine"
@@ -925,6 +1080,14 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
           ? "progress is read from /ws when the server offers it; completion from /history"
           : "no WebSocket client on this host, so progress is read by polling /history",
       ]
+      // A set of placeholders has no checkpoint to resolve, and "every checkpoint ... all were hashed" over zero of them
+      // would read like a fact about a model. The note is replaced rather than contradicted, and the slots are named the
+      // way the deck names a missing asset.
+      const placeholder = placeholderNote(project.slots)
+      if (placeholder !== undefined) {
+        if (models.size === 0) notes[1] = `no checkpoint is declared for this set, so nothing was resolved and nothing is sent`
+        notes.push(placeholder)
+      }
       if (refs > 0) {
         notes.push(
           `${many(refs, "ref")} stay inside the job; this text-to-image graph starts from the prompt and does not load them`,

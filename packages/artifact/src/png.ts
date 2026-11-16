@@ -9,10 +9,16 @@
 // picture can be read has no way to tell "this file is odd" from "this code is broken". The caller must treat
 // `unsupported` as "the check is skipped with this reason", not as "the frame is blank".
 //
-// The only import is `node:zlib`. The module takes bytes and returns pixels; it never opens a file, so the caller
-// decides what is worth reading.
+// The same module writes one picture (B5-T5's placeholder), and for the same reason it reads them: a placeholder is a
+// file like any other, and the checks that accept it are the reader above. So `encodePng` emits exactly the shape the
+// reader accepts — 8-bit RGBA, filter 0 on every row, one IDAT, a real CRC on every chunk — and a round trip through
+// `readPng` is what says the two halves agree rather than merely being written in the same file. That is not a PNG
+// library either: no palette, no other bit depth, no interlace, no metadata, no adaptive filtering.
+//
+// The only import is `node:zlib`. The module takes bytes, returns pixels, takes pixels and returns bytes; it never opens
+// a file, so the caller decides what is worth reading or writing.
 
-import { inflateSync } from "node:zlib"
+import { deflateSync, inflateSync } from "node:zlib"
 
 // A decoded frame, addressed in image coordinates with the origin at the top left, the same order PNG stores its
 // scanlines. `at` returns a fresh tuple per call and never needs a second lookup table, so a caller that wants one
@@ -210,6 +216,68 @@ export function readPng(bytes: Uint8Array): Rgba | PngProblem {
   }
 
   return { width, height, at: sample }
+}
+
+// A picture this module can write: the size and one function from image coordinates to a colour, addressed like
+// `Rgba.at` above so a caller describes the frame in the order the reader reports it. Channels are 8-bit and alpha is
+// carried as given, which is the colour type the reader treats as the general case.
+export interface PngImage {
+  readonly width: number
+  readonly height: number
+  readonly pixel: (x: number, y: number) => readonly [number, number, number, number]
+}
+
+// One chunk as PNG frames it: the declared length, the type, the data, and the CRC over type and data. The writer keeps
+// the checksum on every chunk even though the reader only verifies the header: the file is meant to open in a viewer
+// this package will never see, and "our reader does not check it" is not the same as "it does not matter".
+function chunkOf(type: string, data: Uint8Array): Buffer {
+  const out = Buffer.alloc(12 + data.length)
+  out.writeUInt32BE(data.length, 0)
+  out.write(type, 4, "latin1")
+  Buffer.from(data).copy(out, 8)
+  out.writeUInt32BE(crc32(out.subarray(4, 8 + data.length)), 8 + data.length)
+  return out
+}
+
+// Write one RGBA frame. Every row is filter 0, so the bytes are the pixels: a placeholder has no photographic detail
+// for a predictor to exploit, and one filter is one thing to be wrong about. The size is refused rather than clipped —
+// a caller asking for a zero-width picture has a bug, and a file that says 0x0 is not a picture either reader or viewer
+// can show. Channels are masked to a byte rather than refused, because a colour is a byte and a writer is not the place
+// to argue about arithmetic.
+export function encodePng(image: PngImage): Uint8Array {
+  const { width, height, pixel } = image
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) {
+    throw new Error(`png: ${width}x${height} is not two positive integers, so there is no picture to write`)
+  }
+  const stride = width * 4
+  const data = Buffer.alloc(height * (stride + 1))
+  for (let y = 0; y < height; y += 1) {
+    data[y * (stride + 1)] = 0
+    for (let x = 0; x < width; x += 1) {
+      const values = pixel(x, y)
+      const base = y * (stride + 1) + 1 + x * 4
+      data[base] = values[0] & 0xff
+      data[base + 1] = values[1] & 0xff
+      data[base + 2] = values[2] & 0xff
+      data[base + 3] = values[3] & 0xff
+    }
+  }
+
+  const header = Buffer.alloc(HEADER_BYTES)
+  header.writeUInt32BE(width, 0)
+  header.writeUInt32BE(height, 4)
+  header[8] = 8
+  header[9] = 6
+  header[10] = 0
+  header[11] = 0
+  header[12] = 0
+
+  return Buffer.concat([
+    Buffer.from(SIGNATURE),
+    chunkOf("IHDR", header),
+    chunkOf("IDAT", deflateSync(data)),
+    chunkOf("IEND", Buffer.alloc(0)),
+  ])
 }
 
 // The most common colour in a frame and how much of the frame it covers. Colours are quantised to 4 bits per channel
