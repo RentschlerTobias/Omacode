@@ -24,6 +24,13 @@ export interface HostRunInput {
   readonly args: readonly string[]
   readonly cwd?: string
   readonly timeoutMs?: number
+  // This call needs the host's network, where the adapter declared `network: true`. A call may narrow that declaration
+  // (ask `false` and be wrapped anyway) but never widen it: asking for a network the adapter did not declare is a
+  // refusal, not a hint. The flag lives in the adapter's code, never in a spec, so a spec still cannot reach out.
+  readonly network?: boolean
+  // Values for environment names the adapter declared in its meta. A name the adapter did not declare is refused — this
+  // is how a deck tells HyperFrames that it is inside a sandbox, so Chrome stops trying to build a second one on top.
+  readonly env?: Readonly<Record<string, string>>
 }
 
 // What came back. The exit code is carried for the report, and the runner's own verdict sits beside it: a run that timed
@@ -74,6 +81,10 @@ export interface AdapterMeta {
   readonly version: string
   readonly executables: readonly string[]
   readonly network: boolean
+  // The environment names the adapter's program needs set, e.g. a tool's own switch for running under a sandbox.
+  // Naming one here is permission to read it from the host; the value a run hands it is the adapter's own business and
+  // is passed per call (`HostRunInput.env`). A spec can reach neither the name nor the value.
+  readonly env?: readonly string[]
 }
 
 // The steps an artifact goes through. `prepare` may read the spec and lay out what it needs; `render` is the expensive
@@ -154,6 +165,14 @@ export function assertAdapter(adapter: Adapter): void {
   if (typeof meta["network"] !== "boolean") {
     throw new Error(`${label}: network: expected a boolean, got ${got(meta["network"])}`)
   }
+
+  // The names a run may hand a value for. A malformed or doubled name is a mistake this file can see, so it is refused
+  // here rather than becoming a refusal inside the runner at the moment a check needs it.
+  const env = meta["env"]
+  if (env !== undefined && (!Array.isArray(env) || !env.every((name) => typeof name === "string" && /^[A-Z_][A-Z0-9_]*$/.test(name)))) {
+    throw new Error(`${label}: env: expected an array of names like DECK_SWITCH, got ${got(env)}`)
+  }
+  if (Array.isArray(env) && new Set(env).size !== env.length) throw new Error(`${label}: env: a name appears twice`)
 
   // The four steps an adapter must have. Naming the missing one is the whole diagnosis: "not an adapter" would leave
   // the reader comparing their object against this file.

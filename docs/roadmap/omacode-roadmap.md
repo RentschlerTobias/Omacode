@@ -43,6 +43,7 @@ These decisions are binding for this plan. D1–D18 come from the working sessio
 | D21 | `local` is the **mode from day one** — nothing leaves the machine. What the bench gates is **per-node floors**: until a node passes, its floors stay conservative and low confidence asks the user; once it passes, its calibrated floors apply and the ask-rate drops. Never a silent cloud call. |
 | D22 | **Two tracks.** Safety (A) and artifacts (B) do not wait for each other, except where a schema is genuinely shared. The first artifact job starts after A1, not after A6. |
 | D23 | **Unsandboxed is a user decision, never a default.** When no sandbox can run, a job's commands and checks run unwrapped **only after the user confirmed it for that job** in a form, with a deterministic risk score shown first. The grant is journaled with the score; `never` keeps the fail-closed path, `allow` stores the grant without asking (also journaled). Without an answer nothing runs. |
+| D24 | **B3 ships the HTML deck only; PPTX is deferred.** On the user's direction (2026-11-15) B3-T3 and B3-T5 leave B3 and move to a later job: no `pptxgenjs`, no PPTX checks, no LibreOffice path in B3. The deck is presented and checked as HTML; a PPTX handoff is not part of the first vertical slice. |
 
 ### Assumptions
 
@@ -773,7 +774,11 @@ shown; doctor is actionable; uninstall exists.
     `HOME`/`TMPDIR` are moved into the job and `DENY_READ` is mounted away, so a renderer cannot read the user's keys —
     with `network: true` no wrapper is used at all, so neither applies (documented consequence). A program that resolves
     into the job dir — through a search directory in the job, or a symlink in a writable PATH directory — is skipped.
-    Refusals and cancellations are results (`refused`, `cancelled`), never throws.
+    Refusals and cancellations are results (`refused`, `cancelled`), never throws. A run may reach the network only where
+    the adapter declared it **and** the call asks for it (a declaration is permission, not a default), and an adapter may
+    declare env names whose values a run supplies — that is how a tool inside bubblewrap is told that it is inside one.
+    The mounts are ordered root-then-`/dev`: the other order left `/dev/null` read-only and `spawn` with `stdio: "ignore"`
+    failed with EACCES.
 - [x] **B1-T6 — Plan → artifact handoff.** Map `plan.md` + `Artifacts:` into a typed spec. Needs the schema only.
   - *Reality:* `plan.md` carries no fps, frame size, scene duration, image prompt or image size, so each is a named
     default with a warning — an adapter must not invent the number the handoff already picked. A site page is addressed
@@ -816,28 +821,76 @@ A6-T6 later automates the install; B3 works on a machine where HyperFrames is al
 
 **Tasks**
 
-- [ ] **B3-T0 — Precondition and licence.** `hyperframes --version` (and `hyperframes doctor` for detail); when it is
+- [x] **B3-T0 — Precondition and licence.** `hyperframes --version` (and `hyperframes doctor` for detail); when it is
   missing, fail with the install command and the reason. Record HyperFrames' licence and territory in the artifact
   provenance (B1-T3) on first use, so a produced deck carries it.
-- [ ] **B3-T1 — Deck spec.** `deck.json`/`deck.md`: slides, notes, reveals, branches, hotspots, assets, checks.
-- [ ] **B3-T2 — HyperFrames slideshow.** Generate a project; `hyperframes present` / `snapshot`; **never
+  - *Reality:* the version is the gate, `doctor` only the detail (its first six lines ride along in `detail`, so a
+    diagnosis never decides the start). Every failure names the install command, and the version is parsed out of a
+    banner (`hyperframes v0.9.54`) as well as a bare number. The real test runs the machine's HyperFrames through the
+    host runner under bwrap, not `which`.
+- [x] **B3-T1 — Deck spec.** `deck.json`/`deck.md`: slides, notes, reveals, branches, hotspots, assets, checks.
+  - *Reality:* `deck.json` only — the handoff writes a JSON spec and nothing reads a markdown form yet; `deck.md` stays
+    open. The version is per artefact kind (deck 2, the other three stay 1, D24's direction): a shared counter would
+    have made three unchanged specs invalid. The strictness survives the new nesting: a hotspot naming no branch, a
+    branch called `main` (the player's own id), a slide id used twice across the main line and a branch, and duplicate
+    reveal indices are refused before a project is written.
+- [x] **B3-T2 — HyperFrames slideshow.** Generate a project; `hyperframes present` / `snapshot`; **never
   `hyperframes render` on a deck**.
-- [ ] **B3-T3 — PPTX optional.** pptxgenjs first (DeckCraft is unverified); template/brand; LibreOffice for PDF/PNG is
-  an explicit opt-out with the consequence stated.
-- [ ] **B3-T4 — Checks.** Slide count, overflow, contrast, links, notes, branch/hotspot validity, per-slide snapshots,
+  - *Reality:* a deck is a composition whose scenes are nested `[data-composition-id]` elements, plus the slideshow island
+    (`slides`/`slideSequences`, `fragments` in absolute seconds); `present` re-serves the project with its own player, and
+    a no-op `window.__timelines` registration is mandatory even for a static deck. The generated project is
+    self-contained — no CDN, no external script — so it runs with the network unshared. Chrome is found through
+    `<job>/.home/.cache/hyperframes/chrome` → the real cache, because the runner has no per-run env. Two runner fixes came
+    out of this: the bwrap mounts were in the wrong order (`/dev` became read-only and `spawn` with `stdio: "ignore"`
+    failed with EACCES), and a run may now **narrow** the adapter's network declaration — a deck check asks for none and is
+    wrapped, while `present` needs the host network because its server listens inside the child's namespace.
+- [ ] **B3-T3 — PPTX optional.** *(deferred — D24: not part of B3.)* pptxgenjs first (DeckCraft is unverified);
+  template/brand; LibreOffice for PDF/PNG is an explicit opt-out with the consequence stated.
+- [x] **B3-T4 — Checks.** Slide count, overflow, contrast, links, notes, branch/hotspot validity, per-slide snapshots,
   VLM review, plus a **browser-backed acceptance test** that fails on console errors or a blank slide.
-- [ ] **B3-T5 — PPTX checks.** Text overflow, fonts, notes, image resolution.
-- [ ] **B3-T6 — Assets: placeholders only.** No ComfyUI, no Manim — they land later (B5, B2c). A missing asset slot
+  - *Reality:* the engine has **no anchor rule** — `<a href="missing.html">` produces no finding anywhere — so the "links"
+    check is about unresolved **targets** (`missing_local_asset`, `audio_src_not_found`, `missing_stylesheet_asset`) and a
+    pinning test says so; a future engine that learns links will fail that test, which is the reminder to widen it. Lint
+    warns `missing_data_no_timeline` on every scene of a correct deck, so rules filter by code, never by counts.
+    `snapshot --at` always appends an end frame, so `deckSnapshot` gained `end: false` (one frame per slide).
+    `blankFrame`'s 99.5 % floor called real text slides blank (99.0–99.6 % one colour), so the deck passes 99.9 %.
+    `deck.vlm` is skipped with the D13/D21 reason; no cloud model is called.
+  - *Reality:* the **coredumps were Chrome's own sandbox**, not our mount list: inside bubblewrap Chrome cannot build a
+    second sandbox and dies with `FATAL: No usable sandbox!` — one SIGTRAP per browser session. HyperFrames normally
+    detects a container by `/.dockerenv` and passes `--no-sandbox` itself; bwrap leaves no marker. Its documented switch
+    `HYPERFRAMES_CHROME_SANDBOX=0` fixes it (measured: two dumps before, none after, with the browser really running), and
+    the runner therefore gained the other half: an adapter may **declare env names** and a run may hand their **values**,
+    so the deck says "you are in the sandbox" without a global environment variable. `--no-browser-gpu` stays for the
+    determinism it gives on its own.
+- [ ] **B3-T5 — PPTX checks.** *(deferred — D24: not part of B3.)* Text overflow, fonts, notes, image resolution.
+- [x] **B3-T6 — Assets: placeholders only.** No ComfyUI, no Manim — they land later (B5, B2c). A missing asset slot
   renders a labelled placeholder that a check accepts.
-- [ ] **B3-T7 — Tests.** Spec; slideshow manifest; PPTX smoke; checks; the blank-slide failure; placeholder rendering.
+  - *Reality:* the placeholder is one dashed box with `data-deck-placeholder="<path>"` and the text `missing asset:
+    <path>`; the reason (`missing`, `not a file`, `too large`) lives in `placeholders`/`placeholderNote`, so the check can
+    accept it and still name it. A symlink out of the job is refused before anything is written. Hidden slides now write
+    their asset too (they are in the HTML, just not scenes). The first monospace stack was rejected by the real
+    `hyperframes check` (unknown font family), so the box inherits the deck's sans stack.
+- [x] **B3-T7 — Tests.** Spec; slideshow manifest; checks; the blank-slide failure; placeholder rendering. (The PPTX
+  smoke is gone with D24.)
+  - *Reality:* the audit found a contradiction in the harness, not in the test: `deck.vlm` was a **required** check the
+    adapter always skips (D13/D21), and the quality gate refuses every skip below L3 — so no deck could ever ship. A check
+    may now be `skippable` in its definition: its skip is a warning the report names, while any other skip still blocks.
+    `deck.contract` left the adapter's registry (it is the parse's L0, produced by the gate), so the adapter answers only
+    for what it runs. The acceptance test is the whole chain in one place: fixture `plan.md` → spec → adapter through
+    `hostRunnerFor` → `check`/`snapshot` → `evaluate` → quality gate → provenance round-trip → `present` fetched over
+    HTTP and cancelled. Sensitivity verified by breaking `--no-browser-gpu` and an island scene id and watching the test
+    fail. "No GPU" is proven by the argv; the engine's `_meta` names no renderer. Notes come from the author: `plan.md`
+    has no notes column, so the handoff cannot supply them and the acceptance test writes them, saying so.
 
-**Files:** `packages/artifact/src/adapters/{deck,pptx}.ts`, `skills/deck/`, `test/deck.test.ts`.
+**Files:** `packages/artifact/src/adapters/deck.ts`, `skills/deck/`, `skills.ts` (one registration line),
+`test/deck.test.ts`. `pptx.ts` moves with D24.
 
 **Checks:** `npm run typecheck`, `npm test`; a 5-slide deck; present smoke.
 
 **Acceptance:** brief → deck → snapshot checks → present, with no `artifactd`, no GPU and no other adapter built.
 
-**Risks:** PPTX round-trip differences; DeckCraft alpha → pptxgenjs is the default path.
+**Risks:** HyperFrames' slideshow manifest is the only thing that turns slides into a real deck; if `present` needs a
+desktop, the demo path has to change. The HTML deck is the deliverable (D24); PPTX differences are no longer a B3 risk.
 
 ---
 

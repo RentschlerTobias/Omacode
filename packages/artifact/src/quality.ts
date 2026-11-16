@@ -92,8 +92,9 @@ function contractVerdict(coverage: Coverage): QualityVerdict {
 // A skip is an absence with a reason. Which absences can ship is the question checks.ts left open: below L3 the answer
 // is none, because a visual or mechanical check that did not run means the thing it would have caught is still
 // unlooked at. The L3 case is the warnings in `qualityGate`.
-function skippedVerdict(coverage: Coverage): QualityVerdict {
-  const blocking = coverage.skipped.filter((result) => result.level !== "L3")
+function skippedVerdict(coverage: Coverage, defs: readonly CheckDef[]): QualityVerdict {
+  const predicted = (id: string): boolean => defs.find((def) => def.id === id)?.skippable === true
+  const blocking = coverage.skipped.filter((result) => result.level !== "L3" && !predicted(result.id))
   return {
     id: "checks.skipped",
     ok: blocking.length === 0,
@@ -106,9 +107,10 @@ function skippedVerdict(coverage: Coverage): QualityVerdict {
 
 // The reason is mandatory for a skip in checks.ts, so the fallback below is only there to keep the string total; a
 // skipped result without a reason never reaches `coverage.skipped`.
-function humanSkips(coverage: Coverage): readonly string[] {
+function humanSkips(coverage: Coverage, defs: readonly CheckDef[]): readonly string[] {
+  const predicted = (id: string): boolean => defs.find((def) => def.id === id)?.skippable === true
   return coverage.skipped
-    .filter((result) => result.level === "L3")
+    .filter((result) => result.level === "L3" || predicted(result.id))
     .map((result) => `${result.id} was skipped: ${result.reason ?? "no reason given"}`)
 }
 
@@ -322,12 +324,12 @@ export function qualityGate(input: QualityInput): QualityReport {
   const coverage = evaluate(input.defs, input.results)
   const verdicts: readonly QualityVerdict[] = [
     contractVerdict(coverage),
-    skippedVerdict(coverage),
+    skippedVerdict(coverage, input.defs),
     ...kindVerdicts(input),
   ]
   return {
     ship: verdicts.every((verdict) => verdict.ok),
     verdicts,
-    warnings: humanSkips(coverage),
+    warnings: humanSkips(coverage, input.defs),
   }
 }

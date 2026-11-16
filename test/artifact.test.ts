@@ -63,9 +63,10 @@ import {
 } from "../packages/artifact/src/provenance.ts"
 import {
   ARTIFACT_KINDS,
-  SPEC_VERSION,
+  SPEC_VERSIONS,
   canonicalJson,
   parseSpec,
+  specVersionOf,
   type ArtifactKind,
   type DeckSpec,
   type ImagesSpec,
@@ -83,7 +84,7 @@ import {
 
 const deck = {
   kind: "deck",
-  version: 1,
+  version: 2,
   job: "job-1",
   brief: "a deck about the release",
   checks: ["deck-l0"],
@@ -131,6 +132,29 @@ const fixtures: ReadonlyArray<readonly [ArtifactKind, unknown]> = [
   ["images", images],
 ]
 
+// A deck that uses everything B3-T1 added: notes, reveals written out of order, a hotspot on the first slide and the
+// branch it points to. `reveals` is deliberately not sorted, so the round-trip shows the spec keeps the author's order.
+const branchedDeck = {
+  kind: "deck",
+  version: 2,
+  job: "job-1",
+  brief: "a deck about the release",
+  checks: ["deck-l0"],
+  assets: [{ path: "assets/logo.png", sha256: "0".repeat(64) }],
+  slides: [
+    {
+      id: "s1",
+      title: "What shipped",
+      body: "the release",
+      notes: "say it slowly",
+      reveals: [2, 0],
+      hotspots: [{ id: "more", label: "The details", target: "details" }],
+    },
+    { id: "s2", title: "What is next" },
+  ],
+  branches: [{ id: "details", label: "Under the hood", slides: [{ id: "d1", title: "How it works" }] }],
+}
+
 test("each kind parses its own fixture and hands back what was written", () => {
   assert.deepEqual([...ARTIFACT_KINDS], ["deck", "video", "site", "images"])
   for (const [kind, fixture] of fixtures) {
@@ -138,6 +162,15 @@ test("each kind parses its own fixture and hands back what was written", () => {
     assert.deepEqual(parsed.errors, [], `${kind}: ${parsed.errors.join("; ")}`)
     assert.deepEqual(parsed.spec, fixture, kind)
   }
+})
+
+test("a deck with reveals, branches and hotspots parses as written, unsorted reveals included", () => {
+  const parsed = parseSpec("deck", branchedDeck)
+  assert.deepEqual(parsed.errors, [])
+  assert.deepEqual(parsed.spec, branchedDeck)
+  // The spec validates the reveal indices; it does not sort them. The manifest sorts, so [2, 0] is a set the player
+  // reads the same as [0, 2], and the hash of this deck is the hash of what was written.
+  assert.deepEqual(parsed.spec?.slides[0]?.reveals, [2, 0])
 })
 
 test("a spec missing its list fails at the list, not somewhere further in", () => {
@@ -148,10 +181,107 @@ test("a spec missing its list fails at the list, not somewhere further in", () =
   assert.deepEqual(parsed.errors, ["slides: required"])
 })
 
-test("a version this file does not know is refused by number", () => {
-  const parsed = parseSpec("deck", { ...deck, version: 2 })
+test("each kind carries its own version, and the wrong one is refused by kind and number", () => {
+  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 1, site: 1, images: 1 })
+  for (const kind of ARTIFACT_KINDS) assert.equal(specVersionOf(kind), SPEC_VERSIONS[kind])
+
+  const stale = parseSpec("deck", { ...deck, version: 1 })
+  assert.equal(stale.spec, undefined)
+  assert.deepEqual(stale.errors, ["version: a deck spec is version 2, got 1"])
+
+  const ahead = parseSpec("video", { ...video, version: 2 })
+  assert.equal(ahead.spec, undefined)
+  assert.deepEqual(ahead.errors, ["version: a video spec is version 1, got 2"])
+
+  // The other two did not change in B3-T1, so a version 1 spec of each still parses. A shared counter would have made
+  // three unchanged contracts invalid for a reason none of them had.
+  assert.deepEqual(parseSpec("site", site).errors, [])
+  assert.deepEqual(parseSpec("images", images).errors, [])
+})
+
+test("a branch is a unique id that is not the main line's, with a label and at least one slide", () => {
+  const details = { id: "details", label: "Under the hood", slides: [{ id: "d1", title: "How it works" }] }
+
+  const twice = parseSpec("deck", {
+    ...deck,
+    branches: [details, { ...details, label: "Again", slides: [{ id: "d2" }] }],
+  })
+  assert.equal(twice.spec, undefined)
+  assert.deepEqual(twice.errors, ['branches[1].id: branch id "details" is already used at branches[0]'])
+
+  // `main` is the player's own name for the line the deck starts on, so a branch cannot take it.
+  const reserved = parseSpec("deck", { ...deck, branches: [{ ...details, id: "main" }] })
+  assert.equal(reserved.spec, undefined)
+  assert.deepEqual(reserved.errors, [
+    `branches[0].id: "main" is the player's own id for the main line, so a branch cannot use it`,
+  ])
+
+  const empty = parseSpec("deck", { ...deck, branches: [{ ...details, slides: [] }] })
+  assert.equal(empty.spec, undefined)
+  assert.deepEqual(empty.errors, ["branches[0].slides: expected at least one entry"])
+})
+
+test("a hotspot names a branch of the same deck, checked after the whole deck is read", () => {
+  const parsed = parseSpec("deck", {
+    ...deck,
+    slides: [{ id: "s1" }, { id: "s2", hotspots: [{ id: "more", label: "The details", target: "details" }] }],
+  })
   assert.equal(parsed.spec, undefined)
-  assert.deepEqual(parsed.errors, [`version: only ${SPEC_VERSION} is supported, got 2`])
+  assert.deepEqual(parsed.errors, ['slides[1].hotspots[0].target: names no branch ("details")'])
+})
+
+test("a slide id is a scene id, so it is unique across the main line and every branch", () => {
+  const branch = { id: "details", label: "Under the hood", slides: [{ id: "s1" }] }
+  const across = parseSpec("deck", { ...deck, branches: [branch] })
+  assert.equal(across.spec, undefined)
+  assert.deepEqual(across.errors, ['branches[0].slides[0].id: slide id "s1" is already used at slides[0]'])
+
+  // The same rule inside the main line, where the address is the only thing that differs.
+  const inside = parseSpec("deck", { ...deck, slides: [{ id: "s1" }, { id: "s1" }] })
+  assert.deepEqual(inside.errors, ['slides[1].id: slide id "s1" is already used at slides[0]'])
+})
+
+test("a reveal index is a non-negative integer written once, at its own address", () => {
+  const withReveals = (reveals: unknown) => ({ ...deck, slides: [{ id: "s1", reveals }] })
+
+  assert.deepEqual(parseSpec("deck", withReveals([0, 0])).errors, ["slides[0].reveals[1]: duplicate fragment index 0"])
+  assert.deepEqual(parseSpec("deck", withReveals([-1])).errors, [
+    "slides[0].reveals[0]: expected a non-negative integer, got -1",
+  ])
+  assert.deepEqual(parseSpec("deck", withReveals([1.5])).errors, [
+    "slides[0].reveals[0]: expected a non-negative integer, got 1.5",
+  ])
+  // An empty list says nothing, and the indices may arrive in any order.
+  assert.deepEqual(parseSpec("deck", withReveals([])).errors, [])
+  assert.deepEqual(parseSpec("deck", withReveals([2, 0])).errors, [])
+})
+
+test("two hotspots on one slide cannot share an id, because a click is addressed by it", () => {
+  const hotspot = { id: "more", label: "The details", target: "details" }
+  const parsed = parseSpec("deck", {
+    ...deck,
+    slides: [{ id: "s1", hotspots: [hotspot, { ...hotspot, label: "More details" }] }],
+    branches: [{ id: "details", label: "Under the hood", slides: [{ id: "d1" }] }],
+  })
+  assert.equal(parsed.spec, undefined)
+  assert.deepEqual(parsed.errors, ['slides[0].hotspots[1].id: duplicate hotspot id "more" on this slide'])
+})
+
+test("the strictness survives the new nesting: a stranger is refused inside a branch slide, a branch and a hotspot", () => {
+  const details = { id: "details", label: "Under the hood", slides: [{ id: "d1" }] }
+
+  const inSlide = parseSpec("deck", { ...deck, branches: [{ ...details, slides: [{ id: "d1", extar: true }] }] })
+  assert.deepEqual(inSlide.errors, ["branches[0].slides[0].extar: unknown key"])
+
+  const inBranch = parseSpec("deck", { ...deck, branches: [{ ...details, extar: true }] })
+  assert.deepEqual(inBranch.errors, ["branches[0].extar: unknown key"])
+
+  const inHotspot = parseSpec("deck", {
+    ...deck,
+    slides: [{ id: "s1", hotspots: [{ id: "more", label: "More", target: "details", extar: true }] }],
+    branches: [details],
+  })
+  assert.deepEqual(inHotspot.errors, ["slides[0].hotspots[0].extar: unknown key"])
 })
 
 test("an unknown key is refused where it was written", () => {
@@ -414,7 +544,7 @@ const sampleProvenance = (): Provenance =>
     },
     seed: 42,
     inputs: [{ path: "brief.md", sha256: "b".repeat(64) }],
-    spec: { kind: "deck", version: SPEC_VERSION, sha256: specHash(deck) },
+    spec: { kind: "deck", version: specVersionOf("deck"), sha256: specHash(deck) },
     createdAt,
   })
 
@@ -482,8 +612,8 @@ test("an empty licence or territory is refused by name, never defaulted", async 
 })
 
 test("a spec hashes the same whatever the key order, and differently when a slide title changes", () => {
-  const one = { kind: "deck", version: 1, job: "job-1", brief: "b", slides: [{ id: "s1", title: "One" }] }
-  const reordered = { slides: [{ title: "One", id: "s1" }], brief: "b", job: "job-1", version: 1, kind: "deck" }
+  const one = { kind: "deck", version: 2, job: "job-1", brief: "b", slides: [{ id: "s1", title: "One" }] }
+  const reordered = { slides: [{ title: "One", id: "s1" }], brief: "b", job: "job-1", version: 2, kind: "deck" }
   const changed = { ...one, slides: [{ id: "s1", title: "Two" }] }
   assert.equal(specHash(one), specHash(reordered))
   assert.notEqual(specHash(one), specHash(changed))
@@ -792,6 +922,21 @@ const sandboxOptions = (jobDir: string, network: boolean, denyRead?: readonly st
   ...(denyRead ? { denyRead } : {}),
 })
 
+// A killed process is not gone the instant the run resolves: the group leader is reaped by the child's own process
+// handling, and a grandchild is reaped by init a moment later. So the test asks for a bounded while, never once.
+const gone = async (pid: number, ms = 2000): Promise<boolean> => {
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    try {
+      process.kill(pid, 0)
+    } catch {
+      return true
+    }
+    await new Promise((done) => setTimeout(done, 20))
+  }
+  return false
+}
+
 // Why the bubblewrap tests are skipped: the binary may be missing or unable to unshare namespaces here (the same skip
 // sandbox.test.ts makes). The runner refuses rather than runs unwrapped, so a failing probe is a host limitation.
 const noBwrap = (): string | undefined => {
@@ -999,6 +1144,7 @@ test("without a network declaration the child reaches nothing; with one it reach
   const open = await (await createHostRunner(sandboxOptions(job, true))).run({
     exe: "node",
     args: ["-e", script],
+    network: true,
   })
   assert.equal(open.stdout.trim(), "CONNECTED")
 
@@ -1008,6 +1154,93 @@ test("without a network declaration the child reaches nothing; with one it reach
   })
   assert.equal(closed.stdout.trim(), "FAILED")
   assert.equal(closed.refused, undefined, "the run happened; the refusal is only for a policy answer")
+})
+
+test("the network is a permission: only a run that asks for it gets it, and never one the adapter did not declare", async (t) => {
+  const reason = noBwrap()
+  if (reason) return t.skip(reason)
+  const { job } = jobRoot(t)
+
+  // The declaration alone does not unwrap anything: a run that says nothing is wrapped, which is what keeps a check that
+  // forgot to ask from silently reaching the network.
+  const silent = resolveHostRun({ exe: "node", args: ["-e", "0"] }, sandboxOptions(job, true))
+  assert.equal(silent.ok, true)
+  if (silent.ok) assert.ok(silent.wrapper.length > 0, "a run that does not ask is still wrapped")
+
+  // Asking is what unwraps it, and only where the adapter said it may.
+  const asked = resolveHostRun({ exe: "node", args: ["-e", "0"], network: true }, sandboxOptions(job, true))
+  assert.equal(asked.ok, true)
+  if (asked.ok) assert.equal(asked.wrapper.length, 0)
+
+  const widened = resolveHostRun({ exe: "node", args: ["-e", "0"], network: true }, sandboxOptions(job, false))
+  assert.equal(widened.ok, false)
+  if (!widened.ok) assert.match(widened.refused, /did not declare the network/)
+
+  // And the difference is real, not only in the argv the resolver builds: the same server is reachable for the run that
+  // asked and unreachable for the one that did not.
+  const server = createServer((socket) => socket.end())
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done))
+  t.after(() => server.close())
+  const address = server.address()
+  const port = typeof address === "object" && address ? address.port : 0
+  const script = [
+    `const socket = require("net").connect(${port}, "127.0.0.1")`,
+    'socket.on("connect", () => { console.log("CONNECTED"); process.exit(0) })',
+    'socket.on("error", () => { console.log("FAILED"); process.exit(0) })',
+    'setTimeout(() => { console.log("FAILED"); process.exit(0) }, 1500)',
+  ].join(";")
+  const open = await (await createHostRunner(sandboxOptions(job, true))).run({
+    exe: "node",
+    args: ["-e", script],
+    network: true,
+  })
+  assert.equal(open.stdout.trim(), "CONNECTED")
+  const closed = await (await createHostRunner(sandboxOptions(job, true))).run({ exe: "node", args: ["-e", script] })
+  assert.equal(closed.stdout.trim(), "FAILED")
+})
+
+test("a run may set a declared environment name itself, and may not smuggle one in", async (t) => {
+  const { job } = jobRoot(t)
+  const options = hostOptions(job, { env: ["DECK_SWITCH"] })
+
+  // The declared name carries the value the call chose, not the host's.
+  process.env.DECK_SWITCH = "host"
+  t.after(() => {
+    delete process.env.DECK_SWITCH
+  })
+  const runner = await createHostRunner(options)
+  const told = await runner.run({
+    exe: "node",
+    args: ["-e", "console.log(process.env.DECK_SWITCH ?? 'unset')"],
+    env: { DECK_SWITCH: "0" },
+  })
+  assert.equal(told.passed, true)
+  assert.equal(told.stdout.trim(), "0")
+
+  // A name the adapter never declared is refused before anything starts, and the sentence is the reason.
+  const smuggled = await runner.run({
+    exe: "node",
+    args: ["-e", "0"],
+    env: { UNDECLARED_SWITCH: "1" },
+  })
+  assert.equal(smuggled.passed, false)
+  assert.match(smuggled.refused ?? "", /"UNDECLARED_SWITCH" is set by this run but not declared by its adapter/)
+})
+
+test("/dev/null stays writable in the sandbox, because a spawned child opens it", async (t) => {
+  const reason = noBwrap()
+  if (reason) return t.skip(reason)
+  const { job } = jobRoot(t)
+  // The mount order used to leave /dev read-only, so `spawn` with `stdio: "ignore"` failed with EACCES and a check
+  // died for a reason that had nothing to do with the deck. This is that regression, written as the smallest program
+  // that shows it.
+  const runner = await createHostRunner(sandboxOptions(job, false))
+  const result = await runner.run({
+    exe: "node",
+    args: ["-e", 'require("fs").closeSync(require("fs").openSync("/dev/null", "w")); console.log("devnull ok")'],
+  })
+  assert.equal(result.passed, true, result.stderr || result.refused)
+  assert.equal(result.stdout.trim(), "devnull ok")
 })
 
 test("a denied directory is hidden without the network declaration, and the consequence with it is that it is not", async (t) => {
@@ -1027,10 +1260,11 @@ test("a denied directory is hidden without the network declaration, and the cons
   assert.match(hidden.stdout, /FAILED/)
   assert.equal(hidden.stdout.includes("hunter2"), false)
 
-  // The documented consequence: a networked adapter is not wrapped, so `denyRead` does not apply to it.
+  // The documented consequence: a run that asks for the network is not wrapped, so `denyRead` does not apply to it.
   const shown = await (await createHostRunner(sandboxOptions(job, true, [store]))).run({
     exe: "node",
     args: ["-e", script],
+    network: true,
   })
   assert.match(shown.stdout, /READ hunter2/)
 })
@@ -1038,17 +1272,22 @@ test("a denied directory is hidden without the network declaration, and the cons
 test("a run that overstays is killed with its process group and reported as timed out", async (t) => {
   const { job } = jobRoot(t)
   const runner = await createHostRunner(hostOptions(job))
-  const result = await runner.run({
+  // Run unwrapped on purpose: this test is about the timeout and the process group, and bubblewrap's own start-up makes
+  // a freshly spawned interpreter's first seconds unpredictable under load. The wrapped kill is covered by the cancel
+  // test next door.
+  const fast = await createHostRunner(hostOptions(job, { network: true }))
+  const result = await fast.run({
     exe: "node",
     args: ["-e", "console.log(process.pid); setTimeout(() => {}, 10000)"],
-    timeoutMs: 150,
+    timeoutMs: 500,
+    network: true,
   })
 
   assert.equal(result.timedOut, true)
   assert.equal(result.passed, false)
   const pid = Number(result.stdout.trim())
   assert.ok(pid > 0, `the child printed its pid, got ${JSON.stringify(result.stdout)}`)
-  assert.throws(() => process.kill(pid, 0), /ESRCH/)
+  assert.equal(await gone(pid), true, `the child ${pid} is still alive after the timeout`)
 })
 
 test("a stream longer than the cap keeps its end, because the error is there", async (t) => {
@@ -1083,7 +1322,7 @@ test("cancel kills the process group, and the run resolves as cancelled rather t
   assert.equal(result.cancelled, true)
   assert.equal(result.passed, false)
   assert.equal(result.code, -1)
-  assert.throws(() => process.kill(pid, 0), /ESRCH/)
+  assert.equal(await gone(pid), true, `the child ${pid} is still alive after the cancel`)
 })
 
 test("one run at a time: the second is refused before it spawns anything", async (t) => {
@@ -1204,6 +1443,9 @@ test("a deck plan becomes one slide per promoted page, titled by its heading or,
   )
   assert.deepEqual(spec.checks, ["deck.l0"])
   assert.equal(spec.job, "job-1")
+  // A deck spec is version 2 since B3-T1 gave it reveals, branches and hotspots; the handoff asks the contract rather
+  // than writing a number of its own.
+  assert.equal(spec.version, 2)
   assert.deepEqual(spec.assets?.map((asset) => asset.path), ["t1/deck.html", "t1/notes.html"])
   assert.deepEqual(parseSpec("deck", spec).errors, [])
 })
@@ -1361,7 +1603,7 @@ const verdictOf = (report: QualityReport, id: string): QualityVerdict => {
 
 const deckSpec = (slides: DeckSpec["slides"]): DeckSpec => ({
   kind: "deck",
-  version: SPEC_VERSION,
+  version: SPEC_VERSIONS.deck,
   job: "job-1",
   brief: "a deck about the release",
   slides,
@@ -1369,7 +1611,7 @@ const deckSpec = (slides: DeckSpec["slides"]): DeckSpec => ({
 
 const videoSpec = (scenes: VideoSpec["scenes"]): VideoSpec => ({
   kind: "video",
-  version: SPEC_VERSION,
+  version: SPEC_VERSIONS.video,
   job: "job-1",
   brief: "a video about the release",
   fps: 30,
@@ -1379,7 +1621,7 @@ const videoSpec = (scenes: VideoSpec["scenes"]): VideoSpec => ({
 
 const siteSpec = (pages: SiteSpec["pages"]): SiteSpec => ({
   kind: "site",
-  version: SPEC_VERSION,
+  version: SPEC_VERSIONS.site,
   job: "job-1",
   brief: "a site about the release",
   pages,
@@ -1387,7 +1629,7 @@ const siteSpec = (pages: SiteSpec["pages"]): SiteSpec => ({
 
 const imagesSpec = (slots: ImagesSpec["slots"]): ImagesSpec => ({
   kind: "images",
-  version: SPEC_VERSION,
+  version: SPEC_VERSIONS.images,
   job: "job-1",
   brief: "images for the release",
   slots,
@@ -1413,6 +1655,23 @@ test("a titled, short, visually checked deck ships, and its verdicts come out in
   )
   assert.deepEqual(report.warnings, [])
   for (const verdict of report.verdicts) assert.equal(verdict.ok, true, `${verdict.id}: ${verdict.why}`)
+})
+
+test("a skip the registry predicted is a warning; a skip nobody predicted blocks shipping", () => {
+  // A vision check with no local model is the case this exists for: the registry says in advance that it may be absent,
+  // so its absence is a warning a reader can act on, not a hole the gate mistakes for a pass.
+  const withVision = (skippable: boolean): readonly CheckDef[] => [def("deck.visual", "L2"), def("deck.vlm", "L2", { skippable })]
+  const results: readonly CheckResult[] = [passed("deck.visual", "L2"), skipped("deck.vlm", "L2", "no local vision model")]
+
+  const predicted = qualityGate({ spec: greenDeck(), defs: withVision(true), results })
+  assert.equal(predicted.ship, true, predicted.verdicts.filter((v) => !v.ok).map((v) => `${v.id}: ${v.why}`).join("; "))
+  assert.deepEqual(predicted.warnings, ["deck.vlm was skipped: no local vision model"])
+
+  const unexpected = qualityGate({ spec: greenDeck(), defs: withVision(false), results })
+  assert.equal(unexpected.ship, false, "an unpredicted skip is still a hole")
+  const skippedVerdict = unexpected.verdicts.find((verdict) => verdict.id === "checks.skipped")
+  assert.equal(skippedVerdict?.ok, false)
+  assert.match(skippedVerdict?.why ?? "", /deck\.vlm was skipped: no local vision model/)
 })
 
 test("a slide with no title cannot be read without narration, and the slide is named", () => {
@@ -1759,7 +2018,7 @@ test("a fixture plan, a fake deck adapter and the constrained runner produce a s
     model: model.model,
     seed: 7,
     inputs: [{ path: handoff.used[0]!.path, sha256: handoff.used[0]!.sha256 }],
-    spec: { kind: "deck", version: SPEC_VERSION, sha256: specHash(spec) },
+    spec: { kind: "deck", version: specVersionOf("deck"), sha256: specHash(spec) },
     createdAt: "2026-11-15T00:00:00.000Z",
   })
   assert.equal(record.spec.sha256, specHash(spec))

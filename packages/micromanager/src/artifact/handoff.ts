@@ -20,7 +20,7 @@ import { extname, join } from "node:path"
 
 import { insidePath } from "@omacode/artifact/paths"
 import { sha256File } from "@omacode/artifact/provenance"
-import { SPEC_VERSION, parseSpec, type ArtifactKind, type Page, type Scene, type Slide, type Slot, type Spec } from "@omacode/artifact/spec"
+import { specVersionOf, parseSpec, type ArtifactKind, type Page, type Scene, type Slide, type Slot, type Spec } from "@omacode/artifact/spec"
 
 import { parsePlanDoc } from "../plandoc.ts"
 import { planArea } from "../worktree/git.ts"
@@ -208,7 +208,9 @@ export async function specFromPlan(input: HandoffInput): Promise<Handoff> {
   }
 
   const base = {
-    version: SPEC_VERSION,
+    // The version belongs to the kind (spec.ts): a deck is 2 since B3-T1, the other three are 1. This file asks, so a
+    // bump cannot leave a handoff writing yesterday's number.
+    version: specVersionOf(input.kind),
     job: input.job,
     brief: input.brief,
     ...(input.checks !== undefined ? { checks: [...input.checks] } : {}),

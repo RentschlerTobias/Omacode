@@ -37,7 +37,9 @@
     "./adapter": "./src/adapter.ts",
     "./quality": "./src/quality.ts",
     "./runner": "./src/runner.ts",
-    "./paths": "./src/paths.ts"
+    "./paths": "./src/paths.ts",
+    "./png": "./src/png.ts",
+    "./adapters/deck": "./src/adapters/deck.ts"
   },
   "files": [
     "src"

@@ -252,7 +252,16 @@ export function resolveHostRun(input: HostRunInput, options: HostRunnerOptions):
       return refused(`environment name ${shown(name)} looks like a secret, so it is not handed to a renderer`)
     }
   }
-  const env = cleanEnv(process.env, granted)
+  // The values a call hands for the names the adapter declared. They are checked like the names themselves — a declared
+  // name is still not a licence to smuggle a secret, and a name nobody declared is refused above — and then laid over
+  // `cleanEnv`, so a tool can be told "you are the one inside the sandbox" without a global environment variable.
+  const values = input.env ?? {}
+  for (const name of Object.keys(values)) {
+    if (!granted.includes(name)) {
+      return refused(`environment name ${shown(name)} is set by this run but not declared by its adapter`)
+    }
+  }
+  const env = { ...cleanEnv(process.env, granted), ...values }
   const home = join(jobDir, ".home")
   const temp = join(jobDir, ".tmp")
   env.HOME = home
@@ -269,18 +278,28 @@ export function resolveHostRun(input: HostRunInput, options: HostRunnerOptions):
   // and "the sandbox was missing" is not a reason to hand a renderer the user's network — the same fail-closed rule as
   // A1's sandbox.
   //
-  // With `network: true` the adapter has declared that the program may reach out, and no wrapper is used at all:
-  // `denyRead` is not applied either, because it is bubblewrap's mount list. That is the documented consequence — a
-  // networked renderer sees what the user's own processes see.
+  // A run that asks for the network and is allowed it is not wrapped at all: `denyRead` is not applied either, because
+  // it is bubblewrap's mount list. That is the documented consequence — a networked presenter sees what the user's own
+  // processes see, which is what makes its localhost page reachable from the user's browser.
   const wrapper: string[] = []
-  if (options.network === false) {
+  // A run reaches the host network only when the adapter both declared it and this call asks for it. The declaration
+  // alone is a permission, not a default: a deck adapter declares it for its presenter, and its check still runs wrapped,
+  // because a check that forgot to ask is the case that must stay safe. Asking for a network the adapter never declared
+  // is a refusal.
+  if (input.network === true && options.network !== true) {
+    return refused("this adapter did not declare the network, so this run cannot ask for it")
+  }
+  if (input.network !== true) {
     const bwrap = findBwrap(options.bwrap, dirs, jobDir)
     if (!bwrap) {
       return refused(
         `network is not declared for this adapter, but ${shown(options.bwrap === false ? "bwrap (disabled)" : (options.bwrap ?? "bwrap"))} is not runnable here, so the program would run with the network`,
       )
     }
-    wrapper.push(bwrap, "--unshare-net", "--die-with-parent", "--dev-bind", "/dev", "/dev", "--ro-bind", "/", "/")
+    // The root first, then /dev on top of it: a later mount shadows an earlier one, and the other order leaves /dev/null
+    // read-only inside the sandbox. That is not cosmetic — `spawn` with `stdio: "ignore"` opens /dev/null, and a program
+    // that logs to it gets EACCES, so a check would fail with an error that has nothing to do with the deck.
+    wrapper.push(bwrap, "--unshare-net", "--die-with-parent", "--ro-bind", "/", "/", "--dev-bind", "/dev", "/dev")
     const denyDirs: string[] = []
     const denyFiles: string[] = []
     for (const entry of options.denyRead ?? DENY_READ) {
@@ -481,5 +500,10 @@ export async function hostRunnerFor(
   adapter: Adapter,
   options: Omit<HostRunnerOptions, "allow" | "network">,
 ): Promise<HostRunner> {
-  return createHostRunner({ ...options, allow: executablesOf(adapter), network: networkOf(adapter) })
+  return createHostRunner({
+    ...options,
+    allow: executablesOf(adapter),
+    network: networkOf(adapter),
+    env: [...(options.env ?? []), ...(adapter.env ?? [])],
+  })
 }

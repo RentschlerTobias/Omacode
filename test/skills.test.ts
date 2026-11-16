@@ -52,6 +52,8 @@ test("every catalog skill exists in skills/ with a matching name and its source 
     assert.ok(existsSync(path), path)
     const text = readFileSync(path, "utf8")
     assert.match(text, new RegExp(`^---\\nname: ${s.name}\\n`), s.name)
-    assert.match(text, /\n {2}source: https:\/\/github\.com\/[\w-]+\/[\w-]+\/blob\/[0-9a-f]{40}\//, s.name)
+    // A skill adapted from someone else's names the pinned file it came from; one written here says so. The rule is
+    // that the reader can always tell which of the two a skill is, without a URL that points at a moving branch.
+    assert.match(text, /\n {2}source: (https:\/\/github\.com\/[\w-]+\/[\w-]+\/blob\/[0-9a-f]{40}\/|own$)/m, s.name)
   }
 })

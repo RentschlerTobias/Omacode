@@ -34,6 +34,10 @@ export interface CheckDef {
   readonly title: string
   readonly run: "spec" | "argv" | "human"
   readonly required?: boolean
+  // The check is honestly unavailable on some hosts and the registry says so in advance — a vision review with no local
+  // model, a browser check where none can run. A skip of such a check is a warning in the quality gate; a skip of any
+  // other check is a failure, because "it did not run here" and "it was never going to run" are different facts.
+  readonly skippable?: boolean
 }
 
 // A check that did not run. The code is -1 because no program can exit with a negative code: "did not run" cannot be
