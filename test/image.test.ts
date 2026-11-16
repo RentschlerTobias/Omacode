@@ -1,17 +1,28 @@
-// The image spec (B5-T1) and its ComfyUI-backed adapter (B5-T2). The spec tests are pure: a version 2 image set parses
-// with a checkpoint it shares and a checkpoint one slot owns, and every way of getting a model, a ref or a size wrong
-// fails at the address the reader has to fix. The client tests run against a real HTTP server on loopback (fake-comfy.ts)
-// because a timeout, a 500 and a closed port are things a `Response` stub cannot have; each one is a value and none is a
-// throw.
+// The image spec (B5-T1), its ComfyUI-backed adapter (B5-T2), the checkpoint policy (B5-T4), the deterministic checks
+// (B5-T5), the one-render-at-a-time rule (B5-T6) and the cloud shape (B5-T3). The spec tests are pure: a version 2 image
+// set parses with a checkpoint it shares and a checkpoint one slot owns, and every way of getting a model, a ref or a
+// size wrong fails at the address the reader has to fix. The client tests run against a real HTTP server on loopback
+// (fake-comfy.ts) because a timeout, a 500 and a closed port are things a `Response` stub cannot have; each one is a
+// value and none is a throw.
 //
 // The adapter tests are the same shape as the video's: `prepare` is checked against the files it writes, and `render`
 // against the files the fake server produced. The fake can fail a job, refuse a checkpoint by name or return bytes that
 // are not a picture, because those are the cases where a silent pass would be worse than a red line.
 //
+// Two things are counted rather than described. A refused checkpoint is checked against the server's request log: an
+// unknown hash must leave that log empty, because a workflow that was never written cannot be sent. And one render at a
+// time is checked against the number of `/prompt` requests the fake was answering at once (`peakPrompts`), because a
+// sequential loop is a property of this code and not of the test's patience.
+//
+// The registry the adapter reads lives in a temporary state directory per test, so a developer's own models.json cannot
+// decide whether these tests pass. The checkpoints these fixtures declare are the ones the code table knows, by their
+// published sha256.
+//
 // The last test reads the package manifests: the client is `fetch` and `WebSocket`, and no dependency was added for a
 // WebSocket client, a multipart body or a PNG.
 
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -22,6 +33,7 @@ import {
   imageAdapter,
   imageWorkflow,
   writeImageProject,
+  type ImageAdapterOptions,
   type ImageProject,
 } from "../packages/artifact/src/adapters/image.ts"
 import {
@@ -32,15 +44,30 @@ import {
   type HostRunResult,
 } from "../packages/artifact/src/adapter.ts"
 import { evaluate, type CheckResult } from "../packages/artifact/src/checks.ts"
+import { cloudImageBackend, CLOUD_IMAGE_KEY_ENV } from "../packages/artifact/src/cloud-image.ts"
 import { ComfyClient, type ComfyOptions, type ComfyProgress } from "../packages/artifact/src/comfyui.ts"
+import {
+  MODEL_REGISTRY,
+  readModelRegistry,
+  registerModel,
+  registryWith,
+  type ModelRegistry,
+} from "../packages/artifact/src/models.ts"
 import { readPng } from "../packages/artifact/src/png.ts"
+import { qualityGate } from "../packages/artifact/src/quality.ts"
+import { createHostRunner } from "../packages/artifact/src/runner.ts"
 import { parseSpec, SPEC_VERSIONS, type ImagesSpec } from "../packages/artifact/src/spec.ts"
+import { encodePng, solid } from "./harness.ts"
 import { FakeComfy, type FakeComfyOptions } from "./fake-comfy.ts"
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Fixtures.
 
-const sha = "a".repeat(64)
+// The published sha256 of two checkpoints the registry lists: stabilityai's SDXL base 1.0 and black-forest-labs'
+// FLUX.1 schnell. They are what makes a fixture allowed without a registration, so these tests are about the adapter
+// rather than about a temp file somebody wrote. A typo here fails the run: the table would no longer know the hash.
+const SDXL_SHA = "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
+const FLUX_SHA = "9403429e0052277ac2a87ad800adece5481eecefd9ed334e1f348723621d2a0a"
 
 // A version 2 image set that uses everything B5-T1 added: a checkpoint for the set, a different one for one slot, and
 // the seed, negative and refs the contract already had.
@@ -50,7 +77,7 @@ const v2 = (): Record<string, unknown> => ({
   job: "job-1",
   brief: "images for the release",
   checks: ["images.contract"],
-  model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: sha },
+  model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
   slots: [
     {
       id: "hero",
@@ -64,7 +91,7 @@ const v2 = (): Record<string, unknown> => ({
       id: "wide",
       prompt: "a wide gradient",
       size: { width: 1024, height: 512 },
-      model: { name: "FLUX schnell", file: "flux1-schnell.safetensors" },
+      model: { name: "FLUX schnell", file: "flux1-schnell.safetensors", sha256: FLUX_SHA },
     },
   ],
 })
@@ -109,8 +136,27 @@ const fakeFor = async (t: TestContext, options: FakeComfyOptions = {}): Promise<
 const clientFor = (fake: FakeComfy, options: Partial<ComfyOptions> = {}): ComfyClient =>
   new ComfyClient({ url: fake.url, pollMs: 10, watchTimeoutMs: 5000, ...options })
 
-const adapterFor = (fake: FakeComfy) =>
-  imageAdapter({ comfy: { url: fake.url, pollMs: 5, watchTimeoutMs: 5000 } })
+// A state directory per test: the adapter reads a models.json from it, and a developer's own file must not be able to
+// change what these tests prove.
+const stateDir = (t: TestContext): string => {
+  const dir = mkdtempSync(join(tmpdir(), "mm-image-state-"))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  return dir
+}
+
+const adapterFor = (t: TestContext, fake: FakeComfy, options: Partial<ImageAdapterOptions> = {}) =>
+  imageAdapter({
+    comfy: { url: fake.url, pollMs: 5, watchTimeoutMs: 5000 },
+    registryDir: stateDir(t),
+    ...options,
+  })
+
+const hashOfFile = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex")
+
+const digest = (text: string): string => createHash("sha256").update(text).digest("hex")
+
+// A picture to overwrite a slot's output with, for the style fixture: a real PNG, because the check reads pixels.
+const png = (width: number, height: number, colour: readonly number[]): Buffer => encodePng(width, height, 6, solid(colour))
 
 const workflowFor = (size = { width: 32, height: 16 }) => ({
   "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "sdxl-base.safetensors" } },
@@ -131,11 +177,17 @@ test("a version 2 image set parses with a shared checkpoint, a per-slot checkpoi
   assert.equal(SPEC_VERSIONS.images, 2)
   const spec = parsed(v2())
 
-  assert.deepEqual(spec.model, { name: "SDXL base", file: "sdxl-base.safetensors", sha256: sha })
+  assert.deepEqual(spec.model, { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA })
+
+  // The hashes the fixtures declare are the ones the code table lists, so a changed table fails here rather than in a
+  // refusal that reads like a policy decision.
+  const listed = MODEL_REGISTRY.models.map((model) => model.hashes)
+  assert.ok(listed.some((hashes) => hashes.includes(SDXL_SHA)), "the registry must know SDXL's published sha256")
+  assert.ok(listed.some((hashes) => hashes.includes(FLUX_SHA)), "the registry must know FLUX.1 schnell's published sha256")
   assert.equal(spec.slots[0]?.seed, 7)
   assert.equal(spec.slots[0]?.negative, "text")
   assert.deepEqual(spec.slots[0]?.refs, ["refs/a.png"])
-  assert.deepEqual(spec.slots[1]?.model, { name: "FLUX schnell", file: "flux1-schnell.safetensors" })
+  assert.deepEqual(spec.slots[1]?.model, { name: "FLUX schnell", file: "flux1-schnell.safetensors", sha256: FLUX_SHA })
   assert.deepEqual(spec.slots[1]?.size, { width: 1024, height: 512 })
 })
 
@@ -181,7 +233,7 @@ test("a slot with no model and a set with no model is refused at prepare, before
     { id: "wide", prompt: "a wide gradient", size: { width: 32, height: 16 } },
   ]
   const spec = parsed(without)
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
   await assert.rejects(adapter.prepare(spec, ctx), /slot "hero" has no model and the set declares none, so there is no checkpoint to load/)
@@ -368,7 +420,7 @@ test("two slots render two pictures sequentially, at their own sizes, and every 
       { id: "wide", prompt: "a wide gradient", size: { width: 32, height: 16 } },
     ],
   })
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
   const prepared = await adapter.prepare(spec, ctx)
@@ -390,15 +442,27 @@ test("two slots render two pictures sequentially, at their own sizes, and every 
   assert.deepEqual(shots.shots.map((shot) => shot.label), ["hero", "wide"])
 
   const results = await adapter.check(ctx, IMAGE_CHECKS)
-  assert.deepEqual(results.map((result) => result.status), ["passed", "passed", "passed"], JSON.stringify(results))
+  assert.deepEqual(
+    results.map((result) => [result.id, result.status]),
+    [
+      ["images.count", "passed"],
+      ["images.files", "passed"],
+      ["images.size", "passed"],
+      ["images.prompt", "passed"],
+      ["images.provenance", "passed"],
+      ["images.style", "passed"],
+      ["images.vlm", "skipped"],
+    ],
+    JSON.stringify(results),
+  )
   assert.deepEqual(evaluate(IMAGE_CHECKS, results).invalid, [])
 })
 
-test("a different checkpoint on one slot gets its own workflow, while the other slot inherits the set's", (t) => {
+test("a different checkpoint on one slot gets its own workflow, while the other slot inherits the set's", async (t) => {
   const dir = jobDir(t)
   mkdirSync(join(dir, "refs"))
   writeFileSync(join(dir, "refs/a.png"), "a ref the job carries")
-  const project: ImageProject = writeImageProject(parsed(v2()), dir)
+  const project: ImageProject = await writeImageProject(parsed(v2()), dir)
 
   assert.deepEqual(
     project.slots.map((slot) => slot.model.name),
@@ -425,7 +489,7 @@ test("a different checkpoint on one slot gets its own workflow, while the other 
 
 test("the workflow template is the code-owned text-to-image graph", () => {
   const graph = imageWorkflow({
-    model: { name: "SDXL base", file: "sdxl-base.safetensors" },
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
     prompt: "a calm gradient",
     negative: "text",
     size: { width: 64, height: 32 },
@@ -461,7 +525,7 @@ test("a failing job is reflected in the checks with the server's reason, not swa
       { id: "wide", prompt: "a wide gradient", size: { width: 32, height: 16 } },
     ],
   })
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
   await adapter.prepare(spec, ctx)
@@ -485,10 +549,10 @@ test("a broken picture is refused by the render, and the check says why the slot
   const dir = jobDir(t)
   const spec = parsed({
     ...v2(),
-    model: { name: "SDXL base", file: "sdxl-base.safetensors" },
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
     slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
   })
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
   await adapter.prepare(spec, ctx)
@@ -513,10 +577,10 @@ test("a ref outside the job is refused before the server is asked anything", asy
 
   const spec = parsed({
     ...v2(),
-    model: { name: "SDXL base", file: "sdxl-base.safetensors" },
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
     slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 }, refs: ["refs/link.png"] }],
   })
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
 
   await assert.rejects(adapter.prepare(spec, ctx), /ref "refs\/link\.png" resolves outside the job directory/)
@@ -540,10 +604,10 @@ test("an L0 contract definition handed to the adapter is skipped with its reason
   const dir = jobDir(t)
   const spec = parsed({
     ...v2(),
-    model: { name: "SDXL base", file: "sdxl-base.safetensors" },
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
     slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
   })
-  const adapter = adapterFor(fake)
+  const adapter = adapterFor(t, fake)
   const ctx = context(dir)
   await adapter.prepare(spec, ctx)
   await adapter.render(ctx)
@@ -566,6 +630,397 @@ test("an L0 contract definition handed to the adapter is skipped with its reason
       reason: 'images.contract is produced by the spec parse (L0, run: "spec"), not by the image adapter',
     },
   ])
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The checkpoint policy in the adapter (B5-T4).
+
+test("a checkpoint whose hash nobody recorded is refused before any request and leaves no workflow behind", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const unknown = "f".repeat(64)
+  const spec = parsed({
+    ...v2(),
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: unknown },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+  })
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+
+  await assert.rejects(adapter.prepare(spec, ctx), (error: Error) => {
+    assert.match(error.message, /^images: slot "hero": /)
+    assert.match(error.message, new RegExp(unknown))
+    assert.match(error.message, /is not in the model registry, so it is refused/)
+    assert.match(error.message, /a name proves nothing, because a workflow can load any checkpoint on disk/)
+    assert.match(error.message, /registerModel\(\{ hash, name, license, territory \}\)/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [], "an unknown checkpoint must not reach the server")
+  assert.equal(existsSync(join(dir, "workflows")), false, "a refused job writes no graph")
+})
+
+test("a blocklisted hash is refused by name and reason before the server is asked", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const hash = digest("a checkpoint whose licence excludes the EU")
+  const registry: ModelRegistry = {
+    models: [],
+    blocked: [{ name: "An excluded model", reason: "its licence excludes the EU (D3)", hashes: [hash] }],
+  }
+  const spec = parsed({
+    ...v2(),
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: hash },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+  })
+  const adapter = adapterFor(t, fake, { registry })
+  const ctx = context(dir)
+
+  await assert.rejects(adapter.prepare(spec, ctx), (error: Error) => {
+    assert.match(error.message, /is blocked as "An excluded model"/)
+    assert.match(error.message, /its licence excludes the EU \(D3\)/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [])
+  assert.equal(existsSync(join(dir, "workflows")), false)
+})
+
+test("the file in the job decides the hash, not the name the spec declared", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const state = stateDir(t)
+  // A file whose name claims SDXL and whose bytes are a few words. The name is refused, and the sentence quotes the hash
+  // the file really has, which is what a registry would have to know.
+  writeFileSync(join(dir, "checkpoint.safetensors"), "weights that are not SDXL")
+  const real = hashOfFile(join(dir, "checkpoint.safetensors"))
+
+  const spec = (model: Record<string, unknown>) =>
+    parsed({
+      ...v2(),
+      model,
+      slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+    })
+
+  const adapter = adapterFor(t, fake, { registryDir: state })
+  await assert.rejects(
+    adapter.prepare(spec({ name: "SDXL base", file: "checkpoint.safetensors" }), context(dir)),
+    (error: Error) => {
+      assert.match(error.message, new RegExp(real))
+      assert.match(error.message, /is not in the model registry/)
+      return true
+    },
+  )
+  assert.deepEqual(fake.requests, [])
+
+  // A declared hash that disagrees with the bytes is its own refusal: whichever of the two is wrong would travel.
+  await assert.rejects(
+    adapter.prepare(spec({ name: "SDXL base", file: "checkpoint.safetensors", sha256: SDXL_SHA }), context(dir)),
+    (error: Error) => {
+      assert.match(error.message, /hashes to /)
+      assert.match(error.message, /not the declared /)
+      return true
+    },
+  )
+  assert.deepEqual(fake.requests, [])
+
+  // Registering the hash the file really has makes it allowed, and the decision records that the hash was read here.
+  registerModel({ hash: real, name: "A checkpoint I installed", license: "Apache-2.0", territory: "EU" }, { dir: state })
+  const registered = readModelRegistry({ dir: state })
+  const project = await writeImageProject(spec({ name: "SDXL base", file: "checkpoint.safetensors" }), dir, {
+    registry: registryWith(registered.entries),
+  })
+  assert.equal(project.slots[0]?.checkpoint?.verified, true)
+  assert.equal(project.slots[0]?.checkpoint?.hash, real)
+})
+
+test("an unknown hash that was registered proceeds, end to end, and one that was not stays refused", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const state = stateDir(t)
+  const hash = digest("the weights I registered")
+  const spec = parsed({
+    ...v2(),
+    model: { name: "My checkpoint", file: "not-installed.safetensors", sha256: hash },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+  })
+
+  await assert.rejects(adapterFor(t, fake, { registryDir: state }).prepare(spec, context(dir)), /is not in the model registry/)
+  assert.deepEqual(fake.requests, [])
+
+  registerModel({ hash, name: "My checkpoint", license: "Apache-2.0", territory: "EU" }, { dir: state })
+
+  const adapter = adapterFor(t, fake, { registryDir: state })
+  const ctx = context(dir)
+  const prepared = await adapter.prepare(spec, ctx)
+  assert.ok(prepared.notes?.some((note) => /resolved by sha256 for use in EU/.test(note)))
+  assert.ok(prepared.notes?.some((note) => /1 hash came from the spec because the file is not here/.test(note)))
+
+  const rendered = await adapter.render(ctx)
+  assert.deepEqual(rendered.outputs, ["images/hero.png"])
+  assert.equal(fake.prompts.length, 1)
+
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const provenance = results.find((result) => result.id === "images.provenance")
+  assert.equal(provenance?.status, "passed", JSON.stringify(results))
+})
+
+test("a registry file that lost a licence is a refusal, not an empty registry", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const state = stateDir(t)
+  mkdirSync(state, { recursive: true })
+  writeFileSync(
+    join(state, "models.json"),
+    JSON.stringify({
+      version: 1,
+      models: [{ name: "Half an entry", territories: ["EU"], use: "tests", hashes: ["c".repeat(64)] }],
+    }),
+  )
+
+  const adapter = adapterFor(t, fake, { registryDir: state })
+  const spec = parsed({
+    ...v2(),
+    model: { name: "SDXL base", file: "sdxl-base.safetensors", sha256: SDXL_SHA },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+  })
+  await assert.rejects(adapter.prepare(spec, context(dir)), (error: Error) => {
+    assert.match(error.message, /the model registry cannot be read, so no checkpoint is allowed/)
+    assert.match(error.message, /models\[0\]\.spdx: expected a non-empty licence identifier/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [])
+})
+
+test("a checkpoint under a declared model directory is hashed from that file", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const state = stateDir(t)
+  const models = mkdtempSync(join(tmpdir(), "mm-image-models-"))
+  t.after(() => rmSync(models, { recursive: true, force: true }))
+  writeFileSync(join(models, "checkpoint.safetensors"), "weights an installed ComfyUI keeps")
+  const real = hashOfFile(join(models, "checkpoint.safetensors"))
+  registerModel({ hash: real, name: "A checkpoint under the models directory", license: "Apache-2.0", territory: "EU" }, { dir: state })
+
+  const adapter = adapterFor(t, fake, { registryDir: state, modelDirs: [models] })
+  const spec = parsed({
+    ...v2(),
+    model: { name: "SDXL base", file: "checkpoint.safetensors" },
+    slots: [{ id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } }],
+  })
+  const project = await writeImageProject(spec, dir, {
+    registry: registryWith(readModelRegistry({ dir: state }).entries),
+    modelDirs: [models],
+  })
+
+  const checkpoint = project.slots[0]?.checkpoint
+  assert.equal(checkpoint?.hash, real, "the file, not the name, decided")
+  assert.equal(checkpoint?.verified, true)
+  assert.equal(checkpoint?.file, join(models, "checkpoint.safetensors"))
+  assert.equal(checkpoint?.spdx, "Apache-2.0")
+
+  // The adapter itself takes the same route.
+  const ctx = context(dir)
+  await adapter.prepare(spec, ctx)
+  assert.ok(ctx.logs.some((line) => /all were hashed from a file on this machine/.test(line)))
+})
+
+test("one unknown slot refuses the set before the slot that was allowed has a workflow", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const spec = parsed({
+    ...v2(),
+    slots: [
+      { id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 } },
+      {
+        id: "wide",
+        prompt: "a wide gradient",
+        size: { width: 32, height: 16 },
+        model: { name: "Unknown", file: "unknown.safetensors", sha256: "e".repeat(64) },
+      },
+    ],
+  })
+  const adapter = adapterFor(t, fake)
+  await assert.rejects(adapter.prepare(spec, context(dir)), /slot "wide": .*is not in the model registry/)
+  assert.deepEqual(fake.requests, [])
+  assert.equal(existsSync(join(dir, "workflows")), false, "hero resolved, but no workflow was written for it")
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The checks (B5-T5).
+
+const twoSlots = (): ImagesSpec =>
+  parsed({
+    ...v2(),
+    slots: [
+      { id: "hero", prompt: "a calm gradient", size: { width: 64, height: 48 }, seed: 7 },
+      { id: "wide", prompt: "a wide gradient", size: { width: 32, height: 16 } },
+    ],
+  })
+
+test("the vision review is skipped with the D13/D21 reason while the deterministic checks pass and the gate ships", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+
+  await adapter.prepare(twoSlots(), ctx)
+  const rendered = await adapter.render(ctx)
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const byId = new Map(results.map((result) => [result.id, result]))
+
+  const vlm = byId.get("images.vlm")
+  assert.equal(vlm?.status, "skipped")
+  assert.equal(vlm?.code, -1)
+  assert.match(vlm?.reason ?? "", /no local vision model is configured/)
+  assert.match(vlm?.reason ?? "", /D13\/D21/)
+
+  // The prompt's own words reached the graph, the set is one colour, and every slot carries its checkpoint's facts.
+  assert.equal(byId.get("images.prompt")?.status, "passed")
+  assert.match(byId.get("images.prompt")?.output ?? "", /prompt words .* reach their workflows/)
+  assert.equal(byId.get("images.style")?.status, "passed")
+  assert.equal(byId.get("images.provenance")?.status, "passed")
+  assert.match(byId.get("images.provenance")?.output ?? "", /named with a hash, a licence and a territory/)
+
+  const coverage = evaluate(IMAGE_CHECKS, results)
+  assert.deepEqual(coverage.invalid, [])
+  assert.deepEqual(coverage.failed, [])
+  assert.deepEqual(coverage.skipped.map((result) => result.id), ["images.vlm"])
+
+  // And a skipped `images.vlm` is declared skippable, so the gate ships with the absence as a warning (B5-T5's
+  // "placeholders when no model" is exactly this: a named absence, not a green line).
+  const report = qualityGate({ spec: twoSlots(), defs: IMAGE_CHECKS, results, outputs: rendered.outputs })
+  assert.equal(report.ship, true, JSON.stringify(report.verdicts))
+  assert.ok(report.warnings.some((warning) => /images\.vlm was skipped/.test(warning)), JSON.stringify(report.warnings))
+})
+
+test("the deterministic checks fail on a tampered prompt, a rewritten workflow and an off-palette picture", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+
+  await adapter.prepare(twoSlots(), ctx)
+  await adapter.render(ctx)
+
+  // `hero`'s graph lost its prompt: the words are still in the spec and are no longer in what the server was asked.
+  const heroPath = join(dir, "workflows/hero.json")
+  const hero = JSON.parse(readFileSync(heroPath, "utf8")) as Record<string, { class_type: string; inputs: Record<string, unknown> }>
+  for (const node of Object.values(hero)) {
+    if (node.class_type === "CLIPTextEncode") node.inputs["text"] = "nothing at all"
+  }
+  writeFileSync(heroPath, JSON.stringify(hero))
+
+  // `wide`'s graph names a checkpoint nobody resolved, and its picture is a red frame in a blue set.
+  const widePath = join(dir, "workflows/wide.json")
+  const wide = JSON.parse(readFileSync(widePath, "utf8")) as Record<string, { class_type: string; inputs: Record<string, unknown> }>
+  for (const node of Object.values(wide)) {
+    if (node.class_type === "CheckpointLoaderSimple") node.inputs["ckpt_name"] = "somebody-elses.safetensors"
+  }
+  writeFileSync(widePath, JSON.stringify(wide))
+  writeFileSync(join(dir, "images/wide.png"), png(32, 16, [220, 30, 30, 255]))
+
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const byId = new Map(results.map((result) => [result.id, result]))
+
+  const prompt = byId.get("images.prompt")
+  assert.equal(prompt?.status, "failed", JSON.stringify(results))
+  assert.match(prompt?.reason ?? "", /hero asked for .*calm/)
+  assert.match(prompt?.reason ?? "", /gradient/)
+
+  const provenance = byId.get("images.provenance")
+  assert.equal(provenance?.status, "failed")
+  assert.match(provenance?.reason ?? "", /wide's workflow loads "somebody-elses\.safetensors"/)
+
+  const style = byId.get("images.style")
+  assert.equal(style?.status, "failed")
+  assert.match(style?.reason ?? "", /wide does not fit the set/)
+  assert.match(style?.reason ?? "", /colours overlap the rest of the set/)
+
+  assert.deepEqual(evaluate(IMAGE_CHECKS, results).invalid, [])
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// GPU contention (B5-T6).
+
+test("one render at a time: a second render is refused with the runner's sentence, and the fake never saw two prompts", async (t) => {
+  const fake = await fakeFor(t)
+  fake.slowMs = 30
+  const dir = jobDir(t)
+  const adapter = adapterFor(t, fake)
+  const ctx = context(dir)
+  await adapter.prepare(twoSlots(), ctx)
+
+  // `render` takes the slot synchronously, so the second call meets it before the first has awaited anything.
+  const first = adapter.render(ctx)
+  await assert.rejects(adapter.render(ctx), /^Error: images: another run is active$/)
+
+  const rendered = await first
+  assert.equal(rendered.outputs.length, 2)
+  assert.equal(fake.peakPrompts, 1, "two graphs were sent at once")
+
+  // The slot is free again: a later render is a new run, not a second one.
+  fake.slowMs = 0
+  const again = await adapter.render(ctx)
+  assert.equal(again.outputs.length, 2)
+})
+
+test("the host runner's own rule is the same sentence: one program at a time", async (t) => {
+  const dir = jobDir(t)
+  const pid = join(dir, "pid")
+  const runner = await createHostRunner({ allow: ["node"], jobDir: dir, network: true })
+
+  const first = runner.run({
+    exe: "node",
+    args: ["-e", 'require("fs").writeFileSync("pid", String(process.pid)); setTimeout(() => {}, 10000)'],
+  })
+  for (let tries = 0; tries < 200 && !existsSync(pid); tries += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.ok(existsSync(pid), "the first run must have started")
+
+  const second = await runner.run({ exe: "node", args: ["-e", "process.exit(0)"] })
+  assert.equal(second.refused, "another run is active")
+  assert.equal(second.passed, false)
+  assert.equal(second.code, -1)
+
+  runner.cancel()
+  assert.equal((await first).cancelled, true)
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The cloud shape (B5-T3).
+
+test("the cloud image backend is absent without a key, and refuses with its reasons when one is configured", async () => {
+  const absent = cloudImageBackend({})
+  assert.equal(absent.backend, undefined)
+  assert.match(absent.refusal ?? "", new RegExp(`no cloud image backend without an API key \\(${CLOUD_IMAGE_KEY_ENV}\\)`))
+
+  // With a key the shape exists, and every call refuses: the artifact package may not import the plugin's egress gate
+  // (micromanager depends on artifact), and a second gate here would be a second answer.
+  const configured = cloudImageBackend({ apiKey: "sk-not-a-real-key", budgetUsd: 5 })
+  assert.ok(configured.backend)
+  if (configured.backend === undefined) return
+  assert.equal(configured.backend.available, false)
+  assert.equal(configured.backend.budgetUsd, 5)
+  assert.match(configured.backend.refusal, /egress gate D13 requires/)
+  assert.match(configured.backend.refusal, /packages\/micromanager\/src\/egress\.ts/)
+  assert.match(configured.backend.refusal, /artifact daemon's ledger \(B6\)/)
+  assert.match(configured.backend.refusal, /terms are not recorded/)
+
+  // Terms the caller has read are kept and are no longer listed as missing.
+  const withTerms = cloudImageBackend({ apiKey: "sk-not-a-real-key", terms: "no training on prompts" })
+  assert.equal(withTerms.backend?.terms, "no training on prompts")
+  assert.doesNotMatch(withTerms.backend?.refusal ?? "", /terms are not recorded/)
+
+  const answer = await configured.backend.generate({ prompt: "a calm gradient", size: { width: 64, height: 48 } })
+  assert.equal(answer.ok, false)
+  if (!answer.ok) assert.match(answer.refused, /no cloud image call is made/)
+
+  // The key is read and never repeated, in a refusal or in the object a caller could log.
+  assert.equal(JSON.stringify(configured).includes("sk-not-a-real-key"), false)
+
+  // The adapter has no cloud option at all: there is no configuration in this round under which a picture comes from a
+  // host, which is what "absent with a refusal reason" means rather than a backend that half works.
+  assert.equal("cloud" in imageAdapter(), false)
 })
 
 test("no dependency was added for HTTP, WebSocket, multipart or PNG", () => {

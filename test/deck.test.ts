@@ -1481,7 +1481,12 @@ test("the package builds one adapter per kind and names no artifact daemon or de
     .filter((name) => name.endsWith(".ts"))
     .map((name) => ({ name, text: readFileSync(new URL(name, source), "utf8") }))
   assert.ok(files.length >= 10, "the walk must see the package, not an empty list")
-  const offenders = files.filter((file) => /\bartifactd\b|\bpptx\b|pptxgenjs|libreoffice/i.test(file.text))
+  // Prose may name the daemon; code may not. B5-T6 asks the image adapter to record in a comment that the cross-process
+  // lock over a GPU is the daemon's and arrives in B6 — a sentence about who owns the next round, not a second program.
+  // The scan therefore reads the code with comments removed, and the walk's own allowlist above still refuses a file that
+  // would be the daemon's or the deferred export's.
+  const codeOf = (text: string): string => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "")
+  const offenders = files.filter((file) => /\bartifactd\b|\bpptx\b|pptxgenjs|libreoffice/i.test(codeOf(file.text)))
   assert.deepEqual(
     offenders.map((file) => file.name),
     [],

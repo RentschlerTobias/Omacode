@@ -131,9 +131,9 @@ export interface SiteSpec extends SpecBase<"site"> {
 
 // The checkpoint an image set (or one slot of it) is made with. `name` is what a person reads in provenance and in an
 // error; `file` is the file ComfyUI resolves inside its own models directory, relative to it and never a job path.
-// `sha256` is the digest of the weights, and B5-T4 is what will enforce it: a name proves nothing, because a workflow
-// can load any file on the server's disk. The hash is optional here so a spec can be written before the registry knows
-// the checkpoint; an adapter that requires a verified hash says so itself.
+// `sha256` is the digest of the weights, and the model registry (B5-T4) is what enforces it: a name proves nothing,
+// because a workflow can load any file on the server's disk. The hash is optional here so a spec can be written before
+// the registry knows the checkpoint; the image adapter refuses a slot whose hash resolves to nothing, and says so.
 export interface ImageModel {
   readonly name: string
   readonly file?: string

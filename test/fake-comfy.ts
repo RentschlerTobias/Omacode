@@ -101,6 +101,10 @@ export class FakeComfy {
 
   readonly requests: string[] = []
   readonly prompts: unknown[] = []
+  // How many `/prompt` requests were being answered at the same moment, and the most that ever were. One render at a
+  // time is a claim about the adapter's loop, and this is the number that can be read instead of believed (B5-T6).
+  inFlightPrompts = 0
+  peakPrompts = 0
   readonly uploaded: string[] = []
   readonly jobIds: string[] = []
 
@@ -161,34 +165,40 @@ export class FakeComfy {
       }
 
       if (url.pathname === "/prompt") {
-        if (this.promptStatus !== undefined) return this.#status(response, this.promptStatus)
-        let parsed: unknown
+        this.inFlightPrompts += 1
+        this.peakPrompts = Math.max(this.peakPrompts, this.inFlightPrompts)
         try {
-          parsed = JSON.parse((await bodyOf(request)).toString("utf8"))
-        } catch {
-          return this.#json(response, 400, { error: { message: "not JSON" } })
+          if (this.promptStatus !== undefined) return this.#status(response, this.promptStatus)
+          let parsed: unknown
+          try {
+            parsed = JSON.parse((await bodyOf(request)).toString("utf8"))
+          } catch {
+            return this.#json(response, 400, { error: { message: "not JSON" } })
+          }
+          const workflow = isRecord(parsed) ? parsed["prompt"] : undefined
+          this.prompts.push(workflow)
+          const checkpoint = checkpointOf(workflow)
+          if (this.blockedCheckpoint !== undefined && checkpoint === this.blockedCheckpoint) {
+            return this.#json(response, 400, {
+              error: { message: `checkpoint ${checkpoint} is not allowed` },
+              node_errors: { "4": { errors: [{ message: "blocked checkpoint" }] } },
+            })
+          }
+          const id = `job-${this.jobIds.length + 1}`
+          const job: Job = {
+            id,
+            workflow,
+            fail: this.failJobs > this.jobIds.length,
+            done: false,
+            polls: 0,
+            ws: false,
+          }
+          this.jobIds.push(id)
+          this.#jobs.set(id, job)
+          return this.#json(response, 200, { prompt_id: id, number: this.jobIds.length })
+        } finally {
+          this.inFlightPrompts -= 1
         }
-        const workflow = isRecord(parsed) ? parsed["prompt"] : undefined
-        this.prompts.push(workflow)
-        const checkpoint = checkpointOf(workflow)
-        if (this.blockedCheckpoint !== undefined && checkpoint === this.blockedCheckpoint) {
-          return this.#json(response, 400, {
-            error: { message: `checkpoint ${checkpoint} is not allowed` },
-            node_errors: { "4": { errors: [{ message: "blocked checkpoint" }] } },
-          })
-        }
-        const id = `job-${this.jobIds.length + 1}`
-        const job: Job = {
-          id,
-          workflow,
-          fail: this.failJobs > this.jobIds.length,
-          done: false,
-          polls: 0,
-          ws: false,
-        }
-        this.jobIds.push(id)
-        this.#jobs.set(id, job)
-        return this.#json(response, 200, { prompt_id: id, number: this.jobIds.length })
       }
 
       if (url.pathname.startsWith("/history/")) {

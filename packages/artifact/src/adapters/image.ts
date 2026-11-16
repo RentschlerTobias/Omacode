@@ -9,11 +9,20 @@
 //
 // One render is one slot at a time. A GPU does not become faster by being asked for two graphs at once, and a server
 // that runs them in parallel is a server whose memory a caller cannot predict; the queue is the adapter's, not the
-// server's.
+// server's. A second `render` on the same adapter while one is running is refused with the host runner's own sentence
+// ("another run is active"): one program at a time and one graph at a time are the same rule. The cross-process lock
+// over a shared GPU is `artifactd`'s and arrives in B6.
 //
-// The checks this round can answer are mechanical: a file for every slot, one file per slot, and the picture's size.
-// A VLM review and a checkpoint's territory are B5-T5 and B5-T4, so they are not declared here — a definition that no
-// code produces would be a green line or a silent skip pretending to be a look.
+// The checkpoint is resolved by hash before the first byte of a workflow is written (B5-T4, D18). The model name is a
+// label; the file's sha256 (computed here when the file is in the job or in a declared model directory, declared by the
+// spec when it is not) is what `models.ts` answers about. An unknown or blocked hash is a refusal, and it happens
+// before `prepare` returns, so no request reaches a server and no workflow exists to be edited into one.
+//
+// The checks are the mechanical ones plus what a file can say about itself (B5-T5): one file per slot, the picture's
+// size, the prompt's own words reaching the graph, the set's colour and contrast agreeing, and the checkpoint's name,
+// hash and licence still attached. Whether the pixels show what the prompt asked is a vision model's question; no local
+// one is configured and D13/D21 refuse a cloud one for a check, so `images.vlm` is declared skippable and skipped with
+// that reason, never a green line pretending to be a look.
 
 import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
@@ -21,8 +30,19 @@ import { isAbsolute, join, resolve } from "node:path"
 import type { Adapter, AdapterContext } from "../adapter.ts"
 import { SKIPPED_CODE, type CheckDef, type CheckResult } from "../checks.ts"
 import { ComfyClient, type ComfyOptions } from "../comfyui.ts"
+import { contentWords, missingWords, positiveTextOf, styleOf, styleOutliers, type SlotStyle } from "../image-qa.ts"
+import {
+  DEFAULT_TERRITORY,
+  MODEL_REGISTRY,
+  readModelRegistry,
+  registryWith,
+  resolveModel,
+  type ModelRegistry,
+  type Territory,
+} from "../models.ts"
 import { insidePath } from "../paths.ts"
-import { readPng } from "../png.ts"
+import { readPng, type Rgba } from "../png.ts"
+import { sha256File } from "../provenance.ts"
 import type { ImageModel, ImagesSpec, Slot } from "../spec.ts"
 
 // A slot id is a file name inside the job and a filename prefix on the server, so it is held to what both accept
@@ -69,6 +89,104 @@ function refProblem(value: string): string | undefined {
 // and the caller can see that the slot inherited rather than invented one.
 function modelOf(spec: ImagesSpec, slot: Slot): ImageModel | undefined {
   return slot.model ?? spec.model
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The checkpoint (B5-T4).
+
+// What a registry said about one slot's checkpoint, kept beside the slot so a check can compare it with the workflow on
+// disk. `verified` is true only when `hash` was computed from a file this machine read; false means it is the spec's
+// declaration, which is the weaker fact provenance.ts also keeps apart.
+export interface ModelDecision {
+  readonly name: string
+  readonly hash: string
+  readonly spdx: string
+  readonly territory: Territory
+  readonly territories: readonly Territory[]
+  readonly use: string
+  readonly verified: boolean
+  readonly file?: string
+}
+
+// What a caller hands the writer besides the spec: the registry to resolve against, the territory to resolve for (the
+// EU unless stated) and the directories a real ComfyUI install keeps its checkpoints in. All three are code, not spec
+// fields: an images.json cannot choose which registry judges it or where on the host to look for a file.
+export interface ImageProjectOptions {
+  readonly registry?: ModelRegistry
+  readonly territory?: Territory
+  readonly modelDirs?: readonly string[]
+}
+
+function isFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+// The file a slot's checkpoint names, if this machine has it: inside the job first, then each declared model directory in
+// the order it was declared. `model.file` is server-relative, so joining it with the job is the case where the job
+// carries its own copy; the model directories are where an installed ComfyUI keeps them.
+function checkpointFile(
+  model: ImageModel,
+  jobDir: string,
+  slot: string,
+  modelDirs: readonly string[],
+): { readonly path: string; readonly inJob: boolean } | undefined {
+  if (model.file === undefined) return undefined
+  const inJob = resolve(jobDir, model.file)
+  if (isFile(inJob)) {
+    if (!insidePath(jobDir, inJob)) {
+      throw new Error(`images: slot ${shown(slot)}: checkpoint ${shown(model.file)} resolves outside the job directory`)
+    }
+    return { path: inJob, inJob: true }
+  }
+  for (const dir of modelDirs) {
+    const candidate = resolve(dir, model.file)
+    if (isFile(candidate)) return { path: candidate, inJob: false }
+  }
+  return undefined
+}
+
+// Resolve one slot's checkpoint to an allowed decision, or refuse with the policy's own sentence. The file's hash wins
+// over the declared one, and a disagreement between them is a refusal rather than a preference: whichever of the two is
+// wrong would otherwise travel as provenance.
+async function checkpointDecision(
+  model: ImageModel,
+  slot: string,
+  jobDir: string,
+  options: ImageProjectOptions,
+): Promise<ModelDecision> {
+  const located = checkpointFile(model, jobDir, slot, options.modelDirs ?? [])
+  let hash = model.sha256
+  let verified = false
+  if (located !== undefined) {
+    const computed = await sha256File(located.path)
+    if (model.sha256 !== undefined && model.sha256 !== computed) {
+      throw new Error(
+        `images: slot ${shown(slot)}: checkpoint ${shown(model.file)} hashes to ${computed}, not the declared ${model.sha256}; a declared hash that disagrees with the bytes is refused`,
+      )
+    }
+    hash = computed
+    verified = true
+  }
+  const territory = options.territory ?? DEFAULT_TERRITORY
+  const verdict = resolveModel(
+    { declared: model.name, ...(hash !== undefined ? { hash } : {}), territory },
+    options.registry ?? MODEL_REGISTRY,
+  )
+  if (verdict.status !== "allowed") throw new Error(`images: slot ${shown(slot)}: ${verdict.reason}`)
+  return {
+    name: verdict.name,
+    hash: verdict.hash,
+    spdx: verdict.spdx,
+    territory: verdict.territory,
+    territories: verdict.territories,
+    use: verdict.use,
+    verified,
+    ...(located !== undefined ? { file: located.inJob ? (model.file ?? located.path) : located.path } : {}),
+  }
 }
 
 // Everything that would make the written workflows disagree with the spec or leave the job. One function, so a refusal
@@ -188,6 +306,9 @@ export interface ImageSlotPlan {
   readonly size: { readonly width: number; readonly height: number }
   readonly seed: number
   readonly model: ImageModel
+  // The registry's answer for this slot. Optional in the type because a cast could hand the writer a plan without one,
+  // and the provenance check then has a sentence instead of a crash.
+  readonly checkpoint?: ModelDecision
   readonly workflow: string
   readonly output: string
   readonly refs: readonly string[]
@@ -218,14 +339,55 @@ function fileInJob(dir: string, value: string, slot: string): string {
 }
 
 // Write one workflow per slot and lay out the job. The same spec always writes the same bytes: no clock, no random id, no
-// seed this file invented twice. Refusals happen before the first directory is made.
-export function writeImageProject(spec: ImagesSpec, jobDir: string): ImageProject {
+// seed this file invented twice. Every refusal happens before the first directory is made, and the checkpoints are
+// resolved before the first workflow is written: a job whose model is unknown leaves no graph behind for a later step
+// to send.
+export async function writeImageProject(
+  spec: ImagesSpec,
+  jobDir: string,
+  options: ImageProjectOptions = {},
+): Promise<ImageProject> {
   const problem = imageProblem(spec)
   if (problem !== undefined) throw new Error(`images: ${problem}`)
 
   const dir = resolve(jobDir)
   for (const slot of spec.slots) {
     for (const ref of slot.refs ?? []) fileInJob(dir, ref, slot.id)
+  }
+
+  // Decisions first, files second. The graph is built here too, so a checkpoint refusal leaves nothing half-written.
+  const prepared: {
+    readonly slot: Slot
+    readonly model: ImageModel
+    readonly checkpoint: ModelDecision
+    readonly seed: number
+    readonly workflow: string
+    readonly graph: Record<string, unknown>
+  }[] = []
+  for (const slot of spec.slots) {
+    const model = modelOf(spec, slot)
+    if (model === undefined) {
+      // `imageProblem` refused this above; the guard keeps the type honest rather than a `!` on a value a cast could
+      // have made absent after the check.
+      throw new Error(`images: slot ${shown(slot.id)} has no model`)
+    }
+    const checkpoint = await checkpointDecision(model, slot.id, dir, options)
+    const seed = seedFor(spec.job, slot.id, slot.seed)
+    prepared.push({
+      slot,
+      model,
+      checkpoint,
+      seed,
+      workflow: `${WORKFLOW_DIR}/${slot.id}.json`,
+      graph: imageWorkflow({
+        model,
+        prompt: slot.prompt,
+        negative: slot.negative ?? "",
+        size: slot.size,
+        seed,
+        prefix: `omacode/${slug(spec.job)}/${slot.id}`,
+      }),
+    })
   }
 
   mkdirSync(dir, { recursive: true, mode: 0o700 })
@@ -238,37 +400,22 @@ export function writeImageProject(spec: ImagesSpec, jobDir: string): ImageProjec
 
   const slots: ImageSlotPlan[] = []
   const workflows: string[] = []
-  for (const slot of spec.slots) {
-    const model = modelOf(spec, slot)
-    if (model === undefined) {
-      // `imageProblem` refused this above; the guard keeps the type honest rather than a `!` on a value a cast could
-      // have made absent after the check.
-      throw new Error(`images: slot ${shown(slot.id)} has no model`)
-    }
-    const seed = seedFor(spec.job, slot.id, slot.seed)
-    const workflow = `${WORKFLOW_DIR}/${slot.id}.json`
-    const graph = imageWorkflow({
-      model,
-      prompt: slot.prompt,
-      negative: slot.negative ?? "",
-      size: slot.size,
-      seed,
-      prefix: `omacode/${slug(spec.job)}/${slot.id}`,
-    })
-    const path = join(dir, workflow)
-    writeFileSync(path, `${JSON.stringify(graph, null, 2)}\n`, { mode: 0o600 })
+  for (const entry of prepared) {
+    const path = join(dir, entry.workflow)
+    writeFileSync(path, `${JSON.stringify(entry.graph, null, 2)}\n`, { mode: 0o600 })
     chmodSync(path, 0o600)
-    workflows.push(workflow)
+    workflows.push(entry.workflow)
     slots.push({
-      id: slot.id,
-      prompt: slot.prompt,
-      ...(slot.negative !== undefined ? { negative: slot.negative } : {}),
-      size: { width: slot.size.width, height: slot.size.height },
-      seed,
-      model,
-      workflow,
-      output: `${OUTPUT_DIR}/${slot.id}.png`,
-      refs: [...(slot.refs ?? [])],
+      id: entry.slot.id,
+      prompt: entry.slot.prompt,
+      ...(entry.slot.negative !== undefined ? { negative: entry.slot.negative } : {}),
+      size: { width: entry.slot.size.width, height: entry.slot.size.height },
+      seed: entry.seed,
+      model: entry.model,
+      checkpoint: entry.checkpoint,
+      workflow: entry.workflow,
+      output: `${OUTPUT_DIR}/${entry.slot.id}.png`,
+      refs: [...(entry.slot.refs ?? [])],
     })
   }
   return { dir, workflows, slots }
@@ -302,6 +449,42 @@ export const IMAGE_CHECKS: readonly CheckDef[] = [
     title: "every picture is the size its slot asked for",
     run: "argv",
     required: true,
+  },
+  {
+    id: "images.prompt",
+    level: "L1",
+    kind: "images",
+    title: "every word a prompt asks for reaches its workflow",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "images.provenance",
+    level: "L1",
+    kind: "images",
+    title: "every slot carries the checkpoint, hash and licence that made it",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "images.style",
+    level: "L2",
+    kind: "images",
+    title: "the set looks like one set: colour and contrast agree",
+    run: "argv",
+    required: true,
+  },
+  {
+    id: "images.vlm",
+    level: "L2",
+    kind: "images",
+    title: "a vision model looked at the pictures",
+    run: "argv",
+    required: true,
+    // Skippable by declaration, like the deck's and the video's vision review: the only vision engine the stack can
+    // drive is a cloud model, and D13/D21 forbid calling one for a check. The gate treats the skip as a warning, so a
+    // set ships with the absence stated instead of a green line standing in for a look.
+    skippable: true,
   },
 ]
 
@@ -400,6 +583,118 @@ function sizeVerdict(input: ImageResultInput): Verdict {
   return passed(`${many(input.files.length, "picture")} at the size ${input.files.length === 1 ? "its slot" : "their slots"} asked for`)
 }
 
+const NO_VISION_MODEL =
+  "no local vision model is configured, and a cloud model is not called for an image check (D13/D21)"
+
+// Read one slot's workflow back from the job. A workflow that cannot be read is a failure of whichever check asked, with
+// this sentence: `prepare` wrote the file, and a check that cannot see it is not looking at the render.
+function readWorkflow(dir: string, path: string): { readonly graph?: Record<string, unknown>; readonly problem?: string } {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(join(dir, path), "utf8"))
+  } catch (error) {
+    return { problem: `${path} could not be read (${error instanceof Error ? error.message : String(error)})` }
+  }
+  if (!isRecord(parsed)) return { problem: `${path} is not a JSON object` }
+  return { graph: parsed }
+}
+
+// The checkpoint a workflow's loader names, read the way the server reads it.
+function checkpointNameOf(graph: Record<string, unknown>): string | undefined {
+  for (const node of Object.values(graph)) {
+    if (!isRecord(node) || node["class_type"] !== "CheckpointLoaderSimple") continue
+    const inputs = node["inputs"]
+    if (isRecord(inputs) && typeof inputs["ckpt_name"] === "string") return inputs["ckpt_name"]
+  }
+  return undefined
+}
+
+// The prompt checklist (B5-T5). The content words of the prompt the author wrote have to be in the positive text the
+// graph carries. "The picture shows them" is the vision review's question and is skipped; "the server was asked for
+// them" is a fact about two files, and it is the failure that is invisible in a report and obvious in the picture.
+function promptVerdict(input: ImageResultInput): Verdict {
+  const problems: string[] = []
+  let words = 0
+  for (const slot of input.project.slots) {
+    words += contentWords(slot.prompt).length
+    const read = readWorkflow(input.project.dir, slot.workflow)
+    if (read.graph === undefined) {
+      problems.push(`${slot.id}: ${read.problem}`)
+      continue
+    }
+    const positive = positiveTextOf(read.graph)
+    if (positive === undefined) {
+      problems.push(`${slot.id}: its workflow has no positive prompt to check`)
+      continue
+    }
+    const missing = missingWords(slot.prompt, positive)
+    if (missing.length > 0) problems.push(`${slot.id} asked for ${missing.join(", ")}, which its workflow does not carry`)
+  }
+  if (problems.length > 0) return failed(problems.join("; "))
+  return passed(`${many(words, "prompt word")} from ${many(input.project.slots.length, "prompt")} reach their workflows`)
+}
+
+// Provenance presence (B5-T5): every slot's checkpoint is still the one a registry allowed, with the name, hash,
+// licence and territory that decision carried, and the workflow on disk still names it. A rewritten workflow is the
+// interesting case: the plan says SDXL and the graph says something nobody resolved.
+function provenanceVerdict(input: ImageResultInput): Verdict {
+  const problems: string[] = []
+  for (const slot of input.project.slots) {
+    const checkpoint = slot.checkpoint
+    if (checkpoint === undefined) {
+      problems.push(`${slot.id} has no resolved checkpoint`)
+      continue
+    }
+    if (!/^[0-9a-f]{64}$/.test(checkpoint.hash)) problems.push(`${slot.id} has no sha256 for its checkpoint`)
+    if (!checkpoint.name) problems.push(`${slot.id} has no checkpoint name`)
+    if (!checkpoint.spdx) problems.push(`${slot.id} has no licence for its checkpoint`)
+    if (!(checkpoint.territories.includes(checkpoint.territory) || checkpoint.territories.includes("world"))) {
+      problems.push(`${slot.id}'s licence does not permit ${checkpoint.territory}`)
+    }
+    const read = readWorkflow(input.project.dir, slot.workflow)
+    if (read.graph === undefined) {
+      problems.push(`${slot.id}: ${read.problem}`)
+      continue
+    }
+    const named = checkpointNameOf(read.graph)
+    const wanted = slot.model.file ?? slot.model.name
+    if (named !== wanted) problems.push(`${slot.id}'s workflow loads ${shown(named)}, not ${shown(wanted)}`)
+  }
+  if (problems.length > 0) return failed(problems.join("; "))
+  const hashes = new Set(input.project.slots.map((slot) => slot.checkpoint?.hash))
+  return passed(
+    `${many(hashes.size, "checkpoint")} named with a hash, a licence and a territory, and still the one each workflow loads`,
+  )
+}
+
+// The set's own look (B5-T5): a 4×4×4 colour histogram and two luma numbers per picture, compared with the slot that
+// best represents the set. Deterministic and cheap; `image-qa.ts` owns the arithmetic and the thresholds.
+function styleVerdict(input: ImageResultInput): Verdict {
+  const problems: string[] = []
+  const styles: SlotStyle[] = []
+  for (const file of input.files) {
+    if (!file.present) continue
+    let picture: Rgba
+    try {
+      const decoded = readPng(new Uint8Array(readFileSync(join(input.project.dir, file.path))))
+      if ("unsupported" in decoded) {
+        problems.push(`${file.slot} is not a picture this package can read: ${decoded.unsupported}`)
+        continue
+      }
+      picture = decoded
+    } catch (error) {
+      problems.push(`${file.slot} could not be read (${error instanceof Error ? error.message : String(error)})`)
+      continue
+    }
+    styles.push({ slot: file.slot, style: styleOf(picture) })
+  }
+  if (problems.length > 0) return failed(problems.join("; "))
+  if (styles.length < 2) return passed("fewer than two pictures, so there is no set to compare")
+  const outliers = styleOutliers(styles)
+  if (outliers.length > 0) return failed(outliers.map((entry) => `${entry.slot} does not fit the set: ${entry.why}`).join("; "))
+  return passed(`${many(styles.length, "picture")} share one palette and one brightness`)
+}
+
 function verdictFor(id: string, input: ImageResultInput): Verdict | undefined {
   switch (id) {
     case "images.count":
@@ -408,6 +703,14 @@ function verdictFor(id: string, input: ImageResultInput): Verdict | undefined {
       return filesVerdict(input)
     case "images.size":
       return sizeVerdict(input)
+    case "images.prompt":
+      return promptVerdict(input)
+    case "images.provenance":
+      return provenanceVerdict(input)
+    case "images.style":
+      return styleVerdict(input)
+    case "images.vlm":
+      return skipped(NO_VISION_MODEL)
     default:
       return undefined
   }
@@ -445,6 +748,17 @@ export interface ImageAdapterOptions {
   // How long one slot may wait for the server. Raised by a caller with a slow model, bounded by the client's own
   // default when it is not stated.
   readonly watchTimeoutMs?: number
+  // The territory checkpoints are resolved for. The EU unless a caller says otherwise, which is the user's own
+  // territory and D3's first named one.
+  readonly territory?: Territory
+  // Where a checkpoint file may be found to hash it when the job does not carry it: a ComfyUI models directory, in the
+  // order the caller declares. Read only; the adapter writes nothing outside the job.
+  readonly modelDirs?: readonly string[]
+  // A table to resolve against instead of the code-owned one. It exists for a caller that has its own records (and for
+  // tests); the adapter still reads the user's registry file and puts those entries in front of it.
+  readonly registry?: ModelRegistry
+  // Where the user's registry file is. The per-user state directory unless a caller says otherwise.
+  readonly registryDir?: string
 }
 
 // `Adapter<ImagesSpec>` is the compile-time guard against a deck; the intersection repeats the kind so a caller that
@@ -460,6 +774,9 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
   let project: ImageProject | undefined
   let failures: ImageSlotFailure[] = []
   let stopping = false
+  // A render slot, not a queue: the second caller is told a run is active rather than waiting behind a GPU whose memory
+  // they will both be charged for. Cleared in `finally`, so a refusal or a cancellation frees it.
+  let rendering = false
   let watching: AbortController | undefined
 
   const built = (): ImageProject => {
@@ -477,6 +794,92 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
     ctx.log(`images: slot ${shown(slot)}: ${reason}`)
   }
 
+  // One slot at a time, and every refusal from the server recorded so the next slot can still run. The loop is a
+  // closure rather than a method so `render` can hold the single render slot in a `try`/`finally` without the body
+  // being a second entry point.
+  const renderOnce = async (ctx: AdapterContext): Promise<{ readonly outputs: readonly string[] }> => {
+    const current = built()
+    const outputs: string[] = []
+    stopping = false
+    // A second render of the same job starts from its own results: a slot that failed before and succeeds now must not
+    // carry the old reason into the check.
+    failures = []
+
+    for (const slot of current.slots) {
+      if (stopping || ctx.signal?.aborted) throw new Error("images: the render was cancelled")
+
+      let workflow: Record<string, unknown>
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(join(current.dir, slot.workflow), "utf8"))
+        if (!isRecord(parsed)) throw new Error("the file is not a JSON object")
+        workflow = parsed
+      } catch (error) {
+        fail(slot.id, `its workflow ${slot.workflow} could not be read: ${error instanceof Error ? error.message : String(error)}`, ctx)
+        continue
+      }
+
+      const queued = await client.prompt(workflow)
+      if (!queued.ok) {
+        fail(slot.id, queued.refused, ctx)
+        continue
+      }
+      ctx.log(`images: slot ${shown(slot.id)} queued as ${queued.value.id}`)
+
+      watching = new AbortController()
+      const signal = ctx.signal === undefined ? watching.signal : AbortSignal.any([watching.signal, ctx.signal])
+      const watched = await client.watch(queued.value.id, () => {}, {
+        signal,
+        ...(options.watchTimeoutMs !== undefined ? { timeoutMs: options.watchTimeoutMs } : {}),
+      })
+      watching = undefined
+      if (stopping || ctx.signal?.aborted) throw new Error("images: the render was cancelled")
+      if (!watched.ok) {
+        fail(slot.id, watched.refused, ctx)
+        continue
+      }
+      if (watched.value.failed) {
+        fail(slot.id, `the server failed the job${watched.value.error !== undefined ? `: ${watched.value.error}` : ""}`, ctx)
+        continue
+      }
+      if (watched.value.pending) {
+        fail(slot.id, "the job did not finish before the watch timed out", ctx)
+        continue
+      }
+      if (watched.value.images.length === 0) {
+        fail(slot.id, "the job finished without producing a picture", ctx)
+        continue
+      }
+
+      const produced = watched.value.images.find((image) => image.type === "output") ?? watched.value.images[0]!
+      const fetched = await client.view(produced)
+      if (!fetched.ok) {
+        fail(slot.id, fetched.refused, ctx)
+        continue
+      }
+      const picture = readPng(fetched.value)
+      if ("unsupported" in picture) {
+        fail(slot.id, `the server returned something that is not a PNG this package can read: ${picture.unsupported}`, ctx)
+        continue
+      }
+
+      // A wrong size is not refused here: the file is a real picture, and `images.size` is the check that says whether
+      // it is the picture the slot asked for. Writing it keeps that answer in the report instead of in a missing file.
+      const path = join(current.dir, slot.output)
+      writeFileSync(path, fetched.value, { mode: 0o600 })
+      chmodSync(path, 0o600)
+      outputs.push(slot.output)
+      ctx.log(`images: slot ${shown(slot.id)} wrote ${slot.output} (${picture.width}×${picture.height})`)
+    }
+
+    if (outputs.length === 0) {
+      const first = failures[0]
+      throw new Error(
+        `images: no slot produced a picture${first !== undefined ? `: ${shown(first.slot)}: ${first.reason}` : ""}`,
+      )
+    }
+    return { outputs }
+  }
+
   return {
     kind: "images",
     name: "comfyui",
@@ -486,21 +889,38 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
     executables: [],
     network: true,
 
-    // Read the spec, refuse a slot with no checkpoint, and write one graph per slot. No request is made here: the
-    // server is asked when there is a queue to use, and a job whose refs leave the directory fails before a byte is
-    // written, let alone sent.
+    // Read the spec, resolve every slot's checkpoint by hash, and write one graph per slot. No request is made here: the
+    // server is asked when there is a queue to use, and a job whose refs leave the directory or whose checkpoint is
+    // unknown fails before a byte is written, let alone sent.
     async prepare(input, ctx) {
       const refused = client.refusal
       if (refused !== undefined) throw new Error(`images: ${refused}`)
+      // The user's own registry first. A file that cannot be read is a refusal, not an empty list: a hand-edited entry
+      // that lost its licence must not be silently read as "no restrictions recorded".
+      const registered = readModelRegistry(options.registryDir !== undefined ? { dir: options.registryDir } : {})
+      if (registered.errors.length > 0) {
+        throw new Error(`images: the model registry cannot be read, so no checkpoint is allowed: ${registered.errors.join("; ")}`)
+      }
       spec = input
-      project = writeImageProject(input, ctx.jobDir)
+      project = await writeImageProject(input, ctx.jobDir, {
+        registry: registryWith(registered.entries, options.registry ?? MODEL_REGISTRY),
+        ...(options.territory !== undefined ? { territory: options.territory } : {}),
+        ...(options.modelDirs !== undefined ? { modelDirs: options.modelDirs } : {}),
+      })
       failures = []
       stopping = false
 
       const models = new Set(project.slots.map((slot) => slot.model.file ?? slot.model.name))
       const refs = project.slots.reduce((total, slot) => total + slot.refs.length, 0)
+      const territory = options.territory ?? DEFAULT_TERRITORY
+      const declarations = project.slots.filter((slot) => slot.checkpoint?.verified !== true).length
       const notes = [
         `${many(project.slots.length, "slot")} across ${many(models.size, "checkpoint")}, one workflow per slot`,
+        `every checkpoint was resolved by sha256 for use in ${territory}; ${
+          declarations === 0
+            ? "all were hashed from a file on this machine"
+            : `${many(declarations, "hash")} came from the spec because the file is not here`
+        }`,
         client.watchTransport === "ws"
           ? "progress is read from /ws when the server offers it; completion from /history"
           : "no WebSocket client on this host, so progress is read by polling /history",
@@ -514,89 +934,19 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
       return { notes }
     },
 
-    // One slot at a time. A refusal from the server is recorded and the loop moves on, so one bad checkpoint does not
-    // hide the picture the next slot could still make; `check` is where the missing slot is read, with this reason.
+    // One slot at a time (the loop is `renderOnce`; a refusal from the server is recorded and the loop moves on, so one
+    // bad checkpoint does not hide the picture the next slot could still make), and one render at a time (B5-T6): a
+    // second call while this one
+    // is in flight is refused with the host runner's own sentence instead of queueing a second graph on the same GPU.
+    // `artifactd`'s lock is the cross-process half of this and arrives in B6.
     async render(ctx) {
-      const current = built()
-      const outputs: string[] = []
-      stopping = false
-      // A second render of the same job starts from its own results: a slot that failed before and succeeds now must not
-      // carry the old reason into the check.
-      failures = []
-
-      for (const slot of current.slots) {
-        if (stopping || ctx.signal?.aborted) throw new Error("images: the render was cancelled")
-
-        let workflow: Record<string, unknown>
-        try {
-          const parsed: unknown = JSON.parse(readFileSync(join(current.dir, slot.workflow), "utf8"))
-          if (!isRecord(parsed)) throw new Error("the file is not a JSON object")
-          workflow = parsed
-        } catch (error) {
-          fail(slot.id, `its workflow ${slot.workflow} could not be read: ${error instanceof Error ? error.message : String(error)}`, ctx)
-          continue
-        }
-
-        const queued = await client.prompt(workflow)
-        if (!queued.ok) {
-          fail(slot.id, queued.refused, ctx)
-          continue
-        }
-        ctx.log(`images: slot ${shown(slot.id)} queued as ${queued.value.id}`)
-
-        watching = new AbortController()
-        const signal = ctx.signal === undefined ? watching.signal : AbortSignal.any([watching.signal, ctx.signal])
-        const watched = await client.watch(queued.value.id, () => {}, {
-          signal,
-          ...(options.watchTimeoutMs !== undefined ? { timeoutMs: options.watchTimeoutMs } : {}),
-        })
-        watching = undefined
-        if (stopping || ctx.signal?.aborted) throw new Error("images: the render was cancelled")
-        if (!watched.ok) {
-          fail(slot.id, watched.refused, ctx)
-          continue
-        }
-        if (watched.value.failed) {
-          fail(slot.id, `the server failed the job${watched.value.error !== undefined ? `: ${watched.value.error}` : ""}`, ctx)
-          continue
-        }
-        if (watched.value.pending) {
-          fail(slot.id, "the job did not finish before the watch timed out", ctx)
-          continue
-        }
-        if (watched.value.images.length === 0) {
-          fail(slot.id, "the job finished without producing a picture", ctx)
-          continue
-        }
-
-        const produced = watched.value.images.find((image) => image.type === "output") ?? watched.value.images[0]!
-        const fetched = await client.view(produced)
-        if (!fetched.ok) {
-          fail(slot.id, fetched.refused, ctx)
-          continue
-        }
-        const picture = readPng(fetched.value)
-        if ("unsupported" in picture) {
-          fail(slot.id, `the server returned something that is not a PNG this package can read: ${picture.unsupported}`, ctx)
-          continue
-        }
-
-        // A wrong size is not refused here: the file is a real picture, and `images.size` is the check that says whether
-        // it is the picture the slot asked for. Writing it keeps that answer in the report instead of in a missing file.
-        const path = join(current.dir, slot.output)
-        writeFileSync(path, fetched.value, { mode: 0o600 })
-        chmodSync(path, 0o600)
-        outputs.push(slot.output)
-        ctx.log(`images: slot ${shown(slot.id)} wrote ${slot.output} (${picture.width}×${picture.height})`)
+      if (rendering) throw new Error("images: another run is active")
+      rendering = true
+      try {
+        return await renderOnce(ctx)
+      } finally {
+        rendering = false
       }
-
-      if (outputs.length === 0) {
-        const first = failures[0]
-        throw new Error(
-          `images: no slot produced a picture${first !== undefined ? `: ${shown(first.slot)}: ${first.reason}` : ""}`,
-        )
-      }
-      return { outputs }
     },
 
     // The pictures themselves: there is no browser in this adapter, so a snapshot is the files the render wrote. A slot
