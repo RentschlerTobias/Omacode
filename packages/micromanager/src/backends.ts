@@ -148,9 +148,9 @@ export interface AskOptions {
   readonly job?: string
   readonly task?: string
   readonly session?: string // whose ask it is: the cloud opt-in and the preview of a cloud send wake that session's micromanager
-  // Only the cloud client may answer this node. The permission path uses it until A2b-T1 has trained the local model on
-  // permission cases: with no cloud asker the rules answer nothing and the caller keeps its own default, instead of a
-  // local model being asked something it was never measured on.
+  // Only the cloud client may answer this node. The permission path uses it: A2b exports permission cases for the local
+  // model and measures them (npm run bench), but the routing that would let the local model answer them has not flipped.
+  // With no cloud asker the rules answer nothing and the caller keeps its own default.
   readonly cloudAnswers?: boolean
   // A permission case: the request itself, journalled beside the text it sent, so the case can be reproduced (A2-T2b).
   readonly request?: Record<string, unknown>
@@ -218,8 +218,8 @@ export class Decider {
               : undefined
         backend = overridden === undefined ? "cloud" : this.backendFor(node, true)
       } else {
-        // The permission path keeps its own default when the session has not opted in: a local model was never measured
-        // on permission cases (cloudAnswers), so rules answer nothing rather than guessing.
+        // The permission path keeps its own default when the session has not opted in: A2b measures the local model on
+        // permission cases, but the gate has not passed (cloudAnswers), so rules answer nothing rather than guessing.
         backend = consent.allow ? "cloud" : options.cloudAnswers ? "rules" : this.backendFor(node, true)
       }
     } else {

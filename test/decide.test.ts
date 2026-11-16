@@ -885,3 +885,16 @@ test("a permission path whose decider fails is journaled as a fallback, not sile
     assert.match(String(g.error), /decision server unreachable/)
   }
 })
+
+// A2b-T5: floors are per node. The default pair is what every node uses; a measured pair changes only the verdicts
+// that sit between the two, and never the hard rules or the user's own decision.
+test("a measured floor pair changes only what sits between the two pairs", async () => {
+  const read = req("read", ["src/main.ts"])
+  const jittery = decision("allow", 0.82, 0.1, 0.3)
+  assert.equal(judge(jittery, read, DEFAULT_FLOORS).verdict, "allow", "0.82 clears the default read floor")
+  const measured = { ...DEFAULT_FLOORS, read: 0.9 }
+  assert.equal(judge(jittery, read, measured).verdict, "user", "at the measured floor the same answer is not enough")
+  assert.match(judge(jittery, read, measured).reason, /< 0\.9/)
+  // The conservative pair stays the fallback for every node the gate did not pass: nothing here reads a mode.
+  assert.equal(judge(decision("allow", 0.84, 0.1, 0.3), req("shell", ["npm test"]), DEFAULT_FLOORS).verdict, "user")
+})

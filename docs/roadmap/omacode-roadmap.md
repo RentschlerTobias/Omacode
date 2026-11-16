@@ -550,32 +550,38 @@ measured in A2b before anything flips.
 
 **Tasks**
 
-- [ ] **A2b-T1 — Export.** Add `PERMISSION_QUESTIONS` + `path_relevance` to the `dataset.ts` GLiNER2 JSO export,
+- [x] **A2b-T1 — Export.** Add `PERMISSION_QUESTIONS` + `path_relevance` to the `dataset.ts` GLiNER2 JSO export,
   **and the non-guard nodes** (`N1`, `N2`, `N4`, `N5`, `N7`, `N8`, `N10`, `N14`, `N15`, `N16`, plus the `git` node).
   Today only `G0`/`G0.injection`/`G` reach the local model (`backends.ts:54`), so a local decider that answers only
   guards does **not** reduce the ask storm.
-- [ ] **A2b-T2 — Labels.** Keep the priority (user label > outcome > cloud answer); add outcomes for permission cases:
+  - *Reality:* the export is built from journaled decisions, so a node that never runs cannot manufacture rows; the local model's scope is now explicit (`LOCAL_NODES`, `localQuestions`) and permission cases plus the non-guard nodes are exported as soon as they are decided. N8 and N16 still share one `in_loop` task id on the wire — a real collision left open rather than renamed under a served model.
+- [x] **A2b-T2 — Labels.** Keep the priority (user label > outcome > cloud answer); add outcomes for permission cases:
   allowed-and-succeeded, denied-and-retried, user-overrode.
-- [ ] **A2b-T3 — A real bench command.** `npm run bench` must **exist**; `package.json` has only `eval`,
+  - *Reality:* the outcome vocabulary and `labelPermission()` exist and round-trip, but nothing in the repo observes "succeeded" or "retried" yet, so no automatic caller exists; labels arrive from the journal when someone records them.
+- [x] **A2b-T3 — A real bench command.** `npm run bench` must **exist**; `package.json` has only `eval`,
   `bench-guards`, `bench-n7`. Wrap them into one command that runs guards **and** permissions and prints a table.
-- [ ] **A2b-T4 — Numeric thresholds, per node.** State them in the plan, not later:
+  - *Reality:* `npm run bench` runs guards, permissions and N7 in one process with one table instead of shelling out to the old commands — same effects, no duplicated setup.
+- [x] **A2b-T4 — Numeric thresholds, per node.** State them in the plan, not later:
   - guard questions: precision ≥ 0.95 on `harmful`, recall ≥ 0.90, on a corpus of ≥ 300 labelled cases;
   - permission cases: false-allow rate ≤ 0.01 (a wrong allow is the expensive error), ask-rate ≤ 30 % of shell
     decisions in a normal build job;
   - corpus version pinned in the bench output; a change of question wording bumps the version and the corpus;
   - **a node that does not pass stays on the default floors** (T5) — passing is per node, not per model.
-- [ ] **A2b-T5 — The gate is about floors, not the mode.** `mode: local` ships from day one; T4 gates
+  - *Reality:* the thresholds live in `bench.ts` and `bench/A2B.md` (there is no plan document beside the roadmap). Only `harmful` has stated precision/recall, so only that clause is gated; injection and sensitive are printed, not gated, because gating them would mean inventing numbers.
+- [x] **A2b-T5 — The gate is about floors, not the mode.** `mode: local` ships from day one; T4 gates
   `decider.floors: "default" | "calibrated"`.
   - `default`: the conservative floors already in `decide.ts` (read 0.8, write 0.85) apply to **every** node.
   - `calibrated`: a node's measured floors apply, **only for nodes that passed T4**, one node at a time.
   - The job-start line reports the ask-rate and which nodes are still on default floors.
   Nothing escalates to cloud in either state, so the mode never changes and there is no contradiction to resolve at
   runtime.
-- [ ] **A2b-T6 — Tests.** Journal round-trip; export shape (guards **and** permissions); floor application; a bench
+  - *Reality:* `decider.floors` is `default`/`calibrated`; permission journal entries had no job id, so the ask-rate needed `job` at the record site, and older entries fall back to the last 200 shell decisions — the job-start line says which scope it used.
+- [x] **A2b-T6 — Tests.** Journal round-trip; export shape (guards **and** permissions); floor application; a bench
   fixture that can pass and one that must fail; the gate refusing the flip; a threshold change without a corpus bump
   fails.
 
-**Files:** `packages/micromanager/src/{decide,dataset,bench,backends}.ts`, `package.json`, `bench/`,
+
+  - *Reality:* the bench fixture fails as it should: on 2026-11-16 no node passes (guards: 16 cases, harmful precision 20 %, recall 33 %; N13: false-allow 7 %, ask-rate 82–100 %), so every node stays on the default floors.**Files:** `packages/micromanager/src/{decide,dataset,bench,backends}.ts`, `package.json`, `bench/`,
 `test/{decide,dataset,bench}.test.ts`.
 
 **Checks:** `npm run typecheck`, `npm test`, `npm run bench`.

@@ -3,8 +3,9 @@
 // the inputs were gone. Through the decider, each case records the request, the text that was sent (redacted by the
 // egress gate), the question and the answer — which is what a label factory and an eval need.
 //
-// The permission nodes are cloud-only (`cloudAnswers`): the local model has not been measured on them until A2b-T1, and
-// a local model asked something it was never measured on would answer with confidence nobody can check.
+// The permission nodes are cloud-only (`cloudAnswers`): A2b exports their cases for the local model and measures it on
+// them, but the gate has not passed and the routing has not flipped, so a local model would still be answering
+// something nobody has checked.
 
 import type { Decider } from "./backends.ts"
 import { CHECK_BUG } from "./catalog.ts"

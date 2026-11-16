@@ -32,8 +32,8 @@ import { MICROMANAGER, roleByAgent } from "./roles.ts"
 import { stateDir } from "./store.ts"
 
 // The node a permission case is journalled under. It is not a configured backend of its own: the mode decides, and the
-// permission path only ever uses the cloud client (src/backends.ts cloudAnswers), until A2b-T1 trains the local model
-// on these cases.
+// permission path uses the cloud client only (src/backends.ts cloudAnswers). A2b supplies its training export and the
+// per-node gate that has to pass before a measured floor — or the local model itself — may answer these cases.
 export const PERMISSION_NODE = "N13"
 
 export interface PermissionAsker {

@@ -9,11 +9,11 @@ import { execFile } from "node:child_process"
 import { claim } from "@omacode/core/registry"
 import { installAgents, SUMMARIZER_AGENT, type AgentDraft } from "./agents.ts"
 import { cloudRegistry, configPath, loadPicks, loadSettings } from "./config.ts"
-import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, permissionAsker, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
+import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, PERMISSION_NODE, permissionAsker, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
 import { injected, injectionScore } from "./gate.ts"
 import { backstop, DELEGATION_TOOLS, delegationRole, notRouted, resultText, rewriteResult, routeDelegation, unownedDelegation, type ChildSession, type ToolCall } from "./hooks.ts"
 import { redact, type Question as DecisionQuestion } from "./decider.ts"
-import { journalPath, record } from "./journal.ts"
+import { journalPath, readJournal, record } from "./journal.ts"
 import { DEFAULT_BACKENDS, Decider, backendNotes, cloudKey, makeAskers, type CloudConsent } from "./backends.ts"
 import { type EgressAnswer, type EgressOptions, type EgressRequest } from "./egress.ts"
 import { CloudOptIn, optInAnswer, optInNote, PreviewRequests, previewAnswer, previewNote } from "./preview.ts"
@@ -45,6 +45,7 @@ import { writeMemoryStats, writeStatus } from "./context/status.ts"
 import { installMemoryTools, MEMORY_IDS } from "./context/tools.ts"
 import { lastAssistantText } from "./brief.ts"
 import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
+import { floorsFor, jobStartDecisionLine, loadBench } from "./bench.ts"
 import { board } from "./board.ts"
 import { autoStep, nextStep, plannedLine, startable } from "./continuation.ts"
 import { looksSecret, planRules, rulesFor, startSandbox, tempDirFor, WorkerShells, type Wrapper } from "./sandbox.ts"
@@ -910,7 +911,11 @@ const plugin = {
     if (!claim("micromanager")) return
     const log = logger(ctx)
     const settings = loadSettings()
-    const { mode, migrations, parallel, perModel, trials, budget, notify, routing, floors, decisions, allowOutside, error } = settings
+    const { mode, migrations, parallel, perModel, trials, budget, notify, routing, floors, deciderFloors, decisions, allowOutside, error } = settings
+    // The most recent A2b bench on this machine, read once per server start: the gate may only let a node use measured
+    // floors while that run still names this corpus, these wordings and these thresholds (src/bench.ts floorsFor).
+    const bench = loadBench()
+    const nodeFloors = (node: string) => floorsFor(node, deciderFloors, bench, floors)
     // The leaf skills the workers load, registered into OpenCode instead of linked into its config directory: a
     // package install has no checkout to link from, and the skills ship in this package. Read once per start, like
     // the agents; the set is what a brief may name (src/skills.ts).
@@ -1990,9 +1995,11 @@ const plugin = {
       // worker's inspection instead of asking Jev, whose confidence on those sits below the read floor.
       const root = runnerSessions.has(evaluation.sessionID) ? workerDirs.get(evaluation.sessionID) ?? ctx.location?.directory : undefined
       // The case goes through the decider (A2-T2b), which journals the request, the text that was sent, the questions and
-      // the answers. The asker exists only where a cloud client does: the permission nodes are cloud-only until A2b-T1
-      // has measured the local model on them, so in local mode the user decides, exactly as before.
-      const outcome = await decide(client ? permissionAsker(decider, { ...(job ? { job: job.id } : {}) }) : undefined, request, floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
+      // the answers. The asker exists only where a cloud client does: the permission nodes are cloud-only until a later
+      // job routes them to the local model, so in local mode the user decides, exactly as before. The floors are the
+      // A2b answer to "how sure must it be": the conservative pair unless the bench passed this node (src/bench.ts).
+      const permissionFloors = nodeFloors(PERMISSION_NODE)
+      const outcome = await decide(client ? permissionAsker(decider, { ...(job ? { job: job.id } : {}) }) : undefined, request, permissionFloors.floors, undefined, preset, root, [...allowOutside, ...grantedPaths(job)], (await sandbox).available)
       // A worker of the plugin's, also one adopted after a restart and continued by its session, which the prompt hook
       // does not claim again (live run, 2026-10-27: such a worker's request was neither paused nor refused, so OpenCode
       // parked it with nobody to answer, and the worker waited for good).
@@ -2007,7 +2014,7 @@ const plugin = {
         evaluation.effect = "deny"
         evaluation.message = `This is refused, not queued: nobody is asked while you run (${outcome.reason}), and asking again would not bring the question back. It does not stop your task: carry on without it, and say in your report what you wanted it for and what you did instead. Report STATUS: NEEDS_CONTEXT only if you genuinely cannot proceed without it. Still, do not reach the same result by a route around this permission. If what you are waiting for is a command of your own, the wait tool blocks on it in one call (a pid, a log file, or a line of it) instead of a sleep loop: use it rather than polling.`
       }
-      record({ kind: "permission", ...request, task: request.task?.slice(0, 500), ...outcome })
+      record({ kind: "permission", ...request, task: request.task?.slice(0, 500), ...(job ? { job: job.id } : {}), ...outcome })
       log("info", `${evaluation.action} ${evaluation.resources.join(" | ").slice(0, 120)}: ${outcome.verdict} (${outcome.reason})`)
     })
 
@@ -2508,7 +2515,7 @@ const plugin = {
           const ready = startable(job)
           const now = form.options.parallel ? ready : ready.slice(0, 1)
           const on = Object.entries(form.options).filter(([, v]) => v).map(([k]) => k).join(", ") || "no options"
-          tell(`The user started job ${job.id} (${on}). ${now.length ? `Start ${now.length > 1 ? "these todos now, in one message" : "this todo now"}:\n${now.map((t) => `- agent ${roleById(t.role)?.agent ?? t.role}, description "${t.id} ${t.title}", prompt "${plannedLine(t.id, job.id)}"`).join("\n")}` : "No todo can start yet."}`)
+          tell(`The user started job ${job.id} (${on}). ${jobStartDecisionLine({ entries: readJournal(journalPath()), mode: deciderFloors, report: bench, floors })}\n${now.length ? `Start ${now.length > 1 ? "these todos now, in one message" : "this todo now"}:\n${now.map((t) => `- agent ${roleById(t.role)?.agent ?? t.role}, description "${t.id} ${t.title}", prompt "${plannedLine(t.id, job.id)}"`).join("\n")}` : "No todo can start yet."}`)
         } else if (form.decision === "cancel") {
           const open = job.tasks.filter((t) => ["pending", "ready", "planned"].includes(t.status)).map((t) => t.id)
           native.todo(project, sessionID, [], open)

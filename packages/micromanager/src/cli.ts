@@ -1,5 +1,6 @@
 // Command line: npm run eval -- [--floor 0.8] [--backend cloud] [--journal path]
 //               npm run export-dataset -- [--target openjev|gliner|router] [--out file] [--journal path]
+//               npm run bench -- [--guard-cases bench/guard_cases.json] [--permission-cases bench/permission_cases.json] [--out path]
 //               npm run bench-guards -- [--cases bench/guard_cases.json] [--url http://127.0.0.1:8781/v1/systemone] [--repeat]
 //               npm run bench-n7 -- [--cases bench/followup_cases.json]
 //               node src/cli.ts status [--project dir] [--all] [--watch]   (an ASCII board of the newest job, or of all)
@@ -10,7 +11,8 @@ import { spawnSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
 
 import { DEFAULT_BACKENDS, Decider, cloudKey, makeAskers } from "./backends.ts"
-import { drift, formatDrift, formatN7, formatSweep, loadCases, loadN7, scoreCases, scoreN7, sweep } from "./bench.ts"
+import { benchPath, buildReport, drift, formatBench, formatDrift, formatN7, formatSweep, guardMetrics, loadCases, loadGuardCorpus, loadN7, loadPermissionCorpus, scoreCases, scoreN7, scorePermissions, sweep, writeBench, type Case, type PermissionSeen } from "./bench.ts"
+import { GUARD_FLOOR } from "./catalog.ts"
 import { loadSettings } from "./config.ts"
 import { glinerRows, openJevRows } from "./dataset.ts"
 import { evaluate, formatReport } from "./eval.ts"
@@ -74,6 +76,36 @@ export async function main(argv: readonly string[]): Promise<number> {
       await new Promise((r) => setTimeout(r, 2000))
     }
   }
+  if (command === "bench") {
+    // The A2b gate: guards and permission cases through the local decider only, one table, one stored verdict. Local
+    // mode by construction, so no key is read and no cloud URL is touched; a bench run never becomes a training row
+    // (the journal is not written).
+    const config = { ...DEFAULT_BACKENDS }
+    const decider = new Decider(config, makeAskers(config, undefined), () => {})
+    let guardCases: Case[]
+    let permission: PermissionSeen[]
+    try {
+      guardCases = loadGuardCorpus(flag(args, "guard-cases") ?? "bench/guard_cases.json")
+      permission = await scorePermissions(decider, loadPermissionCorpus(flag(args, "permission-cases") ?? "bench/permission_cases.json"))
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      return 2
+    }
+    const guardRows = await scoreCases(decider, guardCases)
+    const report = buildReport({ guardCases: guardCases.length, guardRows, permission })
+    console.log(formatBench(report))
+    console.log(`\nper guard (floor ${GUARD_FLOOR}):`)
+    console.log(["guard         positives  flagged  precision  recall", ...guardMetrics(guardRows).map((m) => `${m.guard.padEnd(13)} ${String(m.positives).padStart(9)} ${String(m.flagged).padStart(8)} ${`${(m.precision * 100).toFixed(0)}%`.padStart(10)} ${`${(m.recall * 100).toFixed(0)}%`.padStart(7)}`)].join("\n"))
+    try {
+      console.log(`\nN7 (not gated, printed for the record):\n${formatN7(await scoreN7(decider, loadN7(flag(args, "n7-cases") ?? "bench/followup_cases.json")))}`)
+    } catch (err) {
+      console.log(`\nN7: no answers (${err instanceof Error ? err.message : String(err)})`)
+    }
+    const out = flag(args, "out") ?? benchPath()
+    writeBench(report, out)
+    console.log(`\nstored: ${out}`)
+    return 0
+  }
   if (command === "bench-guards") {
     // Guards are local-only; the config is "local", so no cloud client is built and the egress gate is never consulted.
     const config = { ...DEFAULT_BACKENDS, urls: { ...DEFAULT_BACKENDS.urls, gliner: flag(args, "url") ?? DEFAULT_BACKENDS.urls.gliner } }
@@ -118,7 +150,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     console.error(`${rows.length} ${targetName} rows${out ? ` -> ${out}` : ""}`)
     return 0
   }
-  console.error("usage: cli.ts eval|export-dataset|bench-guards|bench-n7 [options]")
+  console.error("usage: cli.ts bench|eval|export-dataset|bench-guards|bench-n7 [options]")
   return 2
 }
 

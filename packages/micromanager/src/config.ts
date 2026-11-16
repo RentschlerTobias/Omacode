@@ -46,6 +46,17 @@ export function parseFloors(text: string): Floors {
   return floors as unknown as Floors
 }
 
+// "decider.floors": whether the conservative floors in src/decide.ts apply to every node ("default", the only honest
+// state until the A2b gate passes) or a node that passed the bench may use its measured pair ("calibrated"). It is not
+// a mode: the mode stays "local" or "cloud", and nothing here can send a question to the cloud.
+export function parseFloorsMode(text: string): "default" | "calibrated" {
+  const raw = JSON.parse(stripComments(text)) as { decider?: { floors?: unknown } }
+  const value = raw.decider?.floors
+  if (value === undefined) return "default"
+  if (value !== "default" && value !== "calibrated") throw new Error('decider.floors must be "default" or "calibrated"')
+  return value
+}
+
 // "decisions": the global policy per decision key, e.g. { "N6.pipeline": "fixed:P1", "N5": "ask" } (design.md §22).
 export function parseDecisions(text: string): PolicySet {
   const raw = (JSON.parse(stripComments(text)) as { decisions?: unknown }).decisions ?? {}
@@ -318,6 +329,7 @@ export interface Settings {
   readonly unsandboxed: UnsandboxedMode
   readonly routing: Routing
   readonly floors: Floors
+  readonly deciderFloors: "default" | "calibrated" // the A2b gate: may a passing node use measured floors?
   readonly decisions: PolicySet
   readonly registry: readonly ModelEntry[]
   readonly allowOutside: readonly string[]
@@ -347,6 +359,7 @@ const DEFAULTS: Omit<Settings, "registry"> = {
   unsandboxed: "ask",
   routing: DEFAULT_ROUTING,
   floors: DEFAULT_FLOORS,
+  deciderFloors: "default",
   decisions: {},
   allowOutside: [],
   githubBacklog: [],
@@ -369,7 +382,7 @@ export function loadSettings(path = configPath()): Settings & { error?: string }
   }
   try {
     const migrations: string[] = []
-    return { ...DEFAULTS, mode: parseMode(text, migrations), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), unsandboxed: parseUnsandboxed(text), routing: parseRouting(text), floors: parseFloors(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text), migrations }
+    return { ...DEFAULTS, mode: parseMode(text, migrations), ...parseParallel(text), trials: parseTrials(text), trialDeadline: parseTrialDeadline(text), budget: parseBudget(text), checkTimeoutMs: parseCheckTimeout(text), notify: parseNotify(text), unsandboxed: parseUnsandboxed(text), routing: parseRouting(text), floors: parseFloors(text), deciderFloors: parseFloorsMode(text), decisions: parseDecisions(text), registry: parseRegistry(text), allowOutside: parseAllowOutside(text), githubBacklog: parseGithubBacklog(text), evolverMaxEvalSeconds: parseEvolver(text), ...parseSandbox(text), memory: parseMemory(text), redact: parseRedact(text), trialPick: parseTrialPick(text), trialGrace: parseTrialGrace(text), migrations }
   } catch (err) {
     return { ...DEFAULTS, registry: DEFAULT_REGISTRY, error: `${path}: ${String(err)}` }
   }
