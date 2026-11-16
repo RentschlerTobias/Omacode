@@ -173,6 +173,110 @@ const pngOf = (bytes: Uint8Array) => {
   return picture
 }
 
+// The published sha256 of Qwen-Image-2.1 (Q4_K_M GGUF), which the code table lists. A split slot's registry decision is
+// about the diffusion model, so this is the one split fixture that needs no test registry to be allowed.
+const QWEN_SHA = "631d532e7ca71e8d90a87c71d3699761a812039d22e3370e87498d87754660fe"
+
+// Two diffusion models whose hashes are only this test's own record: the shape of the split graph is what is being
+// tested, and an entry in the code table for these exact files would be a licence claim this test cannot make.
+const Z_IMAGE_SHA = digest("z-image turbo int8, a fixture")
+const FLUX2_SHA = digest("flux 2 klein 4b Q4_K_M, a fixture")
+const MYSTERY_SHA = digest("a diffusion model whose name implies no encoder family")
+
+const splitRegistry = (): ModelRegistry => ({
+  models: [
+    ...MODEL_REGISTRY.models,
+    {
+      name: "Z-Image Turbo (int8)",
+      spdx: "Apache-2.0",
+      territories: ["world"],
+      use: "tests",
+      hashes: [Z_IMAGE_SHA],
+      verified: "listed in this test",
+    },
+    {
+      name: "FLUX.2 Klein (Q4_K_M)",
+      spdx: "Apache-2.0",
+      territories: ["world"],
+      use: "tests",
+      hashes: [FLUX2_SHA],
+      verified: "listed in this test",
+    },
+    {
+      name: "A mystery diffusion model",
+      spdx: "Apache-2.0",
+      territories: ["world"],
+      use: "tests",
+      hashes: [MYSTERY_SHA],
+      verified: "listed in this test",
+    },
+  ],
+  blocked: [],
+})
+
+// The encoder and VAE files of a split slot as the job carries them. A ref has to be a real file inside the job before a
+// graph can name it; the fake server never reads these bytes, so their content is only what the ref points at.
+const splitFiles = (dir: string): void => {
+  for (const path of [
+    "text_encoders/qwen3vl_8b_w4a8.safetensors",
+    "vae/qwen_image_2.1_vae_bf16.safetensors",
+    "text_encoders/qwen_3_4b_fp8_mixed.safetensors",
+    "vae/ae.safetensors",
+    "split_files/vae/flux2-vae.safetensors",
+  ]) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true })
+    writeFileSync(join(dir, path), `a staged copy of ${path}`)
+  }
+}
+
+// A two-slot set in the two split shapes this machine's models arrive in: a GGUF unet written with the folder its loader
+// reads, and a safetensors unet named the way the loader lists it (no directory, because the name itself is the family).
+// The refs are the encoder and the VAE, in that order, staged under the folders they come from.
+const splitSpec = (): Record<string, unknown> => ({
+  kind: "images",
+  version: 2,
+  job: "job-split",
+  brief: "three-file models",
+  slots: [
+    {
+      id: "hero",
+      prompt: "a calm gradient",
+      size: { width: 64, height: 48 },
+      seed: 7,
+      negative: "text",
+      model: { name: "Qwen-Image 2.1", file: "diffusion_models/qwen-image-2.1-Q4_K_M.gguf", sha256: QWEN_SHA },
+      refs: ["text_encoders/qwen3vl_8b_w4a8.safetensors", "vae/qwen_image_2.1_vae_bf16.safetensors"],
+    },
+    {
+      id: "wide",
+      prompt: "a wide gradient",
+      size: { width: 32, height: 16 },
+      model: {
+        name: "Z-Image Turbo",
+        file: "z_image_turbo_int8_convrot.safetensors",
+        sha256: Z_IMAGE_SHA,
+      },
+      refs: ["text_encoders/qwen_3_4b_fp8_mixed.safetensors", "vae/ae.safetensors"],
+    },
+  ],
+})
+
+type Graph = Record<string, { class_type: string; inputs: Record<string, unknown> }>
+
+const graphAt = (dir: string, path: string): Graph =>
+  JSON.parse(readFileSync(join(dir, path), "utf8")) as Graph
+
+const nodeOf = (graph: Graph, classType: string): { class_type: string; inputs: Record<string, unknown> } => {
+  const node = Object.values(graph).find((entry) => entry.class_type === classType)
+  assert.ok(
+    node !== undefined,
+    `the graph must have a ${classType} node: ${Object.values(graph).map((entry) => entry.class_type).join(", ")}`,
+  )
+  return node
+}
+
+const classTypes = (graph: Graph): string[] => Object.values(graph).map((node) => node.class_type).sort()
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The images spec (B5-T1).
 
@@ -647,6 +751,249 @@ test("the workflow template is the code-owned text-to-image graph", () => {
   assert.equal(graph["9"]?.inputs["filename_prefix"], "omacode/job-1/hero")
   // The graph is JSON, not a command: serialising it is the client's whole use of it.
   assert.doesNotThrow(() => JSON.stringify(graph))
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The split shape: a diffusion model, its text encoder and its VAE as three files.
+
+test("a split slot writes the three-file graph, asks for the GGUF node once, renders and passes its checks", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  splitFiles(dir)
+  const spec = parsed(splitSpec())
+  const adapter = adapterFor(t, fake, { registry: splitRegistry() })
+  const ctx = context(dir)
+
+  const prepared = await adapter.prepare(spec, ctx)
+  // The `.gguf` unet needs the ComfyUI-GGUF node, so prepare asks the catalogue; the `.safetensors` unet does not ask
+  // again, and the second prepare reads the answer the adapter already has.
+  assert.deepEqual(fake.requests, ["GET /object_info"], "one catalogue request for the set")
+  assert.equal(fake.prompts.length, 0, "prepare queues nothing")
+  await adapter.prepare(spec, ctx)
+  assert.deepEqual(fake.requests, ["GET /object_info"], "the node catalogue is cached per adapter")
+  assert.ok(
+    prepared.notes?.some((note) => /2 slots load a diffusion model, a text encoder and a VAE as three files/.test(note)),
+    prepared.notes?.join("; "),
+  )
+
+  // The GGUF shape: one loader for the unet, one for the encoder with the type its family implies, one for the VAE, and
+  // the same sampler, encodes, decode and save the checkpoint graph has.
+  const hero = graphAt(dir, "workflows/hero.json")
+  assert.deepEqual(classTypes(hero), [
+    "CLIPLoader",
+    "CLIPTextEncode",
+    "CLIPTextEncode",
+    "EmptySD3LatentImage",
+    "KSampler",
+    "SaveImage",
+    "UnetLoaderGGUF",
+    "VAEDecode",
+    "VAELoader",
+  ])
+  assert.equal(nodeOf(hero, "UnetLoaderGGUF").inputs["unet_name"], "qwen-image-2.1-Q4_K_M.gguf")
+  assert.equal(nodeOf(hero, "CLIPLoader").inputs["clip_name"], "qwen3vl_8b_w4a8.safetensors")
+  assert.equal(nodeOf(hero, "CLIPLoader").inputs["type"], "qwen_image")
+  assert.equal(nodeOf(hero, "VAELoader").inputs["vae_name"], "qwen_image_2.1_vae_bf16.safetensors")
+  assert.equal(nodeOf(hero, "EmptySD3LatentImage").inputs["width"], 64)
+  assert.equal(nodeOf(hero, "EmptySD3LatentImage").inputs["height"], 48)
+  assert.deepEqual(hero["6"]?.inputs["clip"], ["10", 0])
+  assert.deepEqual(hero["7"]?.inputs["clip"], ["10", 0])
+  assert.deepEqual(hero["8"]?.inputs["vae"], ["11", 0])
+  assert.deepEqual(nodeOf(hero, "KSampler").inputs["model"], ["4", 0])
+  assert.equal(hero["6"]?.inputs["text"], "a calm gradient")
+  assert.equal(hero["7"]?.inputs["text"], "text")
+  assert.equal(hero["3"]?.inputs["seed"], 7)
+  assert.equal(Object.values(hero).some((node) => node.class_type === "CheckpointLoaderSimple"), false)
+
+  // The safetensors shape: UNETLoader, whose weight dtype is the node's own default, and the z-image encoder type read
+  // from the unet's name rather than from the encoder's (`qwen_3_4b` is shared with other families). ComfyUI has no
+  // `z_image` CLIPLoader type, so the family is loaded as `lumina2`, which its own Z-Image blueprint uses.
+  const wide = graphAt(dir, "workflows/wide.json")
+  assert.equal(nodeOf(wide, "UNETLoader").inputs["unet_name"], "z_image_turbo_int8_convrot.safetensors")
+  assert.equal(nodeOf(wide, "UNETLoader").inputs["weight_dtype"], "default")
+  assert.equal(nodeOf(wide, "CLIPLoader").inputs["type"], "lumina2")
+  assert.equal(nodeOf(wide, "CLIPLoader").inputs["clip_name"], "qwen_3_4b_fp8_mixed.safetensors")
+  assert.equal(nodeOf(wide, "VAELoader").inputs["vae_name"], "ae.safetensors")
+
+  const rendered = await adapter.render(ctx)
+  assert.deepEqual(rendered.outputs, ["images/hero.png", "images/wide.png"])
+  assert.equal(fake.prompts.length, 2, "one graph per split slot")
+  const picture = pngOf(readFileSync(join(dir, "images/hero.png")))
+  assert.deepEqual([picture.width, picture.height], [64, 48])
+  const narrow = pngOf(readFileSync(join(dir, "images/wide.png")))
+  assert.deepEqual([narrow.width, narrow.height], [32, 16])
+
+  const results = await adapter.check(ctx, IMAGE_CHECKS)
+  const byId = new Map(results.map((result) => [result.id, result]))
+  // Provenance reads the unet loader, which is where a split graph names the file the registry decided about.
+  assert.equal(byId.get("images.provenance")?.status, "passed", JSON.stringify(results))
+  for (const id of ["images.count", "images.files", "images.size", "images.prompt", "images.placeholder", "images.style"]) {
+    assert.equal(byId.get(id)?.status, "passed", `${id}: ${JSON.stringify(byId.get(id))}`)
+  }
+  assert.deepEqual(evaluate(IMAGE_CHECKS, results).invalid, [])
+
+  // The same rule reads a rewritten split graph: the planned name is the unet loader's, so a workflow that loads
+  // somebody else's diffusion model fails even though it still has a `UnetLoaderGGUF` node.
+  const tampered = graphAt(dir, "workflows/hero.json")
+  nodeOf(tampered, "UnetLoaderGGUF").inputs["unet_name"] = "somebody-elses.gguf"
+  writeFileSync(join(dir, "workflows/hero.json"), JSON.stringify(tampered))
+  const rewritten = (await adapter.check(ctx, IMAGE_CHECKS)).find((result) => result.id === "images.provenance")
+  assert.equal(rewritten?.status, "failed")
+  assert.match(rewritten?.reason ?? "", /hero's workflow loads "somebody-elses\.gguf", not "qwen-image-2\.1-Q4_K_M\.gguf"/)
+})
+
+test("a .gguf diffusion model is refused by name when the server has no ComfyUI-GGUF node", async (t) => {
+  const fake = await fakeFor(t, { withoutGguf: true })
+  const dir = jobDir(t)
+  splitFiles(dir)
+  const gguf = splitSpec()
+  gguf["slots"] = [(gguf["slots"] as Record<string, unknown>[])[0]!]
+  const spec = parsed(gguf)
+  const adapter = adapterFor(t, fake)
+
+  await assert.rejects(adapter.prepare(spec, context(dir)), (error: Error) => {
+    assert.match(error.message, /^images: slot "hero": /)
+    assert.match(error.message, /UnetLoaderGGUF/)
+    assert.match(error.message, /ComfyUI-GGUF custom node/)
+    assert.match(error.message, /qwen-image-2\.1-Q4_K_M\.gguf/)
+    return true
+  })
+  assert.deepEqual(fake.prompts, [], "the refused graph was never queued")
+  assert.equal(existsSync(join(dir, "workflows")), false, "no graph naming a node the server does not offer")
+  assert.deepEqual(fake.requests, ["GET /object_info"])
+})
+
+test("a split slot with no encoder ref is refused before any request", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  const spec = parsed({
+    kind: "images",
+    version: 2,
+    job: "job-split",
+    brief: "three-file models",
+    slots: [
+      {
+        id: "wide",
+        prompt: "a wide gradient",
+        size: { width: 32, height: 16 },
+        model: {
+          name: "Z-Image Turbo",
+          file: "diffusion_models/z_image_turbo_int8_convrot.safetensors",
+          sha256: Z_IMAGE_SHA,
+        },
+      },
+    ],
+  })
+  const adapter = adapterFor(t, fake, { registry: splitRegistry() })
+
+  await assert.rejects(adapter.prepare(spec, context(dir)), (error: Error) => {
+    assert.match(error.message, /^images: slot "wide": /)
+    assert.match(error.message, /loads as three files/)
+    assert.match(error.message, /no text encoder \(refs\[0\]\)/)
+    assert.match(error.message, /refs\[1\] is the VAE/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [], "a missing ref must not reach the server")
+  assert.equal(existsSync(join(dir, "workflows")), false)
+})
+
+test("a diffusion model whose name implies no encoder family is refused rather than guessed", async (t) => {
+  const fake = await fakeFor(t)
+  const dir = jobDir(t)
+  splitFiles(dir)
+  const spec = parsed({
+    kind: "images",
+    version: 2,
+    job: "job-split",
+    brief: "three-file models",
+    slots: [
+      {
+        id: "hero",
+        prompt: "a calm gradient",
+        size: { width: 64, height: 48 },
+        model: { name: "A mystery diffusion model", file: "diffusion_models/mystery-unet.safetensors", sha256: MYSTERY_SHA },
+        refs: ["text_encoders/qwen3vl_8b_w4a8.safetensors", "vae/ae.safetensors"],
+      },
+    ],
+  })
+  const adapter = adapterFor(t, fake, { registry: splitRegistry() })
+
+  await assert.rejects(adapter.prepare(spec, context(dir)), (error: Error) => {
+    assert.match(error.message, /^images: slot "hero": /)
+    assert.match(error.message, /cannot infer the text encoder type/)
+    assert.match(error.message, /Qwen-Image, FLUX\.2, Z-Image/)
+    assert.match(error.message, /is not guessed/)
+    return true
+  })
+  assert.deepEqual(fake.requests, [])
+  assert.equal(existsSync(join(dir, "workflows")), false)
+})
+
+test("a FLUX.2 diffusion model keys the Flux 2 latent its family needs", async (t) => {
+  const dir = jobDir(t)
+  splitFiles(dir)
+  const project = await writeImageProject(
+    parsed({
+      kind: "images",
+      version: 2,
+      job: "job-split",
+      brief: "a three-file FLUX.2 model",
+      slots: [
+        {
+          id: "hero",
+          prompt: "a calm gradient",
+          size: { width: 64, height: 48 },
+          model: { name: "FLUX.2 Klein", file: "diffusion_models/flux-2-klein-4b-Q4_K_M.gguf", sha256: FLUX2_SHA },
+          refs: ["text_encoders/qwen_3_4b_fp8_mixed.safetensors", "split_files/vae/flux2-vae.safetensors"],
+        },
+      ],
+    }),
+    dir,
+    { registry: splitRegistry() },
+  )
+
+  // FLUX.2's VAE is not the SD3-width one: the server's own Klein blueprint keys `EmptyFlux2LatentImage`, and an
+  // SD3-shaped latent would be the wrong width for the decode.
+  const graph = graphAt(dir, "workflows/hero.json")
+  assert.equal(nodeOf(graph, "CLIPLoader").inputs["type"], "flux2")
+  assert.equal(nodeOf(graph, "CLIPLoader").inputs["clip_name"], "qwen_3_4b_fp8_mixed.safetensors")
+  // A ref that carries its folder inside a staging directory is named by what follows the folder.
+  assert.equal(nodeOf(graph, "VAELoader").inputs["vae_name"], "flux2-vae.safetensors")
+  assert.equal(project.slots[0]?.split?.latent, "EmptyFlux2LatentImage")
+  assert.equal(nodeOf(graph, "EmptyFlux2LatentImage").inputs["height"], 48)
+  assert.equal(Object.values(graph).some((node) => node.class_type === "EmptySD3LatentImage"), false)
+})
+
+test("a full checkpoint keeps the checkpoint graph even when the slot names two refs", async (t) => {
+  const dir = jobDir(t)
+  for (const path of ["refs/encoder.safetensors", "refs/vae.safetensors"]) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true })
+    writeFileSync(join(dir, path), `a reference image named ${path}`)
+  }
+  const project = await writeImageProject(
+    parsed({
+      ...v2(),
+      slots: [
+        {
+          id: "hero",
+          prompt: "a calm gradient",
+          size: { width: 64, height: 48 },
+          refs: ["refs/encoder.safetensors", "refs/vae.safetensors"],
+        },
+      ],
+    }),
+    dir,
+  )
+
+  // A ref is a reference image until the model file is a diffusion model: two refs beside a checkpoint are not a split
+  // graph, and reading them as one would hand the server a graph the checkpoint cannot fill.
+  assert.equal(project.slots[0]?.split, undefined)
+  const graph = graphAt(dir, "workflows/hero.json")
+  assert.deepEqual(
+    classTypes(graph),
+    ["CheckpointLoaderSimple", "CLIPTextEncode", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "SaveImage", "VAEDecode"].sort(),
+  )
+  assert.equal(nodeOf(graph, "CheckpointLoaderSimple").inputs["ckpt_name"], "sdxl-base.safetensors")
 })
 
 test("a failing job is reflected in the checks with the server's reason, not swallowed", async (t) => {

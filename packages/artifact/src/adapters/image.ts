@@ -2,10 +2,24 @@
 // time on a ComfyUI server, and the pictures the server produced are fetched back into the job. It shares the client
 // with the rest of the package (`comfyui.ts`), so B2b's video graphs talk to the same server through the same rules.
 //
-// The graph is code, not a spec. `imageWorkflow` is the one template this adapter owns: a checkpoint loader, a positive
-// and a negative CLIP encode, an empty latent at the slot's size, a sampler at the slot's seed, a VAE decode and a save
-// node. The spec supplies the prompt, the negative, the size, the seed and the model; it cannot add a node, name a
-// program, or choose a path outside the job. That is what keeps an images.json from turning into a script.
+// The graph is code, not a spec. `imageWorkflow` owns two templates and the model file chooses between them: a full
+// checkpoint is one `CheckpointLoaderSimple` and the graph above it; a diffusion model that ComfyUI keeps beside its
+// text encoder and VAE is `UNETLoader` or `UnetLoaderGGUF`, `CLIPLoader`, `VAELoader` and the same sampler around them.
+// The spec supplies the prompt, the negative, the size, the seed and the model; it cannot add a node, name a program, or
+// choose a path outside the job. That is what keeps an images.json from turning into a script.
+//
+// A split model has no spec field for its encoder and VAE, so the slot's own `refs` name them: `refs[0]` is the text
+// encoder and `refs[1]` is the VAE whenever the model file is a diffusion model rather than a checkpoint. That is a
+// convention until the spec has fields for them, and it means a slot that loads three files must stage all three inside
+// the job. Each loader is given the name ComfyUI resolves: the ref with the loader's own folder stripped, so
+// `text_encoders/qwen_3_4b.safetensors` becomes the `qwen_3_4b.safetensors` that `CLIPLoader` lists from its folder; a
+// ref without such a segment is used as written, and a subfolder inside it survives. Which shape a model gets is read
+// from the file name, because no spec field says "this is a unet": `.gguf` is always a diffusion model, and so is a
+// `.safetensors` whose path names `diffusion_models/` or `unet/` or whose name belongs to one of the three families
+// below; anything else stays the checkpoint graph. A name that implies no encoder family, and a three-file graph whose
+// refs are missing, are both refusals, never a guess. A `.gguf` also needs the custom node that reads it, so `prepare`
+// asks the server's `/object_info` whether `UnetLoaderGGUF` exists and refuses by naming ComfyUI-GGUF when it does not;
+// the answer is cached for the life of the adapter.
 //
 // One render is one slot at a time. A GPU does not become faster by being asked for two graphs at once, and a server
 // that runs them in parallel is a server whose memory a caller cannot predict; the queue is the adapter's, not the
@@ -15,8 +29,11 @@
 //
 // The checkpoint is resolved by hash before the first byte of a workflow is written (B5-T4, D18). The model name is a
 // label; the file's sha256 (computed here when the file is in the job or in a declared model directory, declared by the
-// spec when it is not) is what `models.ts` answers about. An unknown or blocked hash is a refusal, and it happens
-// before `prepare` returns, so no request reaches a server and no workflow exists to be edited into one.
+// spec when it is not) is what `models.ts` answers about. In a split graph the diffusion model is the checkpoint that
+// decision covers; the text encoder and VAE arrive as job refs and have no registry record of their own until the spec
+// has fields that can carry a hash for them, which is stated here rather than read as a licence for the encoder too. An
+// unknown or blocked hash is a refusal, and it happens before `prepare` returns, so no request reaches a server and no
+// workflow exists to be edited into one.
 //
 // The checks are the mechanical ones plus what a file can say about itself (B5-T5): one file per slot, the picture's
 // size, the prompt's own words reaching the graph, the set's colour and contrast agreeing, and the checkpoint's name,
@@ -300,9 +317,120 @@ function slug(value: string): string {
   )
 }
 
+// The directories ComfyUI uses for a file that `UNETLoader` reads, as opposed to a whole checkpoint under `checkpoints/`.
+// A `.gguf` is a diffusion model wherever it sits, and so is a `.safetensors` named for one of the families below; a path
+// with no directory and no family name is what leaves a file as a checkpoint.
+const UNET_DIRS = ["diffusion_models", "unet"] as const
+
+// One family of diffusion models, and what the split graph needs to know about it. ComfyUI's `CLIPLoader` takes a `type`
+// that is the encoder architecture, not a free label, so the type comes from this table and a file that belongs to none
+// of the entries is refused rather than labelled. `latent` is the empty-latent node the family's VAE expects: the Qwen
+// and Z-Image families key the 16-channel SD3-shaped latent, while FLUX.2 has its own node and VAE width, and the server's
+// own FLUX.2 Klein blueprint is what says so.
+interface SplitFamily {
+  readonly name: string
+  readonly clipType: string
+  readonly latent: string
+  readonly pattern: RegExp
+}
+
+const SPLIT_FAMILIES: readonly SplitFamily[] = [
+  { name: "Qwen-Image", clipType: "qwen_image", latent: "EmptySD3LatentImage", pattern: /qwen[-_. ]?image/i },
+  { name: "FLUX.2", clipType: "flux2", latent: "EmptyFlux2LatentImage", pattern: /flux[-_. ]?2/i },
+  // ComfyUI has no `z_image` CLIPLoader type. The Z-Image blueprint that ships with the installed server loads the same
+  // Qwen3-4B encoder as `lumina2`, and ComfyUI picks the Z-Image text encoder from the weights, so the type here is the
+  // one that server accepts rather than the family's own name.
+  { name: "Z-Image", clipType: "lumina2", latent: "EmptySD3LatentImage", pattern: /z[-_ ]?image/i },
+]
+
+// How a slot's three files load: the unet node the file's extension needs, the names each loader resolves, the encoder
+// type the model's name implies, and the latent node its family keys. Returned only when the model file is a diffusion
+// model; the checkpoint shape is `undefined` here and the caller keeps the one-file graph.
+export interface SplitShape {
+  readonly unet: "UNETLoader" | "UnetLoaderGGUF"
+  readonly model: string
+  readonly clipType: string
+  readonly latent: string
+  readonly encoder: string
+  readonly vae: string
+}
+
+const familyNames = (): string => SPLIT_FAMILIES.map((entry) => entry.name).join(", ")
+
+// The name a ComfyUI loader resolves for a staged file. Each loader lists its own folder — `UNETLoader` and
+// `UnetLoaderGGUF` read `diffusion_models`, `CLIPLoader` reads `text_encoders`, `VAELoader` reads `vae` — so a path that
+// names one of those folders (`diffusion_models/x.safetensors`) or that carries it inside a staging directory
+// (`split_files/vae/x.safetensors`) means the file that folder calls `x.safetensors`. Everything after the folder is the
+// server's name, subfolders included; a ref with no such segment is used as written, which is the case where the job
+// stages the file under the name the server already uses.
+function serverName(path: string, folders: readonly string[]): string {
+  const segments = path.split("/")
+  let index = -1
+  for (const folder of folders) {
+    const found = segments.lastIndexOf(folder)
+    if (found > index) index = found
+  }
+  if (index >= 0 && index < segments.length - 1) return segments.slice(index + 1).join("/")
+  return path
+}
+
+// Read the shape from the file name and the slot's refs. A `.gguf` is always a diffusion model — ComfyUI-GGUF loads unets,
+// not whole checkpoints — and a `.safetensors` is one when its path names `diffusion_models/` or `unet/` or its file name
+// belongs to one of the families above. A file called something else stays the checkpoint graph even beside two refs: refs
+// are also the reference images a checkpoint slot may carry, so counting them would turn a checkpoint with two pictures
+// into a graph it cannot load.
+function splitShape(model: ImageModel, refs: readonly string[], slot: string): SplitShape | undefined {
+  const file = model.file
+  if (file === undefined) return undefined
+  const segments = file.toLowerCase().split("/")
+  const name = segments[segments.length - 1] ?? file.toLowerCase()
+  const gguf = name.endsWith(".gguf")
+  const inUnetDir = segments.slice(0, -1).some((segment) => (UNET_DIRS as readonly string[]).includes(segment))
+  const families = SPLIT_FAMILIES.filter((entry) => entry.pattern.test(name))
+  if (!gguf && !inUnetDir && families.length === 0) return undefined
+
+  if (!gguf && !name.endsWith(".safetensors")) {
+    throw new Error(
+      `images: slot ${shown(slot)}: ${shown(file)} is read as a diffusion model but is neither .safetensors nor .gguf, so neither UNETLoader nor UnetLoaderGGUF reads it; a split graph is not guessed`,
+    )
+  }
+
+  const family = families[0]
+  if (family === undefined) {
+    throw new Error(
+      `images: slot ${shown(slot)}: cannot infer the text encoder type for the diffusion model ${shown(file)}: its name belongs to none of ${familyNames()}, and CLIPLoader's type is not guessed`,
+    )
+  }
+  if (families.length > 1) {
+    throw new Error(
+      `images: slot ${shown(slot)}: the diffusion model ${shown(file)} matches ${families.map((entry) => entry.name).join(" and ")}, so its text encoder type is ambiguous and not guessed`,
+    )
+  }
+
+  const encoder = refs[0]
+  const vae = refs[1]
+  if (encoder === undefined || vae === undefined) {
+    const missing = encoder === undefined ? "text encoder (refs[0])" : "VAE (refs[1])"
+    throw new Error(
+      `images: slot ${shown(slot)}: the diffusion model ${shown(file)} loads as three files, and the slot names no ${missing}; refs[0] is the text encoder and refs[1] is the VAE until the spec has a field for them, and a split graph with a missing file is refused rather than guessed`,
+    )
+  }
+
+  return {
+    unet: gguf ? "UnetLoaderGGUF" : "UNETLoader",
+    model: serverName(file, UNET_DIRS),
+    clipType: family.clipType,
+    latent: family.latent,
+    encoder: serverName(encoder, ["text_encoders", "clip"]),
+    vae: serverName(vae, ["vae"]),
+  }
+}
+
 // The graph one slot runs. The node ids are the template's own and its shape is fixed; the spec's fields land in
 // `inputs` as values, never as keys or node types. `CheckpointLoaderSimple.ckpt_name` is the model's `file` when it has
 // one, because that is the name the server resolves; otherwise the human `name` is the only identifier the spec gave.
+// A split shape replaces node 4 with the unet loader and adds the encoder and VAE loaders as 10 and 11, so the sampler,
+// the latent, the encodes, the decode and the save keep the ids a check already reads.
 export interface WorkflowInput {
   readonly model: ImageModel
   readonly prompt: string
@@ -310,9 +438,47 @@ export interface WorkflowInput {
   readonly size: { readonly width: number; readonly height: number }
   readonly seed: number
   readonly prefix: string
+  readonly split?: SplitShape
 }
 
 export function imageWorkflow(input: WorkflowInput): Record<string, unknown> {
+  const split = input.split
+  if (split !== undefined) {
+    return {
+      "3": {
+        class_type: "KSampler",
+        inputs: {
+          seed: input.seed,
+          steps: 20,
+          cfg: 7,
+          sampler_name: "euler",
+          scheduler: "normal",
+          denoise: 1,
+          model: ["4", 0],
+          positive: ["6", 0],
+          negative: ["7", 0],
+          latent_image: ["5", 0],
+        },
+      },
+      // `weight_dtype` is UNETLoader's own default: the spec has no field for a precision, and choosing fp8 here would
+      // be a second decision about how the weights are read. The GGUF node has no such input.
+      "4": {
+        class_type: split.unet,
+        inputs:
+          split.unet === "UnetLoaderGGUF" ? { unet_name: split.model } : { unet_name: split.model, weight_dtype: "default" },
+      },
+      "5": {
+        class_type: split.latent,
+        inputs: { width: input.size.width, height: input.size.height, batch_size: 1 },
+      },
+      "6": { class_type: "CLIPTextEncode", inputs: { text: input.prompt, clip: ["10", 0] } },
+      "7": { class_type: "CLIPTextEncode", inputs: { text: input.negative, clip: ["10", 0] } },
+      "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["11", 0] } },
+      "9": { class_type: "SaveImage", inputs: { filename_prefix: input.prefix, images: ["8", 0] } },
+      "10": { class_type: "CLIPLoader", inputs: { clip_name: split.encoder, type: split.clipType } },
+      "11": { class_type: "VAELoader", inputs: { vae_name: split.vae } },
+    }
+  }
   const checkpoint = input.model.file ?? input.model.name
   return {
     "3": {
@@ -360,6 +526,9 @@ export interface ImageSlotPlan {
   // and the provenance check then has a sentence instead of a crash.
   readonly checkpoint?: ModelDecision
   readonly workflow?: string
+  // How this slot's graph loads its model as three files, when the model is a diffusion model rather than a full
+  // checkpoint. Absent for the checkpoint graph and for a placeholder, so a check can tell which shape it is reading.
+  readonly split?: SplitShape
   readonly output: string
   readonly refs: readonly string[]
   // Why this slot is a labelled stand-in instead of a picture. Named after the reason rather than a boolean so the run's
@@ -391,16 +560,32 @@ function fileInJob(dir: string, value: string, slot: string): string {
   return target
 }
 
-// Write one workflow per slot that has a checkpoint, and lay out the job. The same spec always writes the same bytes: no
-// clock, no random id, no seed this file invented twice. Every refusal happens before the first directory is made, and
-// the checkpoints are resolved before the first workflow is written: a job whose model is unknown leaves no graph behind
-// for a later step to send. A slot with nothing declared gets no graph at all — there is no checkpoint to load — and is
-// planned as a placeholder the render will write.
-export async function writeImageProject(
-  spec: ImagesSpec,
-  jobDir: string,
-  options: ImageProjectOptions = {},
-): Promise<ImageProject> {
+// One slot as the writer planned it, before a byte is written. `graph` and `split` are what `prepare` reads when it has
+// to ask the server about a node class, so the question is asked about the graph that will be queued rather than about a
+// file name that resembles it.
+interface PlannedSlot {
+  readonly slot: Slot
+  readonly seed: number
+  readonly model?: ImageModel
+  readonly checkpoint?: ModelDecision
+  readonly workflow?: string
+  readonly graph?: Record<string, unknown>
+  readonly split?: SplitShape
+}
+
+// A job's decisions and graphs, with nothing on disk yet. `prepare` plans, asks the server what it has to, and writes;
+// `writeImageProject` does the first and the last, which is the pure path a caller without a server gets.
+interface ImagePlan {
+  readonly dir: string
+  readonly entries: readonly PlannedSlot[]
+}
+
+// Decide every slot and build every graph. The same spec always yields the same plan: no clock, no random id, no seed
+// this file invented twice. Every refusal happens here, before the first directory is made, and the checkpoints are
+// resolved before the first workflow is written: a job whose model is unknown leaves no graph behind for a later step to
+// send. A slot with nothing declared gets no graph at all — there is no checkpoint to load — and is planned as a
+// placeholder the render will write.
+async function imagePlan(spec: ImagesSpec, jobDir: string, options: ImageProjectOptions): Promise<ImagePlan> {
   const problem = imageProblem(spec)
   if (problem !== undefined) throw new Error(`images: ${problem}`)
 
@@ -412,28 +597,25 @@ export async function writeImageProject(
   // Decisions first, files second. The graph is built here too, so a checkpoint refusal leaves nothing half-written —
   // including the case where an earlier slot is a placeholder and a later one names a hash nobody recorded: the refusal
   // is still the whole set's, not one slot's.
-  const prepared: {
-    readonly slot: Slot
-    readonly seed: number
-    readonly model?: ImageModel
-    readonly checkpoint?: ModelDecision
-    readonly workflow?: string
-    readonly graph?: Record<string, unknown>
-  }[] = []
+  const entries: PlannedSlot[] = []
   for (const slot of spec.slots) {
     const model = modelOf(spec, slot)
     const seed = seedFor(spec.job, slot.id, slot.seed)
     if (model === undefined) {
-      prepared.push({ slot, seed })
+      entries.push({ slot, seed })
       continue
     }
+    // The registry judges the file the model names. For a split graph that is the diffusion model; the encoder and VAE
+    // are the slot's refs and carry no registry record of their own until the spec has fields for them.
     const checkpoint = await checkpointDecision(model, slot.id, dir, options)
-    prepared.push({
+    const split = splitShape(model, slot.refs ?? [], slot.id)
+    entries.push({
       slot,
       model,
       checkpoint,
       seed,
       workflow: `${WORKFLOW_DIR}/${slot.id}.json`,
+      ...(split !== undefined ? { split } : {}),
       graph: imageWorkflow({
         model,
         prompt: slot.prompt,
@@ -441,10 +623,16 @@ export async function writeImageProject(
         size: slot.size,
         seed,
         prefix: `omacode/${slug(spec.job)}/${slot.id}`,
+        ...(split !== undefined ? { split } : {}),
       }),
     })
   }
+  return { dir, entries }
+}
 
+// Lay the planned job out: the two directories, one workflow per slot that has a graph, and the plan the checks read.
+function writePlan(plan: ImagePlan): ImageProject {
+  const { dir, entries } = plan
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
   for (const name of [WORKFLOW_DIR, OUTPUT_DIR]) {
@@ -455,7 +643,7 @@ export async function writeImageProject(
 
   const slots: ImageSlotPlan[] = []
   const workflows: string[] = []
-  for (const entry of prepared) {
+  for (const entry of entries) {
     if (entry.workflow !== undefined && entry.graph !== undefined) {
       const path = join(dir, entry.workflow)
       writeFileSync(path, `${JSON.stringify(entry.graph, null, 2)}\n`, { mode: 0o600 })
@@ -472,12 +660,23 @@ export async function writeImageProject(
       ...(entry.model !== undefined ? { model: entry.model } : {}),
       ...(entry.checkpoint !== undefined ? { checkpoint: entry.checkpoint } : {}),
       ...(entry.workflow !== undefined ? { workflow: entry.workflow } : {}),
+      ...(entry.split !== undefined ? { split: entry.split } : {}),
       output: `${OUTPUT_DIR}/${entry.slot.id}${placeholder ? PLACEHOLDER_SUFFIX : ".png"}`,
       refs: [...(entry.slot.refs ?? [])],
       ...(placeholder ? { placeholder: NO_MODEL } : {}),
     })
   }
   return { dir, workflows, slots }
+}
+
+// Write one workflow per slot that has a checkpoint, and lay out the job. This is the plan and the write, with no server
+// in between: a caller that needs the GGUF node check calls `imagePlan` itself, which is what the adapter does.
+export async function writeImageProject(
+  spec: ImagesSpec,
+  jobDir: string,
+  options: ImageProjectOptions = {},
+): Promise<ImageProject> {
+  return writePlan(await imagePlan(spec, jobDir, options))
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -666,12 +865,18 @@ function readWorkflow(dir: string, path: string): { readonly graph?: Record<stri
   return { graph: parsed }
 }
 
-// The checkpoint a workflow's loader names, read the way the server reads it.
+// The checkpoint a workflow's loader names, read the way the server reads it. A split graph names the diffusion model in
+// its unet loader, which is the file the registry decided about, so the provenance check reads both shapes.
 function checkpointNameOf(graph: Record<string, unknown>): string | undefined {
   for (const node of Object.values(graph)) {
-    if (!isRecord(node) || node["class_type"] !== "CheckpointLoaderSimple") continue
+    if (!isRecord(node)) continue
     const inputs = node["inputs"]
-    if (isRecord(inputs) && typeof inputs["ckpt_name"] === "string") return inputs["ckpt_name"]
+    if (!isRecord(inputs)) continue
+    const loader = node["class_type"]
+    if (loader === "CheckpointLoaderSimple" && typeof inputs["ckpt_name"] === "string") return inputs["ckpt_name"]
+    if ((loader === "UNETLoader" || loader === "UnetLoaderGGUF") && typeof inputs["unet_name"] === "string") {
+      return inputs["unet_name"]
+    }
   }
   return undefined
 }
@@ -753,7 +958,9 @@ function provenanceVerdict(input: ImageResultInput): Verdict {
       continue
     }
     const named = checkpointNameOf(read.graph)
-    const wanted = slot.model.file ?? slot.model.name
+    // A split graph names the diffusion model the way its loader resolves it, which is the model file without the
+    // folder the server already knows it by; the plan's `split` carries that name so the comparison stays exact.
+    const wanted = slot.split?.model ?? slot.model.file ?? slot.model.name
     if (named !== wanted) problems.push(`${slot.id}'s workflow loads ${shown(named)}, not ${shown(wanted)}`)
   }
   if (problems.length > 0) return failed(problems.join("; "))
@@ -905,6 +1112,9 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
   // they will both be charged for. Cleared in `finally`, so a refusal or a cancellation frees it.
   let rendering = false
   let watching: AbortController | undefined
+  // The server's node catalogue, read at most once per adapter. A custom node's absence does not change while the
+  // adapter lives, and asking again for every slot would make a two-slot split set two requests about the same server.
+  let nodeClasses: ReadonlySet<string> | undefined
 
   const built = (): ImageProject => {
     if (project === undefined) throw new Error("images: the adapter ran a step before prepare, so there is no project to work on")
@@ -919,6 +1129,38 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
   const fail = (slot: string, reason: string, ctx: AdapterContext): void => {
     failures.push({ slot, reason })
     ctx.log(`images: slot ${shown(slot)}: ${reason}`)
+  }
+
+  // What the server can execute, asked the first time a graph needs an answer and kept for this adapter's life. A
+  // catalogue that cannot be read is a refusal rather than an assumption: the difference between "the node is missing"
+  // and "the server did not answer" is not one to guess at when the alternative is a graph the server cannot run.
+  const catalogue = async (): Promise<ReadonlySet<string>> => {
+    if (nodeClasses !== undefined) return nodeClasses
+    const info = await client.objectInfo()
+    if (!info.ok) {
+      throw new Error(`images: the server's node catalogue is needed to choose a graph and could not be read: ${info.refused}`)
+    }
+    nodeClasses = new Set(Object.keys(info.value))
+    return nodeClasses
+  }
+
+  // The one node class a graph may depend on that a stock ComfyUI does not have. `UnetLoaderGGUF` comes with the
+  // ComfyUI-GGUF custom node; a `.gguf` diffusion model cannot be loaded without it, so `prepare` asks before writing a
+  // graph that names it and refuses with the node and the custom node in the sentence.
+  const requireNodes = async (plan: ImagePlan): Promise<void> => {
+    for (const entry of plan.entries) {
+      if (entry.graph === undefined) continue
+      const needsGguf = Object.values(entry.graph).some(
+        (node) => isRecord(node) && node["class_type"] === "UnetLoaderGGUF",
+      )
+      if (!needsGguf) continue
+      const classes = await catalogue()
+      if (classes.has("UnetLoaderGGUF")) continue
+      const file = entry.model?.file ?? entry.model?.name ?? "the diffusion model"
+      throw new Error(
+        `images: slot ${shown(entry.slot.id)}: the diffusion model ${shown(file)} is a .gguf file, which loads through the UnetLoaderGGUF node that the ComfyUI-GGUF custom node provides, and this server's /object_info does not list that node; install ComfyUI-GGUF or give the slot a .safetensors diffusion model`,
+      )
+    }
   }
 
   // One slot at a time, and every refusal from the server recorded so the next slot can still run. The loop is a
@@ -1038,9 +1280,10 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
     executables: [],
     network: true,
 
-    // Read the spec, resolve every slot's checkpoint by hash, and write one graph per slot. No request is made here: the
-    // server is asked when there is a queue to use, and a job whose refs leave the directory or whose checkpoint is
-    // unknown fails before a byte is written, let alone sent.
+    // Read the spec, resolve every slot's checkpoint by hash, ask the server about a node class only when a graph needs
+    // one, and write one graph per slot. The queue is not used here: a job whose refs leave the directory, whose
+    // checkpoint is unknown, or whose encoder type cannot be inferred fails before a byte is written, and a `.gguf` unet
+    // fails before a graph naming it is written when the server has no UnetLoaderGGUF.
     async prepare(input, ctx) {
       const refused = client.refusal
       if (refused !== undefined) throw new Error(`images: ${refused}`)
@@ -1051,11 +1294,15 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
         throw new Error(`images: the model registry cannot be read, so no checkpoint is allowed: ${registered.errors.join("; ")}`)
       }
       spec = input
-      project = await writeImageProject(input, ctx.jobDir, {
+      const plan = await imagePlan(input, ctx.jobDir, {
         registry: registryWith(registered.entries, options.registry ?? MODEL_REGISTRY),
         ...(options.territory !== undefined ? { territory: options.territory } : {}),
         ...(options.modelDirs !== undefined ? { modelDirs: options.modelDirs } : {}),
       })
+      // The only server question a graph can raise. It is asked after every local refusal, so a set refused for its
+      // checkpoint or its refs still leaves the request log empty, and the answer is cached for the next prepare.
+      await requireNodes(plan)
+      project = writePlan(plan)
       failures = []
       stopping = false
 
@@ -1063,6 +1310,8 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
         project.slots.flatMap((slot) => (slot.model === undefined ? [] : [slot.model.file ?? slot.model.name])),
       )
       const refs = project.slots.reduce((total, slot) => total + slot.refs.length, 0)
+      const splitSlots = project.slots.filter((slot) => slot.split !== undefined)
+      const splitRefs = splitSlots.length * 2
       const territory = options.territory ?? DEFAULT_TERRITORY
       const declarations = project.slots.filter(
         (slot) => slot.checkpoint !== undefined && slot.checkpoint.verified !== true,
@@ -1088,9 +1337,17 @@ export function imageAdapter(options: ImageAdapterOptions = {}): ImageAdapter {
         if (models.size === 0) notes[1] = `no checkpoint is declared for this set, so nothing was resolved and nothing is sent`
         notes.push(placeholder)
       }
-      if (refs > 0) {
+      if (splitSlots.length > 0) {
         notes.push(
-          `${many(refs, "ref")} stay inside the job; this text-to-image graph starts from the prompt and does not load them`,
+          `${many(splitSlots.length, "slot")} load a diffusion model, a text encoder and a VAE as three files; the encoder and VAE are the slot's first two refs, and only the diffusion model carries a registry record`,
+        )
+      }
+      // A split graph loads the first two refs, so the "does not load them" sentence covers only what is left over: a
+      // third ref is a reference image beside the three files, and a checkpoint slot's refs are reference images.
+      const spareRefs = refs - splitRefs
+      if (spareRefs > 0) {
+        notes.push(
+          `${many(spareRefs, "ref")} stay inside the job; this text-to-image graph starts from the prompt and does not load them`,
         )
       }
       for (const note of notes) ctx.log(note)

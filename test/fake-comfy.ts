@@ -2,9 +2,9 @@
 // upload, prompt, history, view and the `/ws` upgrade — over a real HTTP server on 127.0.0.1, so the client's timeouts,
 // status handling and framing are exercised by a socket rather than by a stub that returns a `Response`.
 //
-// The server can be told to be slow, to fail a route, to reject a checkpoint by name, to fail the first N jobs and to
-// return bytes that are not a picture. The last four are the shapes an adapter has to survive: a server that says no is
-// not the same as one that is not there.
+// The server can be told to be slow, to fail a route, to reject a checkpoint by name, to fail the first N jobs, to return
+// bytes that are not a picture and to lack the ComfyUI-GGUF custom node. The last five are the shapes an adapter has to
+// survive: a server that says no is not the same as one that is not there.
 //
 // No dependency: `node:http`, `node:crypto` for the WebSocket handshake's SHA-1 and `node:zlib` through the shared PNG
 // encoder in `harness.ts`.
@@ -36,6 +36,9 @@ export interface FakeComfyOptions {
   readonly deferUntilWs?: boolean
   // Do not answer the upgrade. The client falls back to history polling, as it would on a host without WebSocket.
   readonly noWebSocket?: boolean
+  // A stock ComfyUI: no ComfyUI-GGUF custom node, so `/object_info` has no `UnetLoaderGGUF`. A `.gguf` diffusion model
+  // that needs it must be refused rather than queued.
+  readonly withoutGguf?: boolean
 }
 
 interface Job {
@@ -53,20 +56,32 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value)
 
-function checkpointOf(workflow: unknown): string | undefined {
+// The file a workflow's loader names, in either shape: a checkpoint loader's `ckpt_name` or a unet loader's `unet_name`.
+// The fake refuses a blocked `checkpoint` by name, and a split graph names its diffusion model the same way.
+function modelFileOf(workflow: unknown): string | undefined {
   if (!isRecord(workflow)) return undefined
   for (const node of Object.values(workflow)) {
-    if (!isRecord(node) || node["class_type"] !== "CheckpointLoaderSimple") continue
+    if (!isRecord(node)) continue
     const inputs = node["inputs"]
-    if (isRecord(inputs) && typeof inputs["ckpt_name"] === "string") return inputs["ckpt_name"]
+    if (!isRecord(inputs)) continue
+    if (node["class_type"] === "CheckpointLoaderSimple" && typeof inputs["ckpt_name"] === "string") {
+      return inputs["ckpt_name"]
+    }
+    if ((node["class_type"] === "UNETLoader" || node["class_type"] === "UnetLoaderGGUF") && typeof inputs["unet_name"] === "string") {
+      return inputs["unet_name"]
+    }
   }
   return undefined
 }
 
+// The latent the graph asked for. Both latent nodes are read: a checkpoint graph uses `EmptyLatentImage`, a split graph
+// the SD3-shaped one, and `/view` answers the size the slot asked for either way.
 function sizeOf(workflow: unknown): { width: number; height: number } {
   if (isRecord(workflow)) {
     for (const node of Object.values(workflow)) {
-      if (!isRecord(node) || node["class_type"] !== "EmptyLatentImage") continue
+      if (!isRecord(node)) continue
+      const kind = node["class_type"]
+      if (kind !== "EmptyLatentImage" && kind !== "EmptySD3LatentImage" && kind !== "EmptyFlux2LatentImage") continue
       const inputs = node["inputs"]
       if (!isRecord(inputs)) continue
       const width = inputs["width"]
@@ -98,6 +113,7 @@ export class FakeComfy {
   blockedCheckpoint?: string
   deferUntilWs = false
   noWebSocket = false
+  withoutGguf = false
 
   readonly requests: string[] = []
   readonly prompts: unknown[] = []
@@ -147,13 +163,43 @@ export class FakeComfy {
     try {
       if (url.pathname === "/object_info") {
         if (this.objectInfoStatus !== undefined) return this.#status(response, this.objectInfoStatus)
-        return this.#json(response, 200, {
+        // The catalogue a split graph reads: the stock loaders, the latent the three families key, and the GGUF unet
+        // loader only when this server is supposed to have the ComfyUI-GGUF custom node.
+        const classes: Record<string, unknown> = {
           CheckpointLoaderSimple: {
             input: { required: { ckpt_name: [["sdxl-base.safetensors"], {}] } },
             output: ["MODEL", "CLIP", "VAE"],
           },
+          UNETLoader: {
+            input: {
+              required: {
+                unet_name: [["z_image_turbo_int8_convrot.safetensors"], {}],
+                weight_dtype: [["default", "fp8_e4m3fn", "fp8_e5m2"], {}],
+              },
+            },
+            output: ["MODEL"],
+          },
+          CLIPLoader: {
+            input: {
+              required: {
+                clip_name: [["qwen_3_4b_fp8_mixed.safetensors"], {}],
+                type: [["stable_diffusion", "qwen_image", "flux2", "lumina2"], {}],
+              },
+            },
+            output: ["CLIP"],
+          },
+          VAELoader: { input: { required: { vae_name: [["ae.safetensors"], {}] } }, output: ["VAE"] },
+          EmptyLatentImage: { input: {}, output: ["LATENT"] },
+          EmptySD3LatentImage: { input: {}, output: ["LATENT"] },
+          EmptyFlux2LatentImage: { input: {}, output: ["LATENT"] },
           KSampler: { input: {}, output: ["LATENT"] },
-        })
+          VAEDecode: { input: {}, output: ["IMAGE"] },
+          SaveImage: { input: {}, output: [] },
+        }
+        if (!this.withoutGguf) {
+          classes["UnetLoaderGGUF"] = { input: { required: { unet_name: [["qwen-image-2.1-Q4_K_M.gguf"], {}] } }, output: ["MODEL"] }
+        }
+        return this.#json(response, 200, classes)
       }
 
       if (url.pathname === "/upload/image") {
@@ -177,7 +223,7 @@ export class FakeComfy {
           }
           const workflow = isRecord(parsed) ? parsed["prompt"] : undefined
           this.prompts.push(workflow)
-          const checkpoint = checkpointOf(workflow)
+          const checkpoint = modelFileOf(workflow)
           if (this.blockedCheckpoint !== undefined && checkpoint === this.blockedCheckpoint) {
             return this.#json(response, 400, {
               error: { message: `checkpoint ${checkpoint} is not allowed` },

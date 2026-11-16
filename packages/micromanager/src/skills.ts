@@ -49,6 +49,7 @@ export const SKILLS: readonly CatalogSkill[] = [
   { name: "code-review", description: "review a change on two axes: what the task asked, and the repo's standards", roles: ["review"], asked: false },
   { name: "research", description: "answer a question from primary sources and cite every claim", roles: ["research"], asked: false },
   { name: "deck", description: "build and check an HTML deck: the spec, what the checks mean, and a placeholder instead of a missing picture", roles: ["code", "visual"], asked: true },
+  { name: "image", description: "build and check an image set: the spec, the checkpoint hash policy, split files versus a full checkpoint, and placeholders", roles: ["code", "visual"], asked: true },
 ]
 
 export type Stage = "implement" | "red" | "review" | "review_fix" | "reader"
