@@ -1,6 +1,6 @@
-// A1-T4: the plan agent's profile, and the rules that let an agent read a plan. The rules are checked the way
-// OpenCode applies them: every rule whose resource pattern matches, and the last match wins.
-// A1-T6: the write guard's own rules, checked as the hook calls them (src/writeguard.ts).
+// A1-T4: the rules that let the orchestrator read a plan, and the tool list that keeps plan mode from starting work.
+// The rules are checked the way OpenCode applies them: every rule whose resource pattern matches, and the last match
+// wins. A1-T6: the write guard's own rules, checked as the hook calls them (src/writeguard.ts).
 
 import assert from "node:assert/strict"
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs"
@@ -9,8 +9,8 @@ import { join } from "node:path"
 import { after, test } from "node:test"
 
 import { agentsFrom, type AgentInfo } from "../packages/micromanager/src/agents.ts"
-import { MICROMANAGER, PLAN_AGENT, type Effect, type Rule } from "../packages/micromanager/src/roles.ts"
-import { installTools, type ToolDraft } from "../packages/micromanager/src/tools.ts"
+import { MICROMANAGER, type Effect, type Rule } from "../packages/micromanager/src/roles.ts"
+import { installTools, PLAN_MODE_TOOLS, type ToolDraft } from "../packages/micromanager/src/tools.ts"
 import { insidePath, planRoot, realish, writeGuard } from "../packages/micromanager/src/writeguard.ts"
 
 // "*" stands for any run of characters, as in OpenCode's own permission patterns.
@@ -23,29 +23,18 @@ const PLAN_FILE = `${PLAN}/plan.md`
 const PLAN_ARTIFACT = `${PLAN}/artifacts/T1/report.svg`
 const PLAN_WORKTREE_FILE = `${PLAN}/worktrees/T1/src/main.ts`
 
-test("the plan agent writes the plan and its artifacts, and nothing else of the project", () => {
-  for (const tool of ["edit", "write", "patch"]) {
-    for (const path of [PLAN_FILE, PLAN_ARTIFACT, PLAN_WORKTREE_FILE]) assert.equal(lastMatch(PLAN_AGENT.rules, tool, path), "allow", `${tool} ${path}`)
-    for (const path of ["src/main.ts", "README.md", ".micromanager/jobs/job-1.json", ".micromanager/notes/job-1/T1.md"]) {
-      assert.equal(lastMatch(PLAN_AGENT.rules, tool, path), "deny", `${tool} ${path}`)
-    }
+// One agent carries both modes (2026-11-17): plan mode is a tool list, not a second agent. While the session plans,
+// the tools that start, merge, rewind or measure a job are gone from its list and refused by the tool hook.
+test("plan mode's list holds no tool that starts, merges, rewinds or measures a job", () => {
+  for (const tool of [
+    "run_job", "merge_job", "discard_job", "rewind_job", "take_over_job", "undo_merge", "evolve_task",
+    "contract", "contract_round", "backlog", "decide_change", "steer_task", "request_access", "answer_permission", "todo",
+  ]) {
+    assert.ok(PLAN_MODE_TOOLS.has(tool), `${tool} is not available in plan mode`)
   }
-})
-
-test("the same plan paths hold in the old state directory name and from the repository root", () => {
-  const legacy = ".jev-micromanager/plan/job-1"
-  for (const tool of ["edit", "write", "patch"]) {
-    for (const path of [`${legacy}/plan.md`, `${legacy}/artifacts/T1/report.svg`]) assert.equal(lastMatch(PLAN_AGENT.rules, tool, path), "allow", `${tool} ${path}`)
-    for (const path of [`proj/${PLAN_FILE}`, `proj/${legacy}/plan.md`]) assert.equal(lastMatch(PLAN_AGENT.rules, tool, path), "allow", `${tool} ${path}`)
-    assert.equal(lastMatch(PLAN_AGENT.rules, tool, "proj/src/main.ts"), "deny", `${tool} proj/src/main.ts`)
+  for (const tool of ["plan_job", "plan_questions", "job_status", "list_tasks", "stop_job", "stop_task", "set_mode"]) {
+    assert.ok(!PLAN_MODE_TOOLS.has(tool), `${tool} stays available in plan mode`)
   }
-})
-
-test("the plan's allows come after the state directory's deny, or the deny would win", () => {
-  const last = (effect: Effect, action: string, resource: string) =>
-    PLAN_AGENT.rules.findLastIndex((r) => r.action === action && r.resource === resource && r.effect === effect)
-  assert.ok(last("allow", "edit", ".micromanager/plan*") > last("deny", "edit", ".micromanager*"))
-  assert.ok(last("allow", "edit", ".micromanager/plan*") > last("deny", "edit", "*"))
 })
 
 test("build mode's micromanager reads the plan and its artifacts, and still not the jobs or notes", () => {
@@ -57,42 +46,15 @@ test("build mode's micromanager reads the plan and its artifacts, and still not 
   }
 })
 
-test("the plan agent reads back what it wrote, and still not the jobs or notes", () => {
-  for (const tool of ["read", "glob", "grep", "list"]) {
-    assert.equal(lastMatch(PLAN_AGENT.rules, tool, PLAN_FILE), "allow", `${tool} ${PLAN_FILE}`)
-    assert.equal(lastMatch(PLAN_AGENT.rules, tool, PLAN_ARTIFACT), "allow", `${tool} ${PLAN_ARTIFACT}`)
-    assert.equal(lastMatch(PLAN_AGENT.rules, tool, ".micromanager/jobs/job-1.json"), "deny", `${tool} jobs`)
-  }
-})
-
-test("the plan agent delegates to the five roles that only read or plan, to nobody else", () => {
-  for (const agent of ["explorer", "researcher", "planner", "oracle", "investigator"]) {
-    assert.equal(lastMatch(PLAN_AGENT.rules, "subagent", agent), "allow", agent)
-  }
-  for (const agent of ["coder", "tester", "reviewer", "debugger"]) assert.equal(lastMatch(PLAN_AGENT.rules, "subagent", agent), "deny", agent)
-})
-
-test("the plan agent is refused the plugin's controls, by their real tool ids", () => {
-  for (const tool of ["todo", "run_job", "merge_job", "discard_job", "rewind_job", "take_over_job", "undo_merge"]) {
-    assert.equal(lastMatch(PLAN_AGENT.rules, tool, "*"), "deny", tool)
-  }
-  assert.equal(lastMatch(PLAN_AGENT.rules, "auto_merge", "*"), undefined, "there is no such tool")
-})
-
-test("the plan agent is a primary agent whose rules follow the base agent's", () => {
+test("one visible primary agent carries the micromanager and its plan mode", () => {
   const base: AgentInfo = {
     id: "build", name: "Build", mode: "primary", hidden: false,
     permissions: [{ action: "*", resource: "*", effect: "allow" }, { action: "read", resource: "*.env", effect: "ask" }],
   }
-  const plan = agentsFrom(base).find((a) => a.id === PLAN_AGENT.agent)!
-  assert.ok(plan, "agentsFrom returns the plan agent")
-  assert.equal(plan.mode, "primary")
-  assert.equal(plan.hidden, false)
-  assert.equal(plan.name, "Micromanager (plan)")
-  assert.deepEqual(plan.permissions.slice(0, base.permissions.length), base.permissions, "the user's own rules stay")
-  assert.deepEqual(plan.permissions.slice(base.permissions.length), [...PLAN_AGENT.rules])
-  assert.equal(plan.system, PLAN_AGENT.system)
-  assert.equal(lastMatch(plan.permissions, "edit", "src/main.ts"), "deny", "the base's allow is overridden")
+  const agents = agentsFrom(base)
+  assert.equal(agents.filter((a) => a.mode === "primary" && !a.hidden).length, 1, "exactly one visible primary")
+  assert.ok(agents.some((a) => a.id === "micromanager"), "the micromanager is that primary")
+  assert.ok(!agents.some((a) => a.id === "micromanager-plan"), "the plan agent is gone")
 })
 
 // The tool draft, as far as installTools uses it (test/tools.test.ts).
@@ -204,9 +166,9 @@ test("the shell guard allows an absolute path under the session's own directory"
 test("the plugin's tools refuse the plan agent: only the micromanager may use them", async () => {
   const { draft, added } = fakeDraft()
   const ok = async () => "ok"
-  const handlers = { tasks: ok, plan: ok, questions: ok, run: ok, status: ok, stop: ok, steer: ok, stopTask: ok, merge: ok, discard: ok, access: ok, permission: ok, rewind: ok, undoMerge: ok, takeOver: ok, todo: ok, contract: ok, backlog: ok, decideChange: ok, contractRound: ok, evolve: ok }
+  const handlers = { tasks: ok, plan: ok, questions: ok, run: ok, status: ok, stop: ok, steer: ok, stopTask: ok, merge: ok, discard: ok, access: ok, permission: ok, rewind: ok, undoMerge: ok, takeOver: ok, todo: ok, contract: ok, backlog: ok, decideChange: ok, contractRound: ok, evolve: ok, mode: ok }
   installTools(draft, handlers)
   const tool = added.find((t) => t.id === "list_tasks")!
-  assert.deepEqual(await tool.execute({ id: "T1" }, { agent: PLAN_AGENT.agent }), { content: "Only the micromanager agent may use this tool." })
+  assert.deepEqual(await tool.execute({ id: "T1" }, { agent: "coder" }), { content: "Only the micromanager agent may use this tool." })
   assert.deepEqual(await tool.execute({ id: "T1" }, { agent: MICROMANAGER.agent }), { content: "ok" })
 })

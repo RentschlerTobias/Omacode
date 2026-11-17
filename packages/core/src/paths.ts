@@ -28,6 +28,12 @@ export function userStateDir(): string {
   return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "micromanager")
 }
 
+// The micromanager's mode per session (src/mode.ts writes it, the TUI reads it as a badge): plan is the default, and
+// leaving it takes the user's own answer.
+export function modesPath(): string {
+  return join(userStateDir(), "modes.json")
+}
+
 // OpenCode's own config directory. The plugins' files sit beside OpenCode's config, where the user already looks for
 // settings, and OpenCode reads that directory itself.
 export function userConfigDir(): string {

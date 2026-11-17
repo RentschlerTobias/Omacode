@@ -3,7 +3,7 @@
 // user's base rules (external directories, .env files), with the role's rules appended.
 
 import { SUMMARIZER_SYSTEM } from "./context/summary.ts"
-import { MICROMANAGER, PLAN_AGENT, ROLES, micromanagerSystem, type Rule } from "./roles.ts"
+import { MICROMANAGER, ROLES, micromanagerSystem, type Rule } from "./roles.ts"
 
 // The context manager's summarizer (src/context/summary.ts): no tools, it only reads the transcript it is given.
 export const SUMMARIZER_AGENT = "summarizer"
@@ -46,17 +46,8 @@ export function agentsFrom(base: AgentInfo): AgentInfo[] {
     system: micromanagerSystem(),
     permissions: [...base.permissions, ...MICROMANAGER.rules],
   }
-  // Plan mode (A1): a primary of its own, beside the micromanager, so the user can plan without a job.
-  const plan: AgentInfo = {
-    ...copy(),
-    id: PLAN_AGENT.agent,
-    name: "Micromanager (plan)",
-    mode: "primary",
-    hidden: false,
-    description: PLAN_AGENT.description,
-    system: PLAN_AGENT.system,
-    permissions: [...base.permissions, ...PLAN_AGENT.rules],
-  }
+  // Plan mode is a mode of the micromanager, not an agent of its own: the user has one entry point and the mode
+  // decides what the turn may do (src/mode.ts). A second primary agent made it a third thing to remember.
   const summarizer: AgentInfo = {
     ...copy(),
     id: SUMMARIZER_AGENT,
@@ -67,7 +58,7 @@ export function agentsFrom(base: AgentInfo): AgentInfo[] {
     system: SUMMARIZER_SYSTEM,
     permissions: [...base.permissions, { action: "*", resource: "*", effect: "deny" }],
   }
-  return [micromanager, plan, ...roles, summarizer]
+  return [micromanager, ...roles, summarizer]
 }
 
 export function installAgents(draft: AgentDraft): string[] {

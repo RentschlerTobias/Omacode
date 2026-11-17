@@ -260,15 +260,6 @@ const PLAN_PATHS = [".micromanager", ".jev-micromanager"].flatMap((dir) => [`${d
 // Who reads a plan: build mode's micromanager, which decides from plan.md whether to execute it or plan it again.
 const PLAN_READERS = ["read", "glob", "grep", "list"] as const
 const planReads = PLAN_READERS.flatMap((tool) => PLAN_PATHS.map((path) => rule(tool, "allow", path)))
-const planWrites = WRITE_TOOLS.flatMap((tool) => PLAN_PATHS.map((path) => rule(tool, "allow", path)))
-
-// The agents the plan agent may delegate to, by their agent names and their role ids: explore, research, plan, oracle
-// and investigator, the writer-class role of plan mode. Anyone else, coder and tester included, would change the
-// project, which is what plan mode forbids.
-const PLAN_DELEGATES = ["explorer", "researcher", "planner", "oracle", "investigator"] as const
-// The plugin's controls, by their real ids (src/tools.ts TOOL_IDS): a plan run has no job to start, merge, take back or
-// rewind, and its list is the plan, not a todo list. There is no "auto_merge" tool; it was never one.
-const PLAN_DENIED_TOOLS = ["todo", "run_job", "merge_job", "discard_job", "rewind_job", "take_over_job", "undo_merge"] as const
 
 // The micromanager itself: plans and delegates, never edits or runs commands. A delegation to one of the role agents
 // is allowed: the plugin's guard checks its text before it starts (checkGuards in the subagent hook) and every action of
@@ -288,42 +279,6 @@ export const MICROMANAGER = {
     rule("external_directory", "deny"),
     ...noStateDir,
     ...planReads,
-  ] as readonly Rule[],
-} as const
-
-// The plan agent (A1-T4): the primary agent of plan mode. It investigates and writes a plan, and changes nothing of
-// the project; the one thing it writes is the plan and its artifacts, under the state directory. Its rules override the
-// "build" agent it is copied from, so the write deny comes before the plan allows and noStateDir's deny comes before
-// them too -- the last matching rule wins.
-export const PLAN_AGENT = {
-  agent: "micromanager-plan",
-  description: "Plan mode: investigates the project or the problem and writes a plan under the state directory's plan folder; changes nothing.",
-  system: `You are the plan agent. You investigate the project and write a plan for the user to approve; you never
-change the project. Investigate as far as the plan needs (read, glob, grep, list, the shell's reading commands), and
-write only under the plan directory of the state directory (\`.micromanager/plan/…\`, or \`.jev-micromanager/plan/…\` in a
-project that still has the old one); everything else of the project stays as it is, and a denied edit is not a blocker:
-work around it, and say in the report what you wanted to change and why.
-
-Delegate only to these agents, and only what a plan needs: ${PLAN_DELEGATES.join(", ")}. A coder or a tester would
-change the project, so neither is offered. Give a delegate one question and the paths it needs, then use its answer.
-
-Write the plan as the user will read it: the goal, what you found, the decisions you made and the open questions,
-the tasks you recommend with their acceptance points, and the risks. End your report with one line per file you
-wrote, as \`Artifacts: <path>\`, and one line per lasting fact the plan rests on, as \`Findings: <fact>\`. Report no
-change outside the plan directory as done.`,
-  rules: [
-    // The base "build" agent allows every tool; the plan agent writes nothing of the project.
-    ...noWrite,
-    // noStateDir denies the state directory, the plan folder included, so the plan's own allows follow it and win.
-    ...noStateDir,
-    // It reads back what it wrote: a plan agent that can write plan.md but not read it cannot revise its own draft.
-    ...planReads,
-    ...planWrites,
-    ...noDelegation,
-    ...PLAN_DELEGATES.map((agent) => rule("subagent", "allow", agent)),
-    ...PLAN_DENIED_TOOLS.map((tool) => rule(tool, "deny")),
-    ...noMemory,
-    ...noQuestion,
   ] as readonly Rule[],
 } as const
 

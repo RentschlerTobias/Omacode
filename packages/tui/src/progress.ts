@@ -10,6 +10,8 @@ import { settled, startable } from "@omacode/state"
 import { family } from "@omacode/state/roles"
 import type { Job, Task, TaskStatus } from "@omacode/state"
 import { DIR, LEGACY_DIR } from "@omacode/state/store"
+import { modesPath } from "@omacode/core/paths"
+import { readFileSync } from "node:fs"
 
 const ENDED: readonly Job["phase"][] = ["done", "stopped", "failed"]
 const RUNNING: readonly TaskStatus[] = ["running", "gating", "reviewing", "fixing"]
@@ -51,6 +53,20 @@ export interface JobView {
 
 // The project a session works in: a worker's worktree lies inside the project, under .micromanager/worktrees/ (or the
 // directory's old name, in a project from before the rename).
+export type Mode = "plan" | "build"
+
+// The mode the orchestrator is in for this session. packages/micromanager/src/mode.ts writes it, plan is the default,
+// and the badge above the prompt is what makes it visible without asking the model. A missing or unreadable file means
+// plan: the safe side, and the state every session starts in.
+export function modeOfSession(sessionID: string, file = modesPath()): Mode {
+  try {
+    const all = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+    return all[sessionID] === "build" ? "build" : "plan"
+  } catch {
+    return "plan"
+  }
+}
+
 export function projectOf(directory: string): string {
   const at = [DIR, LEGACY_DIR].map((dir) => directory.indexOf(`/${dir}/`)).find((i) => i !== -1)
   return at === undefined ? directory : directory.slice(0, at)

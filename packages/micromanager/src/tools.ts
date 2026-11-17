@@ -34,7 +34,18 @@ export const TOOL_IDS = [
   "contract_round",
   // OpenEvolve on one block of code, measured by a frozen contract (src/evolver.ts).
   "evolve_task",
+  // The mode of this session: plan (the default) or build (src/mode.ts).
+  "set_mode",
 ] as const
+
+// In plan mode the orchestrator plans. Nothing here starts, merges, rewinds or measures a job, and the plan is the
+// list — so `todo` is gone too. These are removed from the model's list (shapeContext) and refused in the tool hook,
+// the way the plan agent's own list never carried them.
+export const PLAN_MODE_TOOLS: ReadonlySet<string> = new Set([
+  "run_job", "merge_job", "discard_job", "rewind_job", "take_over_job", "undo_merge",
+  "steer_task", "evolve_task", "contract", "contract_round", "backlog",
+  "decide_change", "request_access", "answer_permission", "todo",
+])
 
 // The tool draft of ctx.tool.transform, as far as this file uses it.
 export interface Handlers {
@@ -59,6 +70,7 @@ export interface Handlers {
   decideChange(id: string, decision: string, note: string, ctx: ToolContext): Promise<string>
   contractRound(job: string, goal: string, input: string, ctx: ToolContext): Promise<string>
   evolve(job: string, json: string, ctx: ToolContext): Promise<string>
+  mode(mode: string, note: string, ctx: ToolContext): Promise<string>
 }
 
 export function installTools(draft: ToolDraft, handlers: Handlers, agent = "micromanager", runnerSession: (id: string) => boolean = () => false): string[] {
@@ -173,6 +185,13 @@ export function installTools(draft: ToolDraft, handlers: Handlers, agent = "micr
     description: "Make an earlier micromanager session's open job this session's, after the user chose to continue it: new workers land on its branch, its unfinished workers are continued with the subagent tool and their sessionID, and their notes and permission requests come here. job: the job id the plugin's note named. Refused when this session started a job of its own already.",
     input: input("job"),
     execute: guarded(([job], ctx) => handlers.takeOver(job!, ctx), "job"),
+  })
+  draft.add({
+    id: "set_mode",
+    name: "set_mode",
+    description: "Switch this session between plan and build. Plan is the default and needs nothing: you plan and investigate, and the tools that start, merge, discard, rewind or measure a job are not there — plan_job is how you produce work. Build needs the user's own yes: call set_mode with mode build and no note, show them the question it returns, and end your turn; when they answer, call it again with their answer as note. Never say they agreed unless they did, and never call it with a note before they spoke.",
+    input: input("mode", "note"),
+    execute: guarded(([mode, note], ctx) => handlers.mode(mode!, note!, ctx), "mode", "note"),
   })
   draft.add({
     id: "todo",

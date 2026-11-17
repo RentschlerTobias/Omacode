@@ -85,7 +85,6 @@ export const ALLOW: ReadonlyArray<LiteralPair> = [
   ["test/native.test.ts", P],
   ["test/nogit.test.ts", P],
   ["test/permissions.test.ts", P],
-  ["test/permissions.test.ts", L],
   ["test/pick.test.ts", P],
   ["test/plan.test.ts", P],
   ["test/progress.test.ts", P],

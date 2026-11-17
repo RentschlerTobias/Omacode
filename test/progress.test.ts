@@ -1,8 +1,11 @@
 import assert from "node:assert/strict"
+import { mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { test } from "node:test"
 
 import { startable } from "../packages/micromanager/src/continuation.ts"
-import { elapsed, foldedLine, jobsFor, projectOf, resolver, sessionJobs, shortModel, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "../packages/micromanager/src/progress.ts"
+import { elapsed, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJobs, shortModel, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "../packages/micromanager/src/progress.ts"
 import { newJob, type Job, type Task } from "../packages/micromanager/src/state.ts"
 
 const task = (id: string, status: Task["status"], extra: Partial<Task> = {}): Task => ({
@@ -161,4 +164,15 @@ test("a task's cost goes after its line: running ones beside model and time, fin
   const groups = sidebarGroups(view(j, now), new Map(), now)
   const lines = groups.flatMap((g) => g.lines.map((l) => `${l.id}:${l.detail ?? ""}`))
   assert.deepEqual(lines, ["T1:glm 4m $0.03", "T2:<$0.01", "T3:"])
+})
+
+// The badge above the prompt (2026-11-17): the mode is never a guess, and with no file it is plan, the default.
+test("the mode badge reads the file the plugin writes, and falls back to plan", () => {
+  const file = join(mkdtempSync(join(tmpdir(), "mm-tui-mode-")), "modes.json")
+  assert.equal(modeOfSession("ses_x", file), "plan", "no file yet: plan")
+  writeFileSync(file, JSON.stringify({ ses_x: "build" }))
+  assert.equal(modeOfSession("ses_x", file), "build")
+  assert.equal(modeOfSession("ses_y", file), "plan", "a session that never chose keeps the default")
+  writeFileSync(file, "{not json")
+  assert.equal(modeOfSession("ses_x", file), "plan", "an unreadable file is not a build session")
 })

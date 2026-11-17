@@ -23,7 +23,7 @@ import { createSignal, For, onCleanup, Show } from "solid-js"
 import { loadPicks, loadRouting, savePicks } from "@omacode/state/picks"
 import { lastOptions, loadControl, optionsOf, updateControl, type Control } from "@omacode/state/control"
 import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION, type CatalogModel, type PoolRow } from "./pools.ts"
-import { BOX, foldedLine, jobsFor, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view, type JobView, type Mark, type SidebarGroup } from "./progress.ts"
+import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view, type JobView, type Mark, type Mode, type SidebarGroup } from "./progress.ts"
 import { listJobs } from "@omacode/state/store"
 import { agentRows, agentSummary, taskSessions, type AgentRow, type Live, type SessionFacts, type Tag, type TaskSessionRow } from "./switcher.ts"
 import type { Job } from "@omacode/state"
@@ -143,12 +143,26 @@ async function pending(context: Context, sessions: readonly string[]): Promise<M
   return out
 }
 
+// The mode above the prompt. The user could not tell plan from build (2026-11-17), so it is always on screen, and it
+// is read from the file the plugin writes rather than asked of the model.
+function useMode(sessionID: () => string) {
+  const [mode, setMode] = createSignal<Mode>(modeOfSession(sessionID()))
+  const timer = setInterval(() => setMode(modeOfSession(sessionID())), POLL_MS)
+  onCleanup(() => clearInterval(timer))
+  return mode
+}
+
 function Progress(props: { context: Context; sessionID: string }) {
   const jobs = useJobs(props.context, () => props.sessionID)
+  const mode = useMode(() => props.sessionID)
+  const label = () => (mode() === "plan" ? "PLAN · planning only" : "BUILD")
+  const shown = () => jobs().filter((j) => j.total > 0)
   return (
-    <For each={jobs().filter((j) => j.total > 0)}>
-      {(job) => <text fg={props.context.theme.text.muted}>micromanager · {summaryLine(job)} · /tasks · /workers</text>}
-    </For>
+    <Show when={shown().length} fallback={<text fg={props.context.theme.text.muted}>micromanager · {label()}</text>}>
+      <For each={shown()}>
+        {(job) => <text fg={props.context.theme.text.muted}>micromanager · {label()} · {summaryLine(job)} · /tasks · /workers</text>}
+      </For>
+    </Show>
   )
 }
 

@@ -24,7 +24,8 @@ import { DEFAULT_LABELS, gitAuthor, knownSecrets, mapStrings, PLACEHOLDER_NOTE, 
 import { matchShortcut, resolvePolicy } from "./policy.ts"
 import { probe, type Availability } from "./registry.ts"
 import { chooseModel, unknown as allAvailable, withPicks, type Available } from "./routing.ts"
-import { family, MICROMANAGER, PLAN_AGENT, ROLES, roleByAgent, roleById, type RoleId, type Rule } from "./roles.ts"
+import { family, MICROMANAGER, ROLES, roleByAgent, roleById, type RoleId, type Rule } from "./roles.ts"
+import { askToLeave, canLeave, clearAsk, forgetModes, loadModes, modeOf, noteUserSpoke, setMode } from "./mode.ts"
 import { WRITERS } from "./profile.ts"
 import { recentFailure, Runner, summary, taskReport, toModel, type SessionApi } from "./runner.ts"
 import type { GateDeps } from "./gatebox.ts"
@@ -67,7 +68,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { dirname, extname, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
-  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, installWaitTool, LOOK_ID, planText,
+  BROWSER_ID, CHECK_CHANGE_ID, FINISH_ID, GRANT_IDS, GRAPH_ID, HELPER_IDS, installBrowserTool, installCheckChangeTool, installFinishTool, installGrantTools, installGraphTool, installHelperTools, installLookTool, installTools, installWaitTool, LOOK_ID, PLAN_MODE_TOOLS, planText,
   TOOL_IDS, WAIT_ID, type ToolDraft,
 } from "./tools.ts"
 import { waitFor, waitTimeoutMs, watchAsk, watchFile, watchPid } from "./wait.ts"
@@ -905,11 +906,18 @@ export function grantAnswer(text: string): boolean | undefined {
   return undefined
 }
 
+// The line the orchestrator carries every turn, so the mode is never a guess (the user, 2026-11-17: "nie klar war ob
+// der micromanager jetzt im planmode ist oder im build"). The tool set and the tool hook are what enforce it.
+const MODE_PLAN = "[micromanager] Mode: plan. You plan and investigate; you cannot start, merge, discard or rewind a job — plan_job is how you produce work. Leaving plan mode needs the user's own yes: set_mode with build asks them, and only their next message unlocks it."
+const MODE_BUILD = "[micromanager] Mode: build. You may start jobs with run_job and bring a finished one in with merge_job once its checks are past."
+
 const plugin = {
   id: "micromanager",
   setup: async (ctx: Context): Promise<void> => {
     if (!claim("micromanager", ctx.location?.directory)) return
     const log = logger(ctx)
+    // The mode per session, from the last server run: plan is the default and survives a restart.
+    loadModes()
     const settings = loadSettings()
     const { mode, migrations, parallel, perModel, trials, budget, notify, routing, floors, deciderFloors, decisions, allowOutside, error } = settings
     // The most recent A2b bench on this machine, read once per server start: the gate may only let a node use measured
@@ -1456,18 +1464,19 @@ const plugin = {
       // real values already. Redacting again keeps a name out of a web search and a secret out of a shell command.
       const redaction = vault && restoreScope(call.tool)
       if (vault) mapStrings(call.input, (s) => (redaction ? vault.restore(vault.redact(s), redaction) : vault.redact(s)))
+      // Plan mode: the tools that start, merge or rewind a job are not in the orchestrator's list (shapeContext), and a
+      // call that arrives anyway is refused here. The mode changes when the user says so, never through a tool argument.
+      if (call.agent === MICROMANAGER.agent && call.sessionID && modeOf(call.sessionID) === "plan" && PLAN_MODE_TOOLS.has(call.tool)) {
+        throw new Error(`[micromanager] plan mode: ${call.tool} is not available. Plan instead, and leave plan mode with set_mode once the user agrees.`)
+      }
       // Plan mode's hard boundary on the tools themselves (src/writeguard.ts, A1-T6), after the redaction so the paths
       // checked are the ones the tool will use, and before the delegation handling, because a delegation is not a
-      // write. Exactly two sessions are plan mode's: the plan agent and the investigator it delegates to. Every other
-      // agent, the micromanager included, is left exactly as it was.
+      // write. Since one agent carries both modes, plan mode is the investigator's worktree, not a second agent. The
+      // orchestrator itself cannot write at all (MICROMANAGER: noWrite, noShell), so it needs no scope here.
       if (project) {
-        // The plan agent's session is remembered here, so the shell plugin sands its commands too (see `extra`).
-        if (call.agent === PLAN_AGENT.agent && call.sessionID) (SHARED.planSessions ??= new Set()).add(call.sessionID)
         const worker = call.sessionID ? native.workerBySession(call.sessionID) : undefined
         let scope: GuardScope | undefined
-        if (call.agent === PLAN_AGENT.agent) {
-          scope = { root: planRoot(project), directory: project }
-        } else if (roleByAgent(call.agent ?? "")?.id === "investigator") {
+        if (roleByAgent(call.agent ?? "")?.id === "investigator") {
           // The worker's own facts say which project it works for and where it works; a session this instance does not
           // hold falls back to its recorded directory and this instance's project, and the plan-root test then decides.
           const directory = worker?.dir ?? (call.sessionID ? (await childOf(call.sessionID))?.directory : undefined)
@@ -1724,7 +1733,7 @@ const plugin = {
 
     // The micromanager's own agents only: build, plan and every other agent are never touched. The plan agent is one
     // of ours, so its permission asks are decided here instead of waiting for a user who is not at its session.
-    const ours = new Set([MICROMANAGER.agent, PLAN_AGENT.agent, ...ROLES.map((role) => role.agent)])
+    const ours = new Set([MICROMANAGER.agent, ...ROLES.map((role) => role.agent)])
 
     // Who started this session, and whether this plugin owns the one that did. Resolved once per session: the
     // permission hook runs on every single tool call, and Session.get is a round trip to the host.
@@ -2761,7 +2770,7 @@ const plugin = {
             if (!swept) return `no job ${id.trim()}`
             if (!tctx.sessionID) return "run_job needs the micromanager's session."
             if (scheduler.snapshot().running === swept.id) return `job ${swept.id} still runs on the plugin's own workers from before; stop_job ${swept.id} first, then run_job again.`
-            const planJob = tctx.agent === PLAN_AGENT.agent || swept.isolation === "plan"
+            const planJob = modeOf(tctx.sessionID) === "plan" || swept.isolation === "plan"
             const checks = jobChecks(swept)
             // D23: with no sandbox, nothing of the job starts until the user said how it may run — and the user alone
             // opens the grant, through the form. A job the user chose read-only is not asked again: runPlanned keeps it
@@ -2792,7 +2801,7 @@ const plugin = {
                 }
               }
             }
-            const r = native.runPlanned(project, swept.id, tctx.sessionID, tctx.agent === PLAN_AGENT.agent)
+            const r = native.runPlanned(project, swept.id, tctx.sessionID, modeOf(tctx.sessionID) === "plan")
             if (!r.job) return `job ${swept.id}: ${r.problem}`
             // A1-T11: a plan job without a sandbox starts reader-only; the warning goes first, before any task it names.
             const warned = r.warning ? `${refusal}${r.warning}\n\n` : refusal
@@ -2910,6 +2919,30 @@ const plugin = {
             const unfinished = job.tasks.filter((t) => t.worktree && t.status !== "merged")
             record({ kind: "take-over", sessionID: tctx.sessionID, job: job.id })
             return `This session runs job ${job.id} now (branch ${job.integrationBranch}); new workers land on that branch.${unfinished.length ? ` Unfinished, to continue with the subagent tool and their sessionID: ${unfinished.map((t) => `${t.id} ${t.title} (sessionID ${t.session})`).join("; ")}.` : ""}`
+          },
+          // The mode of this session (src/mode.ts): plan is the default, and build is unlocked by the user's own turn,
+          // never by the model's word. `note` is what they said.
+          mode: async (next, note, tctx) => {
+            const sessionID = tctx.sessionID
+            if (!sessionID) return "set_mode needs the micromanager's session."
+            const wanted = next.trim().toLowerCase()
+            if (wanted !== "plan" && wanted !== "build") return `mode must be plan or build, not "${next}".`
+            if (modeOf(sessionID) === wanted) return `This session is already in ${wanted} mode.`
+            if (wanted === "plan") {
+              setMode(sessionID, "plan")
+              return "Mode: plan. The tools that start, merge, discard or rewind a job are gone until the user switches back; plan_job is how you produce work."
+            }
+            if (!note.trim()) {
+              askToLeave(sessionID)
+              return "Leaving plan mode is the user's decision. Put this to them and end your turn:\n\n\"We are in plan mode. Shall I switch to build and start the work?\"\n\nWhen they answer, call set_mode with mode build and their answer as note."
+            }
+            if (!canLeave(sessionID)) {
+              askToLeave(sessionID)
+              return "I cannot switch without an answer from the user in this session. Put the question to them and end your turn."
+            }
+            clearAsk(sessionID)
+            setMode(sessionID, "build")
+            return "Mode: build. You may start jobs with run_job, and bring a finished one in with merge_job once its checks are past."
           },
           todo: async (items, tctx) => {
             if (!tctx.sessionID) return "todo needs a session."
@@ -3184,6 +3217,8 @@ const plugin = {
       const sessionID = input.sessionID
       const text = String(input.prompt?.text ?? "")
       if (!sessionID || !text) return
+      // The user spoke in this session: the one thing that can unlock leaving plan mode (src/mode.ts).
+      if (!text.startsWith(CHILD_PREFIX)) noteUserSpoke(sessionID)
       if (text.startsWith(CHILD_PREFIX)) {
         // A worker's first turn: OpenCode made it in the micromanager's directory, so it moves to its task's
         // worktree now. The move is queued ahead of this prompt and applies before any tool runs (spike).
@@ -3516,6 +3551,12 @@ const plugin = {
         for (const id of ["edit", "write", "patch", "apply_patch", "multiedit"]) delete input.tools[id]
         for (const id of Object.values(HELPER_IDS)) delete input.tools[id]
       }
+      // One agent, two modes (src/mode.ts): plan is the default, and it takes the job controls out of the list the same
+      // way the plan agent never had them. The orchestrator is told the mode in one line, so the model and the user see
+      // the same state; the tool hook refuses a call that arrives anyway.
+      const planning = input.sessionID ? modeOf(input.sessionID) === "plan" : true
+      if (planning && input.tools) for (const id of PLAN_MODE_TOOLS) delete input.tools[id]
+      if (Array.isArray(input.system)) input.system.push({ type: "text", text: planning ? MODE_PLAN : MODE_BUILD })
       await manageContext(input, true)
       if (input.sessionID) void charge(input.sessionID).catch((err: unknown) => log("warn", `budget count failed: ${String(err)}`))
       // A new message of the user (or a worker's report): what the memory knows about it, for this request only.
