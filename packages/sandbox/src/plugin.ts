@@ -47,11 +47,12 @@ export const defaultShellDeps = (deps: ShellPluginDeps = {}, session?: ShellDeps
 export default {
   id: "omacode-sandbox",
   setup: async (ctx: unknown, deps: ShellPluginDeps = {}): Promise<void> => {
-    if (!claim("sandbox")) return
     const anyCtx = ctx as {
       tool?: { hook(name: string, cb: (call: any) => Promise<void> | void): Promise<unknown> }
       session?: { get?(args: { sessionID: string }): Promise<unknown> }
+      location?: { directory?: string }
     }
+    if (!claim("sandbox", anyCtx.location?.directory)) return
     // The host's session record says whether a command comes from a delegated child. Without this lookup the
     // plugin would wrap nothing: parentID is the whole reason a command is sandboxed.
     const session: ShellDeps["session"] = deps.session ?? (async (sessionID) => {

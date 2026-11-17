@@ -908,7 +908,7 @@ export function grantAnswer(text: string): boolean | undefined {
 const plugin = {
   id: "micromanager",
   setup: async (ctx: Context): Promise<void> => {
-    if (!claim("micromanager")) return
+    if (!claim("micromanager", ctx.location?.directory)) return
     const log = logger(ctx)
     const settings = loadSettings()
     const { mode, migrations, parallel, perModel, trials, budget, notify, routing, floors, deciderFloors, decisions, allowOutside, error } = settings

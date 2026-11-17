@@ -30,7 +30,7 @@ const ceilingFor = (deps: ContextPluginDeps, agent?: string): number => {
 export default {
   id: "omacode-context",
   setup: (ctx: any, deps: ContextPluginDeps = {}) => {
-    if (!claim("context")) return
+    if (!claim("context", ctx.location?.directory)) return
     const journal = deps.journal ?? record
     const manager = new ContextManager({ journal })
     const reported = new ReportedUsage()

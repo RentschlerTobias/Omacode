@@ -32,7 +32,7 @@ function fromConfig(projectDir?: string): Partial<GuardDeps> {
 export default {
   id: "omacode-guard",
   setup: (ctx: any, deps: Partial<GuardDeps> = {}) => {
-    if (!claim("guard")) return
+    if (!claim("guard", ctx?.location?.directory)) return
     const configured = deps.getVault ? {} : fromConfig(ctx?.location?.directory)
     installGuard(ctx, { ...defaultDeps(), ...configured, ...deps })
   },
