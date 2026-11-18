@@ -25,6 +25,7 @@ import { dirname, join, resolve } from "node:path"
 import { test, type TestContext } from "node:test"
 
 import {
+  DEFAULT_VIDEO_FORMAT,
   VIDEO_CHECKS,
   videoAdapter,
   videoResults,
@@ -769,6 +770,30 @@ test("render asks for the spec's fps, container and quality, software pixels, an
   for (const flag of BROWSER_GPU_ARGS) assert.ok(args.includes(flag), `a render must pass ${flag}: ${args.join(" ")}`)
   // Nothing the deck owns is in this argv: the video adapter is the one that encodes.
   assert.equal(args.includes("present"), false)
+})
+
+test("a spec without an output renders WebM, the container without a codec patent question", async (t) => {
+  const job = jobFor(t)
+  const calls: HostRunInput[] = []
+  const runner: HostRunner = {
+    async run(input: HostRunInput): Promise<HostRunResult> {
+      calls.push(input)
+      if (input.args[0] === "render") writeFileSync(join(job, input.args[input.args.indexOf("-o") + 1]!), "a fake encode")
+      return input.args[0] === "render" ? passed("rendered") : passed("0.9.54\n")
+    },
+    cancel(): void {},
+  }
+  const { ctx } = harnessFor(job, runner)
+  const adapter = videoAdapter()
+  mkdirSync(join(job, "audio"))
+  writeFileSync(join(job, "audio", "theme.mp3"), "audio")
+  const { output: _output, ...rest } = video()
+  await adapter.prepare(parsedVideo(rest), ctx)
+  const rendered = await adapter.render(ctx)
+  assert.equal(DEFAULT_VIDEO_FORMAT, "webm")
+  assert.deepEqual(rendered.outputs, ["video.webm"])
+  const args = calls.find((entry) => entry.args[0] === "render")!.args
+  assert.equal(args[args.indexOf("--format") + 1], "webm")
 })
 
 test("snapshot asks for one frame per scene, at the scene's midpoint, with the end frame off", async (t) => {

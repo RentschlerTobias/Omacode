@@ -63,6 +63,10 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // two specs cannot pick the same output path and a job directory cannot gain a file outside it.
 const OUTPUT_FILE: Record<"mp4" | "webm", string> = { mp4: "video.mp4", webm: "video.webm" }
 
+// The container a spec without `output` gets: WebM (VP9), whose codecs carry no patent licensing question; MP4 (H.264)
+// stays one field away for a player that needs it (docs/roadmap/container-plan.md, P1-T8).
+export const DEFAULT_VIDEO_FORMAT: "mp4" | "webm" = "webm"
+
 // The engine's names for the three quality steps. `looks` is the CLI's default and `high` is its delivery step; the
 // spec's middle word maps to the usual render, so an author who says "medium" gets what the engine would have done
 // anyway and only a deliberate low or high moves it.
@@ -710,7 +714,7 @@ export function videoAdapter(): VideoAdapter {
     async render(ctx) {
       const current = built()
       const askedFor = asked()
-      const format = askedFor.output?.format ?? "mp4"
+      const format = askedFor.output?.format ?? DEFAULT_VIDEO_FORMAT
       const file = OUTPUT_FILE[format]
       const args = [
         "render",
@@ -779,7 +783,7 @@ export function videoAdapter(): VideoAdapter {
         ctx.log(`hyperframes check: ${said}`)
       }
       const currentSpec = asked()
-      const format = currentSpec.output?.format ?? "mp4"
+      const format = currentSpec.output?.format ?? DEFAULT_VIDEO_FORMAT
       // Only a caller that asked for a QA id pays for the QA pass: a check of the project alone stays as cheap as it was.
       const wanted = defs.some((def) => (QA_CHECK_IDS as readonly string[]).includes(def.id))
       const qa = wanted
