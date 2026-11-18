@@ -168,7 +168,7 @@ export function formatN7(rows: readonly N7Row[]): string {
   const prioLine = prio.length
     ? `priority: ${prio.filter((r) => r.modelPriority!.choice === r.priority).length}/${prio.length} right, confidence ${prio.map((r) => r.modelPriority!.confidence.toFixed(2)).join(" ")}`
     : "priority: no answers"
-  const model = rows.some((r) => r.model) ? line("model", (r) => r.model) : "model  no answers (no Jev key, or the backend failed)"
+  const model = rows.some((r) => r.model) ? line("model", (r) => r.model) : "model  no answers (no key, or the backend failed)"
   return [model, line("rules", (r) => r.rules), prioLine].join("\n")
 }
 

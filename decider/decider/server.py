@@ -1,4 +1,4 @@
-"""A local decision server: GLiNER2 behind the TypeSafe Jev wire format, on the CPU (design.md §20).
+"""A local decision server: GLiNER2 behind the decision wire format, on the CPU (design.md §20).
 
 POST /v1/systemone {model, state, questions} -> {model, answers, latency_ms}
 POST /v1/entities {texts, labels, threshold} -> {entities: [[{label, text, start, end, score}], …], latency_ms}
@@ -29,6 +29,14 @@ from typing import Any, Protocol
 
 YES_NO = {"yes": "Yes, the statement is true for this text.", "no": "No, the statement is false for this text."}
 FIRST = ("text", "utterance", "task", "question")
+# The encoder runs eager attention (DeBERTa rejects SDPA), so the attention matrix is n² and a 24 000-character state
+# peaked at 13.7 GB and took 72 s for one decision (measured 2026-11-18). 4 000 characters stays under 0.5 GB and 5 s.
+MAX_CHARS = 2000
+
+
+def clamp(text: str, limit: int = MAX_CHARS) -> tuple[str, bool]:
+    """The head of the text, which is where render_state puts the task; the tail is what blew the memory up."""
+    return (text, False) if len(text) <= limit else (text[:limit], True)
 
 
 class Classifier(Protocol):
@@ -98,9 +106,9 @@ def client_gone(sock: socket.socket) -> bool:
         return True
 
 
-def decide(classifier: Classifier, body: Mapping[str, Any], model: str, alive: Callable[[], bool] = lambda: True) -> dict[str, Any]:
+def decide(classifier: Classifier, body: Mapping[str, Any], model: str, alive: Callable[[], bool] = lambda: True, max_chars: int = MAX_CHARS) -> dict[str, Any]:
     t0 = time.perf_counter()
-    text = render_state(body.get("state", ""))
+    text, truncated = clamp(render_state(body.get("state", "")), max_chars)
     questions = body.get("questions") or {}
     answers: dict[str, Any] = {}
     for qid, question in dict(questions).items():
@@ -110,10 +118,14 @@ def decide(classifier: Classifier, body: Mapping[str, Any], model: str, alive: C
             result = answer(classifier, text, str(qid), question)
             if result is not None:
                 answers[str(qid)] = result
-    return {"model": model, "answers": answers, "latency_ms": (time.perf_counter() - t0) * 1000}
+    out = {"model": model, "answers": answers, "latency_ms": (time.perf_counter() - t0) * 1000}
+    if truncated:
+        out["truncated"] = True
+        out["chars"] = len(text)
+    return out
 
 
-def extract(finder: Any, body: Mapping[str, Any], alive: Callable[[], bool] = lambda: True) -> dict[str, Any]:
+def extract(finder: Any, body: Mapping[str, Any], alive: Callable[[], bool] = lambda: True, max_chars: int = MAX_CHARS) -> dict[str, Any]:
     """The spans of each label in each text. Labels go to GLiNER2 without its marker characters and come back as asked."""
     t0 = time.perf_counter()
     texts = body.get("texts")
@@ -127,15 +139,21 @@ def extract(finder: Any, body: Mapping[str, Any], alive: Callable[[], bool] = la
         raise ValueError("threshold must be a number between 0 and 1")
     asked = {safe(lbl): lbl for lbl in labels}
     out: list[list[dict[str, Any]]] = []
+    truncated = False
     for text in texts:
         if not alive():
             raise Abandoned
+        text, cut = clamp(text, max_chars)
+        truncated = truncated or cut
         spans = finder.entities(text, list(asked), float(threshold)) if text.strip() else []
         out.append([
             {"label": asked.get(str(s.get("label")), str(s.get("label"))), "text": s.get("text"), "start": s.get("start"), "end": s.get("end"), "score": s.get("score")}
             for s in spans
         ])
-    return {"entities": out, "latency_ms": (time.perf_counter() - t0) * 1000}
+    result = {"entities": out, "latency_ms": (time.perf_counter() - t0) * 1000}
+    if truncated:
+        result["truncated"] = True
+    return result
 
 
 class GlinerClassifier:
@@ -207,7 +225,7 @@ class GlinerClassifier:
         ]
 
 
-def make_handler(classifier: Classifier, model: str) -> type[BaseHTTPRequestHandler]:
+def make_handler(classifier: Classifier, model: str, max_chars: int = MAX_CHARS) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def _send(self, status: int, payload: Mapping[str, Any]) -> None:
             data = json.dumps(payload).encode()
@@ -242,7 +260,7 @@ def make_handler(classifier: Classifier, model: str) -> type[BaseHTTPRequestHand
                     self._send(501, {"error": "this server finds no entities"})
                     return
                 try:
-                    self._send(200, extract(classifier, body, alive=alive))
+                    self._send(200, extract(classifier, body, alive=alive, max_chars=max_chars))
                 except ValueError as exc:
                     self._send(400, {"error": f"bad request: {exc}"})
                 except (Abandoned, BrokenPipeError):
@@ -251,7 +269,7 @@ def make_handler(classifier: Classifier, model: str) -> type[BaseHTTPRequestHand
                     self._send(500, {"error": f"{type(exc).__name__}: {exc}"})
                 return
             try:
-                self._send(200, decide(classifier, body, model, alive=alive))
+                self._send(200, decide(classifier, body, model, alive=alive, max_chars=max_chars))
             except (Abandoned, BrokenPipeError):
                 return  # the client timed out and left; nobody reads the answer
             except Exception as exc:  # a model error must not kill the server
@@ -269,13 +287,14 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8781)
     parser.add_argument("--model", default="fastino/GLiNER2.5-multi-Decide", help="a model id or a fine-tuned checkpoint directory")
     parser.add_argument("--entity-model", default=None, help="the checkpoint for /v1/entities (names and addresses); default: --model")
-    parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument("--threads", type=int, default=2, help="torch threads: 8 arenas cost more memory than they win on one request")
+    parser.add_argument("--max-chars", type=int, default=MAX_CHARS, help="the longest text one decision reads; eager attention is n²")
     parser.add_argument("--no-preload", action="store_true", help="load the model on the first request instead of at start")
     args = parser.parse_args()
     classifier = GlinerClassifier(args.model, args.threads, args.entity_model)
     if not args.no_preload:
         classifier.preload()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner"))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner", args.max_chars))
     print(f"decider on http://{args.host}:{args.port} ({args.model}, CPU)", flush=True)
     server.serve_forever()
 

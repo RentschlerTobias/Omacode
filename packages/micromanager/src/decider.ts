@@ -108,9 +108,9 @@ export class DecisionClient {
     this.#key = key
     this.#url = options.url ?? "https://api.typesafe.ai/v1/systemone"
     this.#model = options.model ?? "jev-latest"
-    this.#timeoutMs = options.timeoutMs ?? 3000
+    this.#timeoutMs = options.timeoutMs ?? 15000
     this.#retries = options.retries ?? 1
-    this.#maxStateChars = options.maxStateChars ?? 24000
+    this.#maxStateChars = options.maxStateChars ?? 2000
     this.#fetch = options.fetch ?? fetch
     this.#egress = options.egress ?? {}
     this.#remote = remote(this.#url)

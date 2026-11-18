@@ -145,3 +145,33 @@ class HttpTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CapTest(unittest.TestCase):
+    """Eager attention is n²: a 24 000-character state cost 13.7 GB and 72 s for one decision (2026-11-18)."""
+
+    def test_a_long_state_is_clamped_to_its_head(self) -> None:
+        fake = FakeClassifier()
+        out = decide(fake, {"state": {"text": "x" * 9000, "job": "j1"}, "questions": QUESTIONS}, "gliner")
+        self.assertTrue(out["truncated"])
+        self.assertLessEqual(len(fake.calls[0][0]), 4000, "the classifier never sees more than the cap")
+        self.assertTrue(fake.calls[0][0].startswith("text: x"), "the task text is the part that is kept")
+
+    def test_a_short_state_is_answered_without_a_note(self) -> None:
+        fake = FakeClassifier()
+        out = decide(fake, {"state": {"text": "Add a flag"}, "questions": QUESTIONS}, "gliner")
+        self.assertNotIn("truncated", out)
+
+    def test_the_cap_is_a_parameter(self) -> None:
+        fake = FakeClassifier()
+        out = decide(fake, {"state": {"text": "y" * 500}, "questions": QUESTIONS}, "gliner", max_chars=100)
+        self.assertTrue(out["truncated"])
+        self.assertLessEqual(len(fake.calls[0][0]), 100)
+
+    def test_an_entity_text_is_clamped_too(self) -> None:
+        class FakeFinder:
+            def entities(self, text, labels, threshold):
+                return []
+
+        out = extract(FakeFinder(), {"texts": ["z" * 9000], "labels": ["person"], "threshold": 0.5})
+        self.assertTrue(out["truncated"])

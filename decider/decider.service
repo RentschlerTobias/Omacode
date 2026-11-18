@@ -2,13 +2,21 @@
 #   cp decider/decider.service ~/.config/systemd/user/ && systemctl --user enable --now decider
 # Set --model to a fine-tuned checkpoint directory once one exists.
 [Unit]
-Description=micromanager GLiNER2 decision server (CPU)
+Description=Omacode decider: GLiNER2 decisions on the CPU
 
 [Service]
 Environment=CUDA_VISIBLE_DEVICES=
 WorkingDirectory=%h/Fun/Projects/Repos/micromanager/decider
-ExecStart=/usr/bin/uv run --frozen decider --port 8781 --model fastino/GLiNER2.5-multi-Decide --threads 8
+ExecStart=/usr/bin/uv run --frozen decider --port 8781 --model fastino/GLiNER2.5-multi-Decide
 Restart=on-failure
+RestartSec=5
+# The encoder falls back to eager attention, so the attention matrix is n² and one unclamped request reached 13.7 GB
+# (2026-11-18). The server clamps its input now; this is the belt to that braces: past 6 GB the service dies and is
+# restarted instead of pushing the whole desktop into swap.
+MemoryMax=6G
+MemorySwapMax=0
+OOMPolicy=stop
+TasksMax=256
 
 [Install]
 WantedBy=default.target
