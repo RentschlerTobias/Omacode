@@ -4,6 +4,8 @@ POST /v1/systemone {model, state, questions} -> {model, answers, latency_ms}
 POST /v1/entities {texts, labels, threshold} -> {entities: [[{label, text, start, end, score}], …], latency_ms}
 GET  /health -> {status: "ok", model}
 
+With DECIDER_TOKEN set, every POST needs "Authorization: Bearer <token>" and answers 401 without it; /health stays open.
+
 Each question is its own forward pass, so a question's scores never depend on which others ride along:
 - choice -> a single-label task over the criteria (option id -> meaning);
 - noul   -> a yes/no task; the answer is P(yes) normalised over yes and no;
@@ -18,7 +20,9 @@ The classifier is injected, so tests run without torch; the real one loads GLiNE
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
+import os
 import select
 import socket
 import threading
@@ -225,8 +229,21 @@ class GlinerClassifier:
         ]
 
 
-def make_handler(classifier: Classifier, model: str, max_chars: int = MAX_CHARS) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    classifier: Classifier, model: str, max_chars: int = MAX_CHARS, token: str | None = None
+) -> type[BaseHTTPRequestHandler]:
+    expected = f"Bearer {token}" if token else None
+
     class Handler(BaseHTTPRequestHandler):
+        def _authorized(self) -> bool:
+            # Without a token every caller is served, as on a single-user desktop. With one (the container sets
+            # DECIDER_TOKEN), /health stays open for the supervisor and everything else needs the header: under
+            # Apptainer the loopback is shared with every user of the machine.
+            if expected is None or hmac.compare_digest(self.headers.get("Authorization", ""), expected):
+                return True
+            self._send(401, {"error": "missing or wrong token"})
+            return False
+
         def _send(self, status: int, payload: Mapping[str, Any]) -> None:
             data = json.dumps(payload).encode()
             self.send_response(status)
@@ -242,6 +259,8 @@ def make_handler(classifier: Classifier, model: str, max_chars: int = MAX_CHARS)
                 self._send(404, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._authorized():
+                return
             path = self.path.rstrip("/")
             if path not in ("/v1/systemone", "/systemone", "/v1/entities"):
                 self._send(404, {"error": "not found"})
@@ -294,7 +313,7 @@ def main() -> None:
     classifier = GlinerClassifier(args.model, args.threads, args.entity_model)
     if not args.no_preload:
         classifier.preload()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner", args.max_chars))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner", args.max_chars, os.environ.get("DECIDER_TOKEN") or None))
     print(f"decider on http://{args.host}:{args.port} ({args.model}, CPU)", flush=True)
     server.serve_forever()
 

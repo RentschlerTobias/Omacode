@@ -129,6 +129,25 @@ class HttpTest(unittest.TestCase):
         finally:
             server.shutdown()
 
+    def test_a_token_guards_every_post_but_not_health(self) -> None:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(FakeClassifier(), "gliner", token="s3cret"))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        body = json.dumps({"model": "gliner", "state": "{}", "questions": QUESTIONS}).encode()
+        try:
+            with urllib.request.urlopen(f"{base}/health") as r:
+                self.assertEqual(json.load(r)["status"], "ok")
+            for header in ({}, {"Authorization": "Bearer local"}, {"Authorization": "s3cret"}):
+                req = urllib.request.Request(f"{base}/v1/systemone", data=body, headers={"Content-Type": "application/json", **header})
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(req)
+                self.assertEqual(ctx.exception.code, 401, header)
+            ok = urllib.request.Request(f"{base}/v1/systemone", data=body, headers={"Authorization": "Bearer s3cret"})
+            with urllib.request.urlopen(ok) as r:
+                self.assertEqual(set(json.load(r)["answers"]), {"role", "harmful", "risk"})
+        finally:
+            server.shutdown()
+
     def test_entities_over_http(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(FakeFinder({"Anna": "person name"}), "gliner"))
         threading.Thread(target=server.serve_forever, daemon=True).start()

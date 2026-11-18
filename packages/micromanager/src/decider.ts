@@ -13,6 +13,8 @@
 
 import { execFileSync } from "node:child_process"
 
+import { isStarting, retryAfterMs, startingWaitMs } from "@omacode/core/services"
+
 import { egress, EgressRefused, hostOf, remote, summary, type EgressOptions, type EgressSummary } from "./egress.ts"
 import { mapStrings, scrub } from "./redact.ts"
 
@@ -53,6 +55,7 @@ export interface DecisionClientOptions {
   readonly model?: string
   readonly timeoutMs?: number
   readonly retries?: number // on 429/529 only
+  readonly startingWaitMs?: number // how long a 503 "starting" from the container's supervisor is waited out
   readonly maxStateChars?: number
   readonly fetch?: typeof fetch
   // The gate for a destination that is not this machine (src/egress.ts). Without a confirm function every such request
@@ -99,6 +102,7 @@ export class DecisionClient {
   readonly #model: string
   readonly #timeoutMs: number
   readonly #retries: number
+  readonly #startingWaitMs: number
   readonly #maxStateChars: number
   readonly #fetch: typeof fetch
   readonly #egress: EgressOptions
@@ -110,6 +114,7 @@ export class DecisionClient {
     this.#model = options.model ?? "jev-latest"
     this.#timeoutMs = options.timeoutMs ?? 15000
     this.#retries = options.retries ?? 1
+    this.#startingWaitMs = options.startingWaitMs ?? startingWaitMs()
     this.#maxStateChars = options.maxStateChars ?? 2000
     this.#fetch = options.fetch ?? fetch
     this.#egress = options.egress ?? {}
@@ -152,6 +157,13 @@ export class DecisionClient {
         })
       } catch (err) {
         throw new DeciderError(`decision server unreachable: ${err instanceof Error ? err.name : String(err)}`)
+      }
+      // The container's supervisor is starting a decider it stopped after an idle time: wait for it rather than fall
+      // back, within the wait the environment allows (zero on a desktop, where nothing answers "starting").
+      if (isStarting(response) && Date.now() - started + retryAfterMs(response) <= this.#startingWaitMs) {
+        await new Promise((resolve) => setTimeout(resolve, retryAfterMs(response)))
+        attempt--
+        continue
       }
       if ((response.status === 429 || response.status === 529) && attempt < this.#retries) {
         await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** attempt))

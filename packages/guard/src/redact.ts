@@ -15,6 +15,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { looksSecret } from "@omacode/core/secrets"
+import { serviceHeaders } from "@omacode/core/services"
 
 // "path" and "ip" belong to the egress gate (src/egress.ts): a decision payload names the machine it was made on, so
 // the home directory and addresses are numbered there. The vault keeps no entries for them — every request carries
@@ -650,7 +651,7 @@ export async function scanNames(vault: Vault, texts: readonly string[], s: NameS
   if (!fresh.length) return 0
   const res = await fetcher(s.url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...serviceHeaders() },
     body: JSON.stringify({ texts: fresh, labels: Object.keys(s.labels), threshold: s.threshold }),
     signal: AbortSignal.timeout(s.timeoutMs ?? 30_000),
   })

@@ -7,6 +7,7 @@
 import { execFile } from "node:child_process"
 
 import { claim } from "@omacode/core/registry"
+import { serviceUrl } from "@omacode/core/services"
 import { installAgents, SUMMARIZER_AGENT, type AgentDraft } from "./agents.ts"
 import { cloudRegistry, configPath, loadPicks, loadSettings } from "./config.ts"
 import { allowedOutside, decide, forbiddenOutside, forbiddenOutsideWhat, inJobArea, normalizeOutside, PERMISSION_NODE, permissionAsker, taskNamesPath, ALLOW_OUTSIDE_REASON, GRANT_OUTSIDE_REASON, REFUSED_OUTSIDE_REASON, type PermissionRequest } from "./decide.ts"
@@ -988,7 +989,7 @@ const plugin = {
     const say = (args: { sessionID: string; text: string; resume: boolean }) => synthetic({ ...args, text: visible(args.text) })
     // "nameAddress": false opts this project out of the name/address detector only; secrets and paths stay on.
     const names: NameSettings | undefined = vault && settings.redact.names && settings.redact.nameAddress
-      ? { url: (DEFAULT_BACKENDS.urls.gliner ?? "http://127.0.0.1:8781/v1/systemone").replace(/\/v1\/systemone$/, "/v1/entities"), labels: DEFAULT_LABELS, threshold: settings.redact.threshold }
+      ? { url: (DEFAULT_BACKENDS.urls.gliner ?? `${serviceUrl("decider")}/v1/systemone`).replace(/\/v1\/systemone$/, "/v1/entities"), labels: DEFAULT_LABELS, threshold: settings.redact.threshold }
       : undefined
     // The preview of a cloud send (D13, A2-T6): the payload waits for the user's word like a grant does. Only a worker's
     // ask is previewed, because only then is there a session that can put the form without waiting on itself — the

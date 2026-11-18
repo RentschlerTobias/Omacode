@@ -5,6 +5,8 @@
 // Qwen3-Embedding wants an instruction in front of a query and none in front of a stored text; the task differs between
 // finding the same fact (dedupe) and finding what helps a task (recall).
 
+import { embeddingModel, serviceHeaders, serviceUrl } from "@omacode/core/services"
+
 export interface EmbedOptions {
   readonly url: string // the service's base URL
   readonly model: string // recorded with every vector; a different model means re-embedding
@@ -12,7 +14,8 @@ export interface EmbedOptions {
   readonly retryMs: number // after a failure, calls are skipped for this long
 }
 
-export const DEFAULT_EMBED: EmbedOptions = { url: "http://127.0.0.1:8093", model: "qwen3-embedding-4b", timeoutMs: 8000, retryMs: 60_000 }
+// In the container the service and its model come from the environment (@omacode/core/services).
+export const DEFAULT_EMBED: EmbedOptions = { url: serviceUrl("embedding"), model: embeddingModel() ?? "qwen3-embedding-4b", timeoutMs: 8000, retryMs: 60_000 }
 
 export const TASKS = {
   dedupe: "Given a fact about a software project, find stored facts that state the same thing or contradict it",
@@ -61,7 +64,7 @@ export class Embedder {
     try {
       const r = await this.#fetch(`${this.o.url}/v1/embeddings`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...serviceHeaders() },
         body: JSON.stringify({ model: this.o.model, input }),
         signal: AbortSignal.timeout(this.o.timeoutMs),
       })

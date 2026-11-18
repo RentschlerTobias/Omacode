@@ -14,6 +14,8 @@
 
 import { randomUUID } from "node:crypto"
 
+import { serviceToken, serviceUrl } from "@omacode/core/services"
+
 import { RULEBOOK_VERSION } from "./catalog.ts"
 import { EgressRefused, summary, unredactableText, type EgressOptions, type EgressSummary } from "./egress.ts"
 import { cloudApiKey, DecisionClient, type AskContext, type Decision, type Question } from "./decider.ts"
@@ -58,7 +60,8 @@ export const DEFAULT_BACKENDS: BackendConfig = {
   nodes: { G0: "gliner", "G0.injection": "gliner", G: "gliner" },
   urls: {
     cloud: "https://api.typesafe.ai/v1/systemone",
-    gliner: "http://127.0.0.1:8781/v1/systemone",
+    // The container hands its own address in (@omacode/core/services); on a desktop this is the fixed port.
+    gliner: `${serviceUrl("decider")}/v1/systemone`,
     openjev: "http://127.0.0.1:8782/v1/systemone",
   },
 }
@@ -108,9 +111,10 @@ export function makeAskers(
   const out: Partial<Record<BackendName, Asker>> = { rules: new RulesBackend() }
   const cloud = cloudClient(config, key, fetcher, egress)
   if (cloud) out.cloud = cloud
-  // Local servers take any key; their timeout is short so a dead server costs little.
+  // Local servers take any key, except the container's, which wants its token; their timeout is short so a dead server
+  // costs little.
   // GLiNER answers three guards in about 0.4 s on the CPU; 5 s leaves room for a loaded machine.
-  if (config.urls.gliner) out.gliner = new DecisionClient("local", { url: config.urls.gliner, model: "gliner", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })
+  if (config.urls.gliner) out.gliner = new DecisionClient(serviceToken() ?? "local", { url: config.urls.gliner, model: "gliner", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })
   // An Open-Jev server is a Python console script: installed means that program is on PATH, the same test the plugin
   // uses for any local tool it did not place itself (src/which.ts).
   if (config.urls.openjev && installed("openjev")) out.openjev = new DecisionClient("local", { url: config.urls.openjev, model: "openjev", timeoutMs: 5000, fetch: fetcher, ...(egress ? { egress } : {}) })

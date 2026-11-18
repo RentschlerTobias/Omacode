@@ -1,10 +1,11 @@
 import { record } from "@omacode/core/journal"
 import { claim } from "@omacode/core/registry"
+import { serviceUrl } from "@omacode/core/services"
 import { DEFAULT_LABELS, gitAuthor, useVault, Vault, type NameSettings } from "./redact.ts"
 import { defaultDeps, installGuard, type GuardDeps } from "./wire.ts"
 import { loadGuardSettings } from "./config.ts"
 
-const GLINER = "http://127.0.0.1:8781/v1/entities"
+const GLINER = `${serviceUrl("decider")}/v1/entities`
 const SHARED = ((globalThis as { __omacodeGuard?: { vault?: Vault } }).__omacodeGuard ??= {})
 
 function fromConfig(projectDir?: string): Partial<GuardDeps> {

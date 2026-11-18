@@ -13,6 +13,7 @@ import type { NotifyMode } from "./scheduler.ts"
 import { DEFAULT_REDACT, parseRedact, type RedactSettings } from "@omacode/core/redact-config"
 import { stripComments } from "@omacode/core/jsonc"
 import { userConfigPath } from "@omacode/core/paths"
+import { embeddingModel, serviceUrl } from "@omacode/core/services"
 
 export { DEFAULT_REDACT, parseRedact, stripComments, type RedactSettings }
 
@@ -288,7 +289,7 @@ export interface MemorySettings {
   readonly embedding: { readonly url: string; readonly model: string } | false
 }
 
-export const DEFAULT_MEMORY: MemorySettings = { enabled: true, embedding: { url: "http://127.0.0.1:8093", model: "qwen3-embedding-4b" } }
+export const DEFAULT_MEMORY: MemorySettings = { enabled: true, embedding: { url: serviceUrl("embedding"), model: embeddingModel() ?? "qwen3-embedding-4b" } }
 
 export function parseMemory(text: string): MemorySettings {
   const raw = (JSON.parse(stripComments(text)) as { memory?: unknown }).memory

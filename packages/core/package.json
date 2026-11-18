@@ -37,7 +37,8 @@
     "./jsonc": "./src/jsonc.ts",
     "./redact-config": "./src/redact-config.ts",
     "./tools": "./src/tools.ts",
-    "./registry": "./src/registry.ts"
+    "./registry": "./src/registry.ts",
+    "./services": "./src/services.ts"
   },
   "files": [
     "src"
