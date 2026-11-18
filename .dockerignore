@@ -1,0 +1,10 @@
+# The image is built from the checkout (container/Dockerfile); what is listed here never enters it.
+.git
+**/node_modules
+**/.venv
+**/__pycache__
+run_logs
+.jev-micromanager
+.micromanager
+.opencode
+packages/*/LICENSE

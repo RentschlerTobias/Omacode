@@ -1,0 +1,21 @@
+{
+  "about": "What the Omacode image contains or downloads, under which licence, and where the licence text is in the image (docs/roadmap/container-plan.md, P1-T5). container/licenses.sh checks every 'files' entry at build time: each needs at least one match. Debian packages are listed separately in /usr/share/omacode/licenses/debian-packages.tsv, with their copyright files.",
+  "components": [
+    { "name": "Omacode", "spdx": "Apache-2.0", "shipped": true, "source": "https://github.com/RentschlerTobias/Omacode", "files": ["/opt/omacode/LICENSE"] },
+    { "name": "OpenCode", "spdx": "MIT", "shipped": true, "source": "https://github.com/anomalyco/opencode", "files": ["/opt/licenses/opencode/LICENSE"] },
+    { "name": "Node.js", "spdx": "MIT", "shipped": true, "source": "https://nodejs.org", "files": ["/opt/node/LICENSE"] },
+    { "name": "uv", "spdx": "MIT OR Apache-2.0", "shipped": true, "source": "https://github.com/astral-sh/uv", "files": ["/opt/licenses/uv/LICENSE-MIT", "/opt/licenses/uv/LICENSE-APACHE"] },
+    { "name": "llama.cpp", "spdx": "MIT", "shipped": true, "source": "https://github.com/ggml-org/llama.cpp", "files": ["/opt/licenses/llama.cpp/LICENSE"] },
+    { "name": "Python (managed by uv)", "spdx": "PSF-2.0", "shipped": true, "source": "https://github.com/astral-sh/python-build-standalone", "files": ["/opt/python/*/lib/python3.*/LICENSE.txt"] },
+    { "name": "HyperFrames", "spdx": "Apache-2.0", "shipped": true, "source": "https://www.npmjs.com/package/hyperframes", "files": ["/opt/licenses/hyperframes/LICENSE", "/opt/hyperframes-cli/lib/node_modules/hyperframes/LICENSE*"] },
+    { "name": "chrome-headless-shell (Chrome for Testing, amd64 only)", "spdx": "BSD-3-Clause AND LicenseRef-Chromium-third-party", "shipped": true, "optional": true, "source": "https://googlechromelabs.github.io/chrome-for-testing/", "files": ["/opt/hyperframes/chrome/**/LICENSE*", "/opt/hyperframes/chrome/**/ABOUT*"] },
+    { "name": "Manim Community", "spdx": "MIT", "shipped": true, "source": "https://github.com/ManimCommunity/manim", "files": ["/opt/manim/lib/python3.*/site-packages/manim-*.dist-info/LICENSE*", "/opt/manim/lib/python3.*/site-packages/manim-*.dist-info/licenses/*"] },
+    { "name": "PyTorch (CPU)", "spdx": "BSD-3-Clause", "shipped": true, "source": "https://pytorch.org", "files": ["/opt/omacode/decider/.venv/lib/python3.*/site-packages/torch-*.dist-info/LICENSE*", "/opt/omacode/decider/.venv/lib/python3.*/site-packages/torch-*.dist-info/licenses/*"] },
+    { "name": "GLiNER2", "spdx": "Apache-2.0", "shipped": true, "source": "https://github.com/fastino-ai/GLiNER2", "files": ["/opt/omacode/decider/.venv/lib/python3.*/site-packages/gliner2-*.dist-info/LICENSE*", "/opt/omacode/decider/.venv/lib/python3.*/site-packages/gliner2-*.dist-info/licenses/*"] },
+    { "name": "sandbox-runtime", "spdx": "Apache-2.0", "shipped": true, "source": "https://www.npmjs.com/package/@anthropic-ai/sandbox-runtime", "files": ["/opt/omacode/node_modules/@anthropic-ai/sandbox-runtime/LICENSE*"] },
+    { "name": "Playwright (core)", "spdx": "Apache-2.0", "shipped": true, "source": "https://github.com/microsoft/playwright", "files": ["/opt/omacode/node_modules/playwright-core/LICENSE", "/opt/omacode/node_modules/playwright-core/NOTICE"] },
+    { "name": "Debian packages (Chromium, ffmpeg, TeX Live, git, bubblewrap, …)", "spdx": "various", "shipped": true, "source": "https://snapshot.debian.org", "files": ["/usr/share/omacode/licenses/debian-packages.tsv"] },
+    { "name": "GLiNER2.5-multi-Decide (decider model)", "spdx": "Apache-2.0", "shipped": false, "source": "https://huggingface.co/fastino/GLiNER2.5-multi-Decide", "files": [] },
+    { "name": "Qwen3-Embedding-0.6B GGUF (embedding model; 4B/8B are downloaded on request)", "spdx": "Apache-2.0", "shipped": true, "source": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF", "files": ["/opt/licenses/qwen3-embedding/LICENSE"] }
+  ]
+}

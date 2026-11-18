@@ -1,0 +1,118 @@
+# The Omacode image (docs/roadmap/container-plan.md, P1-T4 and P1-T7).
+#
+# - pull requests: build on amd64 and run the smoke test; nothing is pushed;
+# - main and tags: build natively on amd64 and arm64 runners (no emulation: PyTorch and llama.cpp under QEMU take
+#   hours), smoke-test each, push both and join them under one tag; check the compressed size against K9 (4 GB);
+# - tags (v*): also attach the licence lists and the GPL/LGPL source archive to the GitHub release.
+#
+# Podman, not Docker, builds and runs it here: the smoke test needs bubblewrap inside the container, which rootless
+# Podman allows with `unmask=/proc/*` and Docker's default profile does not (P0-T1). Ubuntu 24.04 restricts
+# unprivileged user namespaces through AppArmor, so the runners lift that restriction before the smoke test.
+name: image
+
+on:
+  pull_request:
+    paths: ["container/**", "packages/**", "decider/**", "package.json", "package-lock.json", ".github/workflows/image.yml"]
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/omacode
+  SIZE_BUDGET_BYTES: "4294967296"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name != 'pull_request' || matrix.arch == 'amd64'
+
+      - name: Allow user namespaces for bubblewrap
+        if: github.event_name != 'pull_request' || matrix.arch == 'amd64'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build
+        if: github.event_name != 'pull_request' || matrix.arch == 'amd64'
+        run: podman build --platform "linux/${{ matrix.arch }}" -f container/Dockerfile -t "omacode:${{ matrix.arch }}" .
+
+      - name: Smoke test
+        if: github.event_name != 'pull_request' || matrix.arch == 'amd64'
+        run: podman run --rm --userns=keep-id --security-opt 'unmask=/proc/*' "omacode:${{ matrix.arch }}" smoke
+
+      - name: Push this architecture
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          podman push "omacode:${{ matrix.arch }}" "${IMAGE}:sha-${GITHUB_SHA::12}-${{ matrix.arch }}"
+
+      - name: Compressed size within budget
+        if: github.event_name != 'pull_request'
+        run: |
+          size="$(skopeo inspect --raw "docker://${IMAGE}:sha-${GITHUB_SHA::12}-${{ matrix.arch }}" | jq '[.layers[].size] | add')"
+          echo "compressed: $((size / 1048576)) MB (budget $((SIZE_BUDGET_BYTES / 1048576)) MB)"
+          test "$size" -le "$SIZE_BUDGET_BYTES"
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Join both architectures under one tag
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+          sha="sha-${GITHUB_SHA::12}"
+          tags="$sha"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then tags="$tags ${GITHUB_REF_NAME#v} latest"; else tags="$tags main"; fi
+          for tag in $tags; do
+            podman manifest create "omacode-$tag"
+            for arch in amd64 arm64; do podman manifest add "omacode-$tag" "docker://${IMAGE}:${sha}-${arch}"; done
+            podman manifest push --all "omacode-$tag" "docker://${IMAGE}:${tag}"
+          done
+
+  sources:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Licence lists from the image
+        run: |
+          image="${IMAGE}:${GITHUB_REF_NAME#v}"
+          mkdir -p out
+          for f in third-party.json debian-packages.tsv gpl-sources.txt; do
+            podman run --rm --entrypoint cat "$image" "/usr/share/omacode/licenses/$f" >"out/$f"
+          done
+      - name: Corresponding source of the GPL/LGPL packages (P1-T7)
+        run: |
+          # Exactly the versions in the image. The tag's image was built minutes before, so Debian's archive still has them;
+          # a version it no longer has is listed with its snapshot.debian.org address instead.
+          podman run --rm -v "$PWD/out:/out" docker.io/library/debian:trixie-slim bash -euc '
+            sed -i "s/^Types: deb\$/Types: deb deb-src/" /etc/apt/sources.list.d/debian.sources
+            apt-get update -qq && apt-get install -y -qq --no-install-recommends dpkg-dev ca-certificates >/dev/null
+            mkdir -p /src && cd /src
+            while IFS="=" read -r pkg ver; do
+              echo "$pkg $ver" >>/out/source-index.txt
+              apt-get source --download-only "${pkg}=${ver}" >/dev/null 2>&1 || echo "$pkg=$ver: see https://snapshot.debian.org/package/$pkg/$ver/" >>/out/source-missing.txt
+            done </out/gpl-sources.txt
+            tar -cf - . | split -b 1900m -d - /out/gpl-sources.tar.part-
+          '
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber out/*

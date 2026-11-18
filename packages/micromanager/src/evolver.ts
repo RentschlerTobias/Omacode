@@ -319,11 +319,17 @@ export interface Running {
 
 // The sidecar on a spec: `uv run --project evolver mm-evolve spec.json`, stdin closed (a child that reads stdin waits
 // for an end that never comes). onProgress is called whenever evals.jsonl grew. stop() ends the process group.
+// In the container image the evolver's environment is built with the image and read-only (OMACODE_EVOLVER_PREBUILT),
+// so `uv run` must not try to sync it.
+export function evolverRunArgs(dir: string, specPath: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  return ["run", "--quiet", ...(env.OMACODE_EVOLVER_PREBUILT ? ["--no-sync"] : []), "--project", dir, "mm-evolve", specPath]
+}
+
 export function runEvolver(spec: EvolveSpec, onProgress: (p: Progress) => void, opts: { uv?: string; dir?: string; pollMs?: number } = {}): Running {
   mkdirSync(spec.output, { recursive: true })
   const specPath = join(spec.output, "spec.json")
   writeFileSync(specPath, JSON.stringify(spec, null, 2))
-  const child: ChildProcess = spawn(opts.uv ?? "uv", ["run", "--quiet", "--project", opts.dir ?? evolverDir(), "mm-evolve", specPath], { stdio: ["ignore", "pipe", "pipe"], detached: true })
+  const child: ChildProcess = spawn(opts.uv ?? "uv", evolverRunArgs(opts.dir ?? evolverDir(), specPath), { stdio: ["ignore", "pipe", "pipe"], detached: true })
   let tail = ""
   child.stdout?.on("data", (d: Buffer) => (tail = (tail + d.toString("utf8")).slice(-20_000)))
   child.stderr?.on("data", (d: Buffer) => (tail = (tail + d.toString("utf8")).slice(-20_000)))

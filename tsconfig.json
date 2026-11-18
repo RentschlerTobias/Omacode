@@ -11,6 +11,6 @@
     "types": ["node"],
     "skipLibCheck": true
   },
-  "include": ["packages", "test"],
+  "include": ["packages", "test", "container"],
   "exclude": ["src/tui.tsx", "packages/tui/src/tui.tsx"]
 }

@@ -1,0 +1,53 @@
+#!/bin/bash
+# The image's entrypoint (docs/roadmap/container-plan.md, P1-T2). It prepares one container session and hands over:
+#
+#   1. the run directory (per instance, never in the container home): the token, the supervisor's files, its logs;
+#   2. the plugin in the container home: the same link and TUI entry install.sh makes on a desktop;
+#   3. the supervisor for the decider and the embedding service, on random loopback ports behind that token;
+#   4. OpenCode in /work, or a shell (`shell`), or the smoke test (`smoke`).
+#
+# Nothing here asks a question; the launcher (P2) does the first-run conversation before it starts the container.
+set -euo pipefail
+
+export HOME="${HOME:-/home/omacode}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+RUN="${OMACODE_RUN_DIR:-${TMPDIR:-/tmp}/omacode-run}"
+mkdir -p "$RUN" && chmod 700 "$RUN"
+export OMACODE_RUN_DIR="$RUN"
+
+if [[ ! -s "$RUN/token" ]]; then
+  (umask 077 && head -c 32 /dev/urandom | base64 | tr -d '/+=\n' >"$RUN/token")
+fi
+OMACODE_SERVICE_TOKEN="$(cat "$RUN/token")"
+export OMACODE_SERVICE_TOKEN
+export OMACODE_EMBEDDING_SIZE="${OMACODE_EMBEDDING_SIZE:-0.6b}"
+export OMACODE_EMBEDDING_MODEL="qwen3-embedding-${OMACODE_EMBEDDING_SIZE,,}"
+
+# The plugin and its TUI, linked into the container home. install.sh keeps everything else in cli.json and refuses to
+# replace a plugin file it did not make, which is the user's to sort out, so its complaint is shown but not fatal.
+/opt/omacode/install.sh >"$RUN/install.log" 2>&1 || sed 's/^/omacode: /' "$RUN/install.log" >&2
+
+# The supervisor writes services.json as soon as its fronts listen; the model loads after that.
+rm -f "$RUN/services.json"
+node /opt/omacode/container/supervisor.ts >>"$RUN/supervisor.log" 2>&1 &
+for _ in $(seq 1 100); do
+  [[ -s "$RUN/services.json" ]] && break
+  sleep 0.1
+done
+if [[ -s "$RUN/services.json" ]]; then
+  OMACODE_DECIDER_URL="$(node -p 'require(process.argv[1]).decider' "$RUN/services.json")"
+  OMACODE_EMBEDDING_URL="$(node -p 'require(process.argv[1]).embedding' "$RUN/services.json")"
+  export OMACODE_DECIDER_URL OMACODE_EMBEDDING_URL
+else
+  echo "omacode: the service supervisor did not start; decisions fall back to rules and memory search to keywords" >&2
+  echo "omacode: see $RUN/supervisor.log" >&2
+fi
+
+[[ -d /work ]] && cd /work
+
+case "${1:-}" in
+  shell) shift; exec bash "$@" ;;
+  smoke) shift; exec /opt/omacode/container/smoke.sh "$@" ;;
+  *) exec opencode "$@" ;;
+esac
