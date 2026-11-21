@@ -4,11 +4,18 @@
 //               npm run bench-guards -- [--cases bench/guard_cases.json] [--url http://127.0.0.1:8781/v1/systemone] [--repeat]
 //               npm run bench-n7 -- [--cases bench/followup_cases.json]
 //               node src/cli.ts status [--project dir] [--all] [--watch]   (an ASCII board of the newest job, or of all)
+//               node src/cli.ts memory-adopt [--project dir] [--yes] [slug…]   (take memory kept under old keys, from
+//                                                                before renames or moves, into the project)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
 import { writeFileSync } from "node:fs"
+import { resolve } from "node:path"
+import { createInterface } from "node:readline/promises"
+
+import { adopt, adoptCandidates } from "@omacode/context/adopt"
+import { MemoryStore } from "@omacode/context/store"
 
 import { DEFAULT_BACKENDS, Decider, cloudKey, makeAskers } from "./backends.ts"
 import { benchPath, buildReport, drift, formatBench, formatDrift, formatN7, formatSweep, guardMetrics, loadCases, loadGuardCorpus, loadN7, loadPermissionCorpus, scoreCases, scoreN7, scorePermissions, sweep, writeBench, type Case, type PermissionSeen } from "./bench.ts"
@@ -59,6 +66,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       await box.stop()
     }
   }
+  if (command === "memory-adopt") return await memoryAdopt(args)
   if (command === "status") {
     const project = flag(args, "project") ?? process.cwd()
     const draw = () => {
@@ -155,3 +163,50 @@ export async function main(argv: readonly string[]): Promise<number> {
 }
 
 if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+
+// memory-adopt: without slugs it proposes the keys that look like this project's (its folder name, its jobs'
+// worktrees) and asks before moving them; with slugs it moves exactly those, which is how a key under another name is
+// taken in. --yes skips the question, for a script; without a terminal and without --yes nothing is moved.
+async function memoryAdopt(args: readonly string[]): Promise<number> {
+  // npm run starts in the repository; INIT_CWD is the directory it was called from.
+  const project = resolve(flag(args, "project") ?? process.env.INIT_CWD ?? process.cwd())
+  const yes = args.includes("--yes")
+  const skip = new Set(["--project", flag(args, "project")])
+  const named = args.filter((a) => !a.startsWith("--") && !skip.has(a))
+  const store = new MemoryStore()
+  const { id, candidates } = adoptCandidates(store, project)
+  const known = new Map(store.projects().map((p) => [p.project, p]))
+  const unknown = named.filter((slug) => !known.has(slug))
+  if (unknown.length > 0) {
+    console.error(`no memory is kept under ${unknown.join(", ")}; memory-adopt without slugs lists what there is`)
+    return 1
+  }
+  const slugs = named.length > 0 ? named.filter((slug) => slug !== id) : candidates.map((c) => c.slug)
+  console.log(`project ${project}\nits memory key: ${id} (${known.get(id)?.entries ?? 0} entries)\n`)
+  if (slugs.length === 0) {
+    console.log(named.length > 0 ? "nothing to adopt" : "no old keys look like this project's. Name one to take it in: memory-adopt <slug>")
+    return 0
+  }
+  for (const slug of slugs) {
+    const c = candidates.find((x) => x.slug === slug)
+    const p = known.get(slug)!
+    console.log(`  ${slug}  ${p.entries} entries, last ${p.updated.slice(0, 10)}${c ? `  (${c.why})` : ""}`)
+    for (const line of c?.sample ?? []) console.log(`      · ${line}`)
+  }
+  if (!yes) {
+    if (!process.stdin.isTTY) {
+      console.log("\nnothing moved: run it in a terminal to be asked, or pass --yes")
+      return 0
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const answer = (await rl.question(`\nmove these ${slugs.length} keys into ${id}? [y/N] `)).trim().toLowerCase()
+    rl.close()
+    if (answer !== "y" && answer !== "yes" && answer !== "j" && answer !== "ja") {
+      console.log("nothing moved")
+      return 0
+    }
+  }
+  const { moved } = adopt(store, project, slugs)
+  console.log(`moved ${moved} entries into ${id}`)
+  return 0
+}

@@ -16,7 +16,8 @@
     "export-dataset": "node packages/micromanager/src/cli.ts export-dataset",
     "bench": "node packages/micromanager/src/cli.ts bench",
     "bench-guards": "node packages/micromanager/src/cli.ts bench-guards",
-    "bench-n7": "node packages/micromanager/src/cli.ts bench-n7"
+    "bench-n7": "node packages/micromanager/src/cli.ts bench-n7",
+    "memory-adopt": "node packages/micromanager/src/cli.ts memory-adopt"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

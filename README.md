@@ -491,6 +491,12 @@ session's system prompt, within a budget, and change there only at the session's
   `micromanager-embedding.service` on port 8093). Without the service the memory searches by keywords and fills in
   the vectors later. `"memory": false` in `micromanager.jsonc` turns it off, `"memory": { "embedding": false }` keeps
   keywords only, and a different size needs `"memory": { "embedding": { "model": "qwen3-embedding-8b" } }`.
+- A project's entries are keyed by its id in `<state dir>/project.json`, which moves with the folder, so a renamed,
+  moved or copied project keeps its memory; a session in one of its worktrees uses the project's memory. Memory kept
+  under old keys (before 2026-11-21 every rename started an empty one): in the plugin's checkout,
+  `npm run memory-adopt -- --project <dir>` lists the keys that look like the project's own (same folder name,
+  worktrees of its jobs) and asks before moving them; naming slugs after it takes in exactly those keys, `--yes` skips
+  the question.
 - The old per-project block `.opencode/memory/jev-project.md` moves into the memory once. The journal records
   `memory.write` and `recall` (what was found, what was picked).
 

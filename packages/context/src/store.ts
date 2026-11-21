@@ -183,6 +183,29 @@ export class MemoryStore {
     return entry
   }
 
+  // The projects entries are kept for, with how many and the newest change: what memory-adopt chooses from.
+  projects(): { project: string; entries: number; updated: string }[] {
+    return this.#db.prepare("select project, count(*) as entries, max(updated) as updated from entries where scope = 'project' and project is not null group by project order by project").all() as { project: string; entries: number; updated: string }[]
+  }
+
+  // Moves every project entry kept under one of `from` to project `to`, in one commit. The entries keep their dates:
+  // they were not changed, only found again. Returns how many moved.
+  reassign(from: readonly string[], to: string): number {
+    const sources = new Set(from.filter((slug) => slug !== to))
+    if (sources.size === 0) return 0
+    const ids = (this.#db.prepare("select id, project from entries where scope = 'project'").all() as { id: string; project: string | null }[])
+      .filter((r) => r.project !== null && sources.has(r.project)).map((r) => r.id)
+    for (const id of ids) {
+      const old = this.get(id)
+      if (old) this.#write({ ...old, project: to })
+    }
+    if (ids.length > 0) {
+      this.#fitCore("project", to)
+      this.#commit(`adopt ${ids.length} entries into ${to} from ${[...sources].join(", ")}`)
+    }
+    return ids.length
+  }
+
   remove(id: string, message = "remove"): boolean {
     const file = join(this.root, "entries", `${id}.md`)
     if (!existsSync(file)) return false
