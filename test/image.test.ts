@@ -1731,7 +1731,8 @@ test("no dependency was added for HTTP, WebSocket, multipart or PNG", () => {
   const pkg = JSON.parse(readFileSync(new URL("../packages/artifact/package.json", import.meta.url), "utf8")) as {
     dependencies?: Record<string, string>
   }
-  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["@omacode/core", "@omacode/sandbox"])
+  // axe-core and playwright-core are the site adapter's browser checks (B4), nothing for HTTP, WebSocket, multipart or PNG.
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["@omacode/core", "@omacode/sandbox", "axe-core", "playwright-core"])
 
   const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
     dependencies?: Record<string, string>

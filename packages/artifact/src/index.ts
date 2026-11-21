@@ -25,3 +25,4 @@ export type { HostRunCheck, HostRunReady, HostRunRefused, HostRunnerOptions } fr
 export * from "./adapters/deck.ts"
 export * from "./adapters/video.ts"
 export * from "./adapters/image.ts"
+export * from "./adapters/web.ts"

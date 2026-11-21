@@ -1473,10 +1473,11 @@ test("the quality gate ships a deck whose only skip is the vision review", () =>
 
 test("the package builds one adapter per kind and names no artifact daemon or deferred PPTX path (D24)", () => {
   const built = readdirSync(new URL("../packages/artifact/src/adapters/", import.meta.url)).sort()
-  // D24: B3 ships the HTML deck only, B2 adds the HyperFrames video adapter and B5 adds the image adapter; a file here
+  // D24: B3 ships the HTML deck only, B2 adds the HyperFrames video adapter, B5 the image adapter and B4 the site adapter
+  // (web.ts with its project, checks and browser probe); a file here
   // outside those producers and their own modules is a third artifact producer that was built without a task, which is
   // the thing the acceptance says did not happen — not that a kind must live in exactly one file.
-  const allowed = new Set(["deck.ts", "deck-checks.ts", "deck-project.ts", "deck-run.ts", "hyperframes.ts", "video.ts", "image.ts"])
+  const allowed = new Set(["deck.ts", "deck-checks.ts", "deck-project.ts", "deck-run.ts", "hyperframes.ts", "video.ts", "image.ts", "web.ts", "web-checks.ts", "web-project.ts", "web-probe.mjs"])
   assert.deepEqual(built.filter((name) => !allowed.has(name)), [])
 
   const source = new URL("../packages/artifact/src/", import.meta.url)

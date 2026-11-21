@@ -1076,18 +1076,29 @@ no narration.
 
 **Tasks**
 
-- [ ] **B4-T1 — Site spec.** `site.json`: pages, routes, brand, assets, checks.
-- [ ] **B4-T2 — One build contract.** Static first; Next/Astro are later adapters, not three code paths.
-- [ ] **B4-T3 — Checks.** Build, typecheck, lint, unit, Playwright at 3 viewports, axe, Lighthouse, links, console,
+- [x] **B4-T1 — Site spec.** `site.json`: pages, routes, brand, assets, checks.
+- [x] **B4-T2 — One build contract.** Static first; Next/Astro are later adapters, not three code paths.
+- [x] **B4-T3 — Checks.** Build, typecheck, lint, unit, Playwright at 3 viewports, axe, Lighthouse, links, console,
   bundle size.
 - [ ] **B4-T4 — Visual QA.** Screenshots; VLM rubric; visual diff.
-- [ ] **B4-T5 — Tests.** Fixture site; checks; screenshots.
+- [x] **B4-T5 — Tests.** Fixture site; checks; screenshots.
 
 **Files:** `packages/artifact/src/adapters/web.ts`, `skills/web/`, `test/web.test.ts`.
 
 **Checks:** `npm run typecheck`, `npm test`; demo site; Lighthouse/axe.
 
 **Acceptance:** a site job builds, checks and previews locally. Publishing is out of scope (D3).
+
+*Done 2026-11-21 (T1–T3, T5; T4 in part):* `SiteSpec` version 2 with `root`, `build {script, out}`, `budget.kb`, `brand`.
+`adapters/web.ts` builds with `npm run <script>` and checks with a browser probe (`web-probe.mjs`, copied into the job
+and run with `node` by the host runner, under bubblewrap without network): pages, links, build, load, console,
+requests, overflow at 390/768/1280 px, axe (serious/critical fail), page weight, screenshots, blank screenshots.
+Lighthouse stays out (the user's decision, 2026-11-21); axe-core 4.14.0 (MPL-2.0) is a dependency of
+`@omacode/artifact`. Not done from T4: the VLM rubric and the visual diff between rounds. Found on the way: Chromium's
+singleton socket under a long job path exceeds the 107-byte limit, so the probe gives it a short TMPDIR in /dev/shm.
+Open: if the plugin's node_modules lie in a directory the runner hides (DENY_READ names `~/.config/opencode`), the
+probe cannot load Playwright and every browser check fails with that message; where `opencode plugin add` installs
+is to be checked in A6.
 
 ---
 

@@ -120,7 +120,7 @@ const video = {
 
 const site = {
   kind: "site",
-  version: 1,
+  version: 2,
   job: "job-1",
   brief: "a site about the release",
   pages: [
@@ -195,7 +195,7 @@ test("a spec missing its list fails at the list, not somewhere further in", () =
 })
 
 test("each kind carries its own version, and the wrong one is refused by kind and number", () => {
-  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 2, site: 1, images: 2 })
+  assert.deepEqual({ ...SPEC_VERSIONS }, { deck: 2, video: 2, site: 2, images: 2 })
   for (const kind of ARTIFACT_KINDS) assert.equal(specVersionOf(kind), SPEC_VERSIONS[kind])
 
   const stale = parseSpec("deck", { ...deck, version: 1 })

@@ -28,7 +28,7 @@ export type ArtifactKind = (typeof ARTIFACT_KINDS)[number]
 export const SPEC_VERSIONS = {
   deck: 2,
   video: 2,
-  site: 1,
+  site: 2,
   images: 2,
 } as const satisfies Record<ArtifactKind, number>
 
@@ -48,7 +48,7 @@ export interface AssetRef {
 // What every spec carries, whatever it describes. The kind and version are what make a spec self-describing: a file
 // found later, without the process that wrote it, can still be checked against this file. The version is the kind's own,
 // so a deck says 2, a video says 2 since B2-T2 added the engine, the audio bed, the output target and per-scene
-// acceptance, a site says 1, and an image set says 2 since B5-T1 added the checkpoints it is made with.
+// acceptance, a site says 2 since B4-T1 added its root, build, budget and brand, and an image set says 2 since B5-T1 added the checkpoints it is made with.
 interface SpecBase<K extends ArtifactKind> {
   readonly kind: K
   readonly version: SpecVersion<K>
@@ -125,8 +125,22 @@ export interface Page {
   readonly sections?: readonly string[]
 }
 
+// A site is version 2 since B4-T1. One build contract for every way a site is made (B4-T2): a static site is its files,
+// under `root` (the job directory without one); a built one names the npm script that builds it and the directory the
+// build writes, and that directory is what is served and checked. A page's `path` is relative to what is served, so
+// the same page list fits both. `budget` caps a page's weight, everything it loads counted; `brand` is what a reviewer
+// holds the pages against, not something a check can prove.
+export interface SiteBuild {
+  readonly script: string
+  readonly out: string
+}
+
 export interface SiteSpec extends SpecBase<"site"> {
   readonly pages: readonly Page[]
+  readonly root?: string
+  readonly build?: SiteBuild
+  readonly budget?: { readonly kb: number }
+  readonly brand?: { readonly colors?: readonly string[]; readonly fonts?: readonly string[] }
 }
 
 // The checkpoint an image set (or one slot of it) is made with. `name` is what a person reads in provenance and in an
@@ -471,6 +485,12 @@ const VIDEO_FORMATS = ["mp4", "webm"] as const
 const VIDEO_QUALITIES = ["low", "medium", "high"] as const
 const VIDEO_ENGINES = ["hyperframes"] as const
 const PAGE_KEYS = ["path", "title", "sections"] as const
+const SITE_BUILD_KEYS = ["script", "out"] as const
+const SITE_BUDGET_KEYS = ["kb"] as const
+const SITE_BRAND_KEYS = ["colors", "fonts"] as const
+// An npm script's name as `npm run` takes it: no space, no shell character, so it cannot carry a second command.
+const SCRIPT_NAME = /^[a-z0-9][a-z0-9:._-]*$/i
+const COLOR = /^#[0-9a-f]{3}([0-9a-f]{3})?$/i
 const SLOT_KEYS = ["id", "prompt", "size", "seed", "negative", "refs", "model"] as const
 const MODEL_KEYS = ["name", "file", "sha256"] as const
 const THEME_KEYS = ["name"] as const
@@ -671,6 +691,28 @@ function page(value: unknown, path: string, errors: Errors): void {
 
 function site(obj: Record<string, unknown>, errors: Errors): void {
   list(obj, "pages", "", errors, page)
+  pathField(obj, "root", "", errors, false)
+  optObjField(obj, "build", "", errors, SITE_BUILD_KEYS, (build, p) => {
+    str(build, "script", p, errors, true)
+    const script = build["script"]
+    if (typeof script === "string" && script && !SCRIPT_NAME.test(script)) {
+      errors.push(`${child(p, "script")}: expected an npm script name (letters, digits, ":", ".", "_", "-"), got ${shown(script)}`)
+    }
+    pathField(build, "out", p, errors, true)
+  })
+  optObjField(obj, "budget", "", errors, SITE_BUDGET_KEYS, (budget, p) => {
+    num(budget, "kb", p, errors, "a positive number of kilobytes", (n) => n > 0)
+  })
+  optObjField(obj, "brand", "", errors, SITE_BRAND_KEYS, (brand, p) => {
+    texts(brand, "colors", p, errors)
+    const colors = brand["colors"]
+    if (Array.isArray(colors)) {
+      colors.forEach((c, i) => {
+        if (typeof c === "string" && !COLOR.test(c)) errors.push(`${at(child(p, "colors"), i)}: expected a hex colour like #1a2b3c, got ${shown(c)}`)
+      })
+    }
+    texts(brand, "fonts", p, errors)
+  })
 }
 
 function slot(value: unknown, path: string, errors: Errors): void {
@@ -697,7 +739,7 @@ function images(obj: Record<string, unknown>, errors: Errors): void {
 const KIND_KEYS: Record<ArtifactKind, readonly string[]> = {
   deck: [...BASE_KEYS, "slides", "branches", "theme"],
   video: [...BASE_KEYS, "engine", "fps", "size", "scenes", "audio", "output"],
-  site: [...BASE_KEYS, "pages"],
+  site: [...BASE_KEYS, "pages", "root", "build", "budget", "brand"],
   images: [...BASE_KEYS, "model", "slots"],
 }
 

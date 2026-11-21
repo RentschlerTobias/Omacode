@@ -52,7 +52,11 @@
     "./adapters/deck-checks": "./src/adapters/deck-checks.ts",
     "./adapters/hyperframes": "./src/adapters/hyperframes.ts",
     "./adapters/video": "./src/adapters/video.ts",
-    "./adapters/image": "./src/adapters/image.ts"
+    "./adapters/image": "./src/adapters/image.ts",
+    "./chromium": "./src/chromium.ts",
+    "./adapters/web": "./src/adapters/web.ts",
+    "./adapters/web-project": "./src/adapters/web-project.ts",
+    "./adapters/web-checks": "./src/adapters/web-checks.ts"
   },
   "files": [
     "src"
@@ -62,6 +66,8 @@
   },
   "dependencies": {
     "@omacode/core": "0.1.1",
-    "@omacode/sandbox": "0.1.1"
+    "@omacode/sandbox": "0.1.1",
+    "axe-core": "4.14.0",
+    "playwright-core": "^1.64.1"
   }
 }
