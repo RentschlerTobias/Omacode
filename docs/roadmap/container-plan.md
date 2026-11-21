@@ -1,5 +1,12 @@
 # Omacode in a container — plan
 
+> **Status (2026-11-21): on hold, to move out.** The plugin is finished first (roadmap §4, "The 1.0 cut"). The
+> sandbox for agents becomes a project of its own after 1.0, starting smaller than this plan: rootless Podman only,
+> one image with the agent CLIs (OpenCode with Omacode, Claude Code, pi), no services inside the image (decider and
+> embedding stay host services, reached with the token), and a launcher that mounts only the project. Apptainer,
+> macOS and shared machines wait for a real user. What stays here until then: P3-T3 and P6 (both in 1.0), and the
+> P0 findings as the starting point.
+
 **Goal:** friends and colleagues install Omacode with one script, run it in a container that sees only the directories
 they hand it, keep their own keys and changes in a home directory of their own, and get coding, websites and videos
 (HyperFrames + Manim) without installing anything else. Linux (Apptainer or rootless Podman) and macOS (Podman).
@@ -349,19 +356,48 @@ fine-tuning, so both need fine-tuning anyway.
   - **Consequence for P6-T3:** fine-tune GLiNER2 with `jhu-clsp/mmBERT-base` (or `mmBERT-small` for the CPU) on our
     data, so the server code stays; plain mmBERT heads remain the fallback if GLiNER2's custom heads do not export to
     ONNX (P6-T5). Whether GLiNER2 then really runs SDPA is the first thing P6-T4 measures.
-- [ ] **P6-T1a** **Entities: `VAGOsolutions/SauerkrautLM-GLiNER`** (the user's choice, 2026-11-18). First as it is: the
-  decider's `--entity-model` path learns the `gliner` library's API (`predict_entities`) beside `gliner2`'s, and the
-  entity cases (the German invoice line the GLiNER2 checkpoint found no name in, 2026-10-27) plus peak memory and
-  latency on long inputs are measured against GLiNER2.5, including whether `gliner` really runs mmBERT with SDPA.
-  Fine-tuning comes later (P6-T3a); MIT allows it and allows shipping the tuned weights with the MIT notice.
+- [x] **P6-T1a** Candidates for decisions as well as entities, searched and measured 2026-11-18. SauerkrautLM-GLiNER
+  (span NER only, no classification) is dropped. **`hivetrace/gliner-guard-uniencoder`** is the base: GLiNER2 on
+  `jhu-clsp/mmBERT-small` (147M), Apache-2.0 (an ONNX export under MIT exists), trained on English and Russian for
+  safety, 15 attack labels (`prompt_injection`, `instruction_override`, …), 30 harm labels, 32 PII labels, intent and
+  tone, in one forward pass, through the same `gliner2` API the decider uses. It needs transformers 5 (its tokenizer
+  config names `TokenizersBackend`); the decider's lock has 4.57. Measured against GLiNER2.5-multi-Decide on the CPU
+  (test env with transformers 5.23, 4 threads, 8 GB cap per process):
+
+  | | GLiNER2.5-multi-Decide | gliner-guard-uniencoder |
+  |---|---|---|
+  | one decision, 2,000 / 8,000 chars | 1.1 s / 8.6 s | 0.2 s / 1.0 s |
+  | peak memory, 2,000 / 8,000 chars | 2.9 / 4.1 GB | 2.6 / 2.6 GB |
+  | 16,000 / 32,000 chars | killed above 8 GB | 2.9 s / 8.4 s, 2.6 GB |
+  | `bench-guards` with our yes/no questions, floor 0.5 | injection 50 % hit / 29 % false, harmful 33 % / 31 % | says yes to everything: our generic questions are not its labels |
+  | its own labels, English (`bench/guard_cases.json`) | — | injection cleanly separated (attacks ≥ 0.90, rest ≤ 0.77); harmful 3/3, one false alarm (adult fiction, as `sexual_content`) |
+  | its own labels, German translations | — | weaker: a hidden HTML-comment injection 0.32, the poison question 0.31 |
+  | "sensitive" as a zero-shot custom label | — | unusable (everything ≈ 1.0) |
+  | entities in a German invoice line | "Anna Weber" at 0.41, nothing else | name, address, e-mail and phone at 0.92–1.0; no false span in a technical line |
+
+  So the memory problem is gone and entities and English guards are better untuned; German guards, "sensitive" and
+  the non-guard nodes (N5, N13) need fine-tuning.
+
+  **Is it cut off?** (the user's question, checked the same day) No hard cut: neither the model config nor `gliner2`
+  truncates (`max_len` is `None`), time grows with length (0.08 s at 700 chars, 8.8 s at 32,000) and the end of the
+  text changes the result at every length. But a short signal is **diluted**: a 618-character injection at the end
+  raises the logit by +6.1 at 700 chars, +1.3 at 2,000, +0.3 at 8,000 and not at all from 16,000. A classification
+  pools the whole text into one judgement, so one attack disappears in a long harmless text. The flat memory is real
+  (SDPA builds no n×n matrix; mmBERT-small's activations are small next to the loaded libraries).
+- [ ] **P6-T1b** Classify in windows: the decider splits a long state into windows (about 1,500 chars, overlapping) and
+  takes the **highest** score per guard, since one window with an injection makes the text an injection; choice and
+  score nodes read the head window as today. This replaces the head clamp of 44c5bf6, which today leaves everything
+  past the first 2,000 characters unchecked. Cost with gliner-guard: about 0.2 s per window, linear in length, flat
+  memory. Test: an injection only at the end of a 30,000-character text is found.
 - [ ] **P6-T2** The training set from `export-dataset`, labelled by the cloud decider (D19, the label factory), split
   into decisions (guards, N5 profile, N13) and entities (names, addresses), with a held-out set.
-- [ ] **P6-T3** Fine-tune GLiNER2 on `jhu-clsp/mmBERT-base` (or `mmBERT-small`) for the decisions: guards, N5 profile,
-  N13. Entities are SauerkrautLM-GLiNER's (P6-T1a).
-- [ ] **P6-T3a** Fine-tune SauerkrautLM-GLiNER on our text kinds (logs, invoice lines, commit messages, configs) with
-  **synthetic** names and addresses only, never ones from real sessions, since the weights may ship in the public
-  image. Few epochs, a small learning rate and mixed-in general data against forgetting; a held-out set and the
-  multilingual benchmark before and after.
+- [ ] **P6-T3** Fine-tune **gliner-guard-uniencoder** (not a bare mmBERT) on our labels: the three guards mapped onto its
+  attack and harm labels plus German examples, "sensitive" as a task of its own, and the N5 profile and N13 decisions.
+  The decider maps each guard onto the model's own labels instead of a generic yes/no question; the decider's lock
+  moves to transformers 5.
+- [ ] **P6-T3a** Entity fine-tuning only where P6-T4 finds gaps (the second German address was missed), with
+  **synthetic** names and addresses only, since the weights may ship in the public image. Few epochs, a small
+  learning rate, mixed-in general data against forgetting; a held-out set before and after.
 - [ ] **P6-T4** Compare with GLiNER on `bench-guards` and the entity cases: quality per guard, peak memory and latency
   on long inputs, on the CPU. The swap happens only if quality is at least as good.
 - [ ] **P6-T5** Export to ONNX; the decider server runs on ONNX Runtime, so the image drops PyTorch (about 1 GB). The

@@ -304,6 +304,32 @@ with no `artifactd`, no GPU and no safety track completed — on a machine where
 **Sequencing.** A1–A5 stay sequential. B3, B5, B2, B4 may run in parallel after B1. B2b waits for B5-T2 and B2.
 B6 waits for a real GPU render. C1 waits for A2 because the question set and the mode names come from there.
 
+### The 1.0 cut (2026-11-21)
+
+The plugin is finished first; a sandbox for agents (OpenCode with Omacode, Claude Code, pi) is not part of the plugin
+and becomes a project of its own after 1.0. The plugin only has to run unchanged on a host and inside any container:
+it takes service URLs and the token from the environment (`@omacode/core/services`, done) and prints a URL where it
+would open a desktop window (container plan P3-T3).
+
+**In 1.0**, in this order:
+
+1. **A5** `.opencode/omacode` migration, before anyone else installs, so there is no second migration later.
+2. **A4** memory for all agents.
+3. **P3-T3** desktop hand-offs print a URL when there is no display.
+4. **B4** web adapter.
+5. **P6** decider on mmBERT (`hivetrace/gliner-guard-uniencoder`, container plan P6-T1b..T5), so 1.0 never ships the
+   PyTorch-based decider.
+6. **A6, slimmed**: host install with profiles, preflight, doctor, uninstall, the licence manifest, and one service
+   installer (`omacode services install | status | remove`): the supervisor from `container/supervisor.ts` runs on the
+   host as the single user service `omacode-services` (systemd user unit or launchd agent, generated, no repository
+   paths), writes URLs and token to `$XDG_RUNTIME_DIR/omacode/services.json`, installs the decider from its `uv.lock`
+   and takes `llama-server` from `PATH` or a pinned, hash-checked release. Local LLMs and ComfyUI are only detected,
+   not installed.
+7. **C2-T7** first run: from installed to the first deck.
+
+**After 1.0:** A3, C1, the rest of C2, B2b, B2c, B6, D1–D5, and the container plan's P2 (launcher) and P3-T3a..T15
+(gateway, trust tiers, shared services), which move to the sandbox project or are dropped there.
+
 ---
 
 ## 5. Jobs in detail
