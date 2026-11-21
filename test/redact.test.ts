@@ -151,10 +151,10 @@ test("scrub: the active vault's placeholders, or masked tokens without one", () 
 })
 
 test("settings: secrets and structured data on, names off by default; every switch checked", () => {
-  assert.deepEqual(parseRedact("{}"), { secrets: true, pii: true, names: false, nameAddress: true, threshold: 0.5, allow: [] })
+  assert.deepEqual(parseRedact("{}"), { secrets: true, pii: true, names: true, nameAddress: true, threshold: 0.5, allow: [] })
   assert.deepEqual(parseRedact('{ "redact": false }'), { secrets: false, pii: false, names: false, nameAddress: true, threshold: 0.5, allow: [] })
   assert.deepEqual(parseRedact('{ "redact": { "names": true, "threshold": 0.35, "allow": ["ACME GmbH"] } }'), { secrets: true, pii: true, names: true, nameAddress: true, threshold: 0.35, allow: ["ACME GmbH"] })
-  assert.deepEqual(parseRedact('{ "redact": { "nameAddress": false } }'), { secrets: true, pii: true, names: false, nameAddress: false, threshold: 0.5, allow: [] })
+  assert.deepEqual(parseRedact('{ "redact": { "nameAddress": false } }'), { secrets: true, pii: true, names: true, nameAddress: false, threshold: 0.5, allow: [] })
   for (const bad of ['{ "redact": "yes" }', '{ "redact": { "names": 1 } }', '{ "redact": { "nameAddress": 1 } }', '{ "redact": { "threshold": 1.5 } }', '{ "redact": { "allow": "x" } }']) assert.throws(() => parseRedact(bad), /redact must be/)
 })
 

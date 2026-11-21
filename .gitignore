@@ -3,3 +3,5 @@ __pycache__/
 .venv/
 # copied in by scripts/copy-license.mjs at prepack and removed again at postpack
 packages/*/LICENSE
+# the decider's tuned weights (container plan P6), about 600 MB, kept local for now
+decider/models/

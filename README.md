@@ -117,8 +117,9 @@ the decision client and the plugin securing every task:
      summarizer's and the decision client's — has its private data swapped for placeholders first: keys and tokens
      (some twenty formats, private keys, URL passwords, secret-looking assignments, and the actual values of the
      server's secret variables, the project's `.env` files and the cloud client's key), e-mail addresses, phone numbers,
-     IBANs and card numbers (checked by checksum), and, with `"redact": { "names": true }`, people's names and street
-     addresses found by the local GLiNER server (`/v1/entities`; code is read for its comments and strings only). One
+     IBANs and card numbers (checked by checksum), and people's names and street addresses found by the local decider
+     (`/v1/entities`; code is read for its comments and strings only; on by default since the tuned decider, off with
+     `"redact": { "names": false }`; about 0.2 s per 1 000 characters of new text on the CPU). One
      value always gets the same placeholder (`PERSON_1`, `SECRET_2`, `email3@redacted.invalid`), so a model can still
      reason about it and the prompt cache holds. The model's tool calls get the real values back: files all of them, so
      an edit keeps a file's key; commands everything but secrets; web tools nothing. The vault lives in
@@ -426,7 +427,7 @@ Optional settings in `~/.config/opencode/omacode.jsonc`:
   "network": ["api.example.com", "*.example.com"], // hosts every job's commands may reach beyond the registries
   // private data in requests to models: secrets and e-mail/phone/IBAN/card on by default; names and addresses
   // through the local GLiNER server only when switched on; false turns it all off
-  "redact": { "names": false, "threshold": 0.5, "allow": ["ACME GmbH"] }
+  "redact": { "names": true, "threshold": 0.5, "allow": ["ACME GmbH"] }
 }
 ```
 

@@ -10,13 +10,17 @@ export interface RedactSettings {
   readonly pii: boolean
   readonly names: boolean
   // A project's opt-out of the name/address detector only: secrets, paths and structured data stay redacted when it is
-  // off. Name detection still needs "names": true, so the default (true) changes nothing on its own.
+  // off. Name detection also needs "names" (true by default).
   readonly nameAddress: boolean
   readonly threshold: number
   readonly allow: readonly string[]
 }
 
-export const DEFAULT_REDACT: RedactSettings = { secrets: true, pii: true, names: false, nameAddress: true, threshold: 0.5, allow: [] }
+// Names are on by default since 2026-11-21: the tuned decider (container plan P6) finds names at precision 0.99 and
+// recall 0.98 on held-out text and found no false name in 160 000 characters of this repository's docs, where the model
+// before it found a third of the names and no address, which is why it was off. It costs about 0.2 s per 1 000
+// characters of new text on the CPU; without the decider, names go unchecked and the journal says so.
+export const DEFAULT_REDACT: RedactSettings = { secrets: true, pii: true, names: true, nameAddress: true, threshold: 0.5, allow: [] }
 
 export function parseRedact(text: string): RedactSettings {
   const raw = (JSON.parse(stripComments(text)) as { redact?: unknown }).redact

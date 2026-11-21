@@ -59,11 +59,10 @@ export async function checkGuards(decider: Decider, text: string, job?: string, 
 // is checked for injection alone, in the same windows, since an injection can hide anywhere in a long page. Returns
 // the highest score, or undefined when nothing local answered.
 //
-// It runs on every tool result a worker reads, so its windows are capped lower: GLiNER2.5 takes about 1.6 s per window
-// on the CPU (measured 2026-11-21), and 24 windows would hold a worker up for 38 s per web page. Seven windows read
-// what the old six chunks did (about 9 000 characters), now with the overlap. The successor (gliner-guard, about 0.2 s
-// per window) lets this rise to MAX_WINDOWS.
-export const INJECTION_WINDOWS = 7
+// It runs on every tool result a worker reads. With GLiNER2.5 (1.6 s per window on the CPU) it read only seven windows;
+// the tuned successor answers one question in about 40 ms, so it reads as many windows as the guards do: 24 windows,
+// about 1 s for a 31 000-character page.
+export const INJECTION_WINDOWS = MAX_WINDOWS
 
 export async function injectionScore(decider: Decider, text: string, job?: string, task?: string, session?: string): Promise<number | undefined> {
   let best: number | undefined

@@ -1,13 +1,14 @@
 # systemd user unit for the decision server. Install:
 #   cp decider/decider.service ~/.config/systemd/user/ && systemctl --user enable --now decider
-# Set --model to a fine-tuned checkpoint directory once one exists.
+# --model is the tuned gliner-guard-uniencoder (container plan P6), trained in train/ and kept in models/, which git
+# ignores; fastino/GLiNER2.5-multi-Decide is the one before it, if the directory is missing.
 [Unit]
-Description=Omacode decider: GLiNER2 decisions on the CPU
+Description=Omacode decider: guards, decisions and names on the CPU
 
 [Service]
 Environment=CUDA_VISIBLE_DEVICES=
 WorkingDirectory=%h/Fun/Projects/Repos/micromanager/decider
-ExecStart=/usr/bin/uv run --frozen decider --port 8781 --model fastino/GLiNER2.5-multi-Decide
+ExecStart=/usr/bin/uv run --frozen decider --port 8781 --model models/guard-2026-11-21
 Restart=on-failure
 RestartSec=5
 # The encoder falls back to eager attention, so the attention matrix is n² and one unclamped request reached 13.7 GB

@@ -407,14 +407,14 @@ fine-tuning, so both need fine-tuning anyway.
   over 34 topics in German and English, a second pass labels all three guards, and contradictions are dropped; plus
   deepset/prompt-injections (Apache-2.0). `decider/data/guards.jsonl`, held-out by text hash. N5/N13 and entities are
   not in it yet.
-- [ ] **P6-T3** Fine-tune **gliner-guard-uniencoder** (not a bare mmBERT) on our labels: the three guards mapped onto its
+- [x] **P6-T3** Fine-tune **gliner-guard-uniencoder** (not a bare mmBERT) on our labels: the three guards mapped onto its
   attack and harm labels plus German examples, "sensitive" as a task of its own, and the N5 profile and N13 decisions.
   The decider maps each guard onto the model's own labels instead of a generic yes/no question; the decider's lock
   moves to transformers 5.
-- [ ] **P6-T3a** Entity fine-tuning only where P6-T4 finds gaps (the second German address was missed), with
+- [x] **P6-T3a** Entity fine-tuning only where P6-T4 finds gaps (the second German address was missed), with
   **synthetic** names and addresses only, since the weights may ship in the public image. Few epochs, a small
   learning rate, mixed-in general data against forgetting; a held-out set before and after.
-- [ ] **P6-T4** Compare with GLiNER on `bench-guards` and the entity cases: quality per guard, peak memory and latency
+- [x] **P6-T4** Compare with GLiNER on `bench-guards` and the entity cases: quality per guard, peak memory and latency
   on long inputs, on the CPU. The swap happens only if quality is at least as good.
   *First measurement 2026-11-21* (`decider/train/train.py --eval-only --device cpu --bench`, 4 threads, held-out 333 cases,
   after six epochs on 1 698): gliner-guard tuned vs GLiNER2.5-multi-Decide — injection recall 0.91 / false alarms 1 %
@@ -427,7 +427,11 @@ fine-tuning, so both need fine-tuning anyway.
   recall 0.98, street addresses 1.00 / 1.00 (GLiNER2.5: 0.36 of the names, no address). All 16 hand-written bench
   cases right. Three rounds of data fixes got there: noisy sensitive labels on injections, then a rule too narrow for
   tasks on the user's own data, then direct poisoning requests. Run: `decider/train/runs/joint3-e6`.
-- [ ] **P6-T5** Export to ONNX; the decider server runs on ONNX Runtime, so the image drops PyTorch (about 1 GB). The
+- [ ] **P6-T5** *Deferred (the user's decision, 2026-11-21):* the tuned model runs on CPU PyTorch in the decider
+  first; ONNX comes back with the container. gliner2-onnx (MIT, 0.1.1, unchanged since 2026-02, no Node runtime on
+  npm) is the candidate then. *In use since 2026-11-21:* `decider/models/guard-2026-11-21` (local only, git-ignored;
+  publishing the weights is decided with A6), the decider's lock on gliner2 2.1.0 and transformers 5.22.0, names
+  redacted by default, `injectionScore` at the full 24 windows. Export to ONNX; the decider server runs on ONNX Runtime, so the image drops PyTorch (about 1 GB). The
   wire format (`/v1/systemone`, `/v1/entities`) stays; the plugin does not change.
 - [ ] **P6-T6** The new checkpoint goes into the image as its own stable layer (like P1-T9); `--max-chars` is raised to
   what the new model affords; `decider/decider.service` and the GLiNER code paths go.
