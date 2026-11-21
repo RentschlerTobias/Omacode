@@ -247,7 +247,11 @@ GPL source archive of a tagged release (P1-T7). What the builds taught:
   sends it:* `@omacode/core/services` (`OMACODE_DECIDER_URL`, `OMACODE_EMBEDDING_URL`, `OMACODE_SERVICE_TOKEN`,
   `OMACODE_EMBEDDING_MODEL`), used by the decision client, the guard's entity scan and the embedding client; without
   them a desktop keeps its fixed ports and no token. Tested in `test/services.test.ts`.
-- [ ] **P3-T3** `hyperframes open` and other desktop hand-offs print a URL instead when there is no display.
+- [x] **P3-T3** `hyperframes open` and other desktop hand-offs print a URL instead when there is no display. *Done
+  2026-11-21:* the plugin opens nothing itself (previews, the presenter and the studio start with `--no-open` and their
+  URL goes into the answer; comparison pages are named by path). What was left were desktop notifications:
+  `micromanager/src/desktop.ts` does not run `notify-send` without `WAYLAND_DISPLAY`/`DISPLAY` and says so once;
+  `OMACODE_HEADLESS=1|0` overrides the guess.
 - [ ] **P3-T3a** The preview gateway (K10): a small HTTP forwarder in the plugin that owns a fixed set of ports
   (default 8, from `OMACODE_GATEWAY_PORTS`). Each preview the plugin starts (`look`, presenter, HyperFrames preview,
   comparison pages) gets one gateway port and a token; the gateway forwards HTTP and WebSocket upgrades to the

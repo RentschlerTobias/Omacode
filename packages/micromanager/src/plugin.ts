@@ -4,7 +4,6 @@
 // the plugin needs no package of its own. The runtime context has more domains than the typed SDK shows
 // (seen on opencode 2.0.18): agent, tool, session, event, permission, worktree, generate, storage, skill, …
 
-import { execFile } from "node:child_process"
 
 import { claim } from "@omacode/core/registry"
 import { serviceUrl } from "@omacode/core/services"
@@ -89,6 +88,7 @@ import { Accountant, chargeTask, limitsOf, overBudget, overNote, sessionUsage, w
 import { seedFromJournal, Usage } from "./usage.ts"
 import { CHECKPOINT_STEPS, MAX_STEPS, Watchdog, type Signal } from "./watchdog.ts"
 import { configFileName } from "@omacode/core/paths"
+import { notifyDesktop } from "./desktop.ts"
 
 // What the permission hook "evaluate" gets (opencode 2.0.18): the planned effect can be changed in place.
 interface Evaluation {
@@ -328,23 +328,6 @@ function logger(ctx: Context) {
     // warn and error also go to the server's stderr, which is the one place an operator sees them without the journal.
     if (level !== "info") console.error(`[micromanager] ${message}`)
   }
-}
-
-// A desktop notification: `notify-send` on Linux, `osascript` on macOS, which has no notify-send. The command is
-// chosen here once, so the plugin installs unchanged on both (`opencode plugin add` from git). Failure is the
-// caller's business: a notification is a courtesy and never a reason a job stops.
-function notifyDesktop(title: string, body: string, failed?: (err: Error) => void): void {
-  const darwin = process.platform === "darwin"
-  const args = darwin ? ["-e", `display notification ${appleScript(body)} with title ${appleScript(title)}`] : ["-a", "micromanager", title, body]
-  execFile(darwin ? "osascript" : "notify-send", args, (err) => {
-    if (err && failed) failed(err)
-  })
-}
-
-// An AppleScript string literal: quotes and backslashes escape as in JSON. A newline would come out as a literal
-// backslash-n (AppleScript has no \n escape), so the body is folded to one line first.
-function appleScript(text: string): string {
-  return JSON.stringify(text.replace(/\s*\n\s*/g, " "))
 }
 
 // What the plugin does with a watchdog signal, and nothing else, so it can be read (and tested) apart from the server.
