@@ -9,12 +9,14 @@
 //               node src/cli.ts migrate [--project dir] [--apply]   (move the state directory from an old name to
 //                                                                the current one, core/paths.ts; a dry run without --apply)
 //               node src/cli.ts migrate --user [--apply]   (the same for the user's state, memory and settings files)
+//               node src/cli.ts synth-guards [--model provider/model] [--per 25] [--public] [--out decider/data/guards.jsonl]
+//                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
-import { writeFileSync } from "node:fs"
-import { resolve } from "node:path"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { dirname as dir, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
 
 import { adopt, adoptCandidates } from "@omacode/context/adopt"
@@ -32,6 +34,7 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
+import { normal, opencodeAsk, publicCases, synthesize, trainingRows, type Case as GuardCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`)
@@ -71,6 +74,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
   if (command === "memory-adopt") return await memoryAdopt(args)
+  if (command === "synth-guards") return await synthGuards(args)
   if (command === "migrate" && args.includes("--user")) {
     const plan = planUserMigration()
     const apply = args.includes("--apply")
@@ -248,5 +252,26 @@ async function memoryAdopt(args: readonly string[]): Promise<number> {
   }
   const { moved } = adopt(store, project, slugs)
   console.log(`moved ${moved} entries into ${id}`)
+  return 0
+}
+
+// synth-guards (P6-T2): adds cases to the guards' training set, never removing one; a text already in the file is not
+// added again. --public adds the public dataset instead of synthetic cases. --rows writes the GLiNER2 training rows next
+// to it (guards.rows.jsonl).
+async function synthGuards(args: readonly string[]): Promise<number> {
+  const out = resolve(flag(args, "out") ?? "decider/data/guards.jsonl")
+  const model = flag(args, "model") ?? "opencode-go/deepseek-v4.1-flash"
+  const have: GuardCase[] = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as GuardCase) : []
+  const seen = new Set(have.map((c) => normal(c.text)))
+  mkdirSync(dir(out), { recursive: true })
+  const ask = opencodeAsk(model, dir(out))
+  const log = (line: string) => console.error(line)
+  const { cases, stats } = args.includes("--public")
+    ? await publicCases(ask, fetch, seen, log)
+    : await synthesize(ask, model, { per: Number(flag(args, "per") ?? 25), seen, log, concurrency: Number(flag(args, "concurrency") ?? 4) })
+  const all = [...have, ...cases]
+  writeFileSync(out, all.map((c) => JSON.stringify(c)).join("\n") + "\n")
+  if (args.includes("--rows")) writeFileSync(out.replace(/\.jsonl$/, ".rows.jsonl"), trainingRows(all).map((r) => JSON.stringify(r)).join("\n") + "\n")
+  console.log(`${stats.kept} new cases (${stats.generated} written, ${stats.disagreed} dropped by the labelling pass, ${stats.duplicates} duplicates, ${stats.failedCalls} failed calls); ${all.length} in ${out}`)
   return 0
 }
