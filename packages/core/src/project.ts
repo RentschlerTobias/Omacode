@@ -8,9 +8,9 @@
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { basename, dirname, isAbsolute, join, sep } from "node:path"
+import { basename, dirname, isAbsolute, join } from "node:path"
 
-import { LEGACY_PROJECT_STATE, PROJECT_STATE, stateDir } from "./paths.ts"
+import { splitState, stateDir } from "./paths.ts"
 
 // The file that holds the project's id, in its state directory, so it moves with the folder.
 export const PROJECT_FILE = "project.json"
@@ -25,9 +25,7 @@ function atomicWrite(path: string, text: string): void {
 // The project a directory belongs to: a worktree or plan area lies inside <project>/<state dir>/, so everything from the
 // first state directory segment on is cut off. Any other directory is its own project.
 export function projectRoot(dir: string): string {
-  const parts = dir.split(sep)
-  const at = parts.findIndex((part, i) => i > 0 && (part === PROJECT_STATE || part === LEGACY_PROJECT_STATE))
-  return at > 0 ? parts.slice(0, at).join(sep) || sep : dir
+  return splitState(dir)?.project ?? dir
 }
 
 // The key projects had before they had an id: the folder's name and a short hash of its path. Still the id a project

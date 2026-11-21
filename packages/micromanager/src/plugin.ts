@@ -61,7 +61,7 @@ import { gitState, humanSize, initRepo, surveyFolder } from "./nogit.ts"
 import { CHECK_BUG_FLOOR, CLASSIFY, LOCAL_BLOCK, LOCAL_BLOCK_FLOOR, NOUL_FLOOR, OPEN_ENDED, OPEN_ENDED_FLOOR } from "./catalog.ts"
 import { ending, Notifier, Scheduler, type Cancel } from "./scheduler.ts"
 import { registerSkills, SKILLS, type SkillEditor } from "./skills.ts"
-import { backlogIgnored, listJobs, loadJob, notesDir, reconcileJob, saveJob, stateDir } from "./store.ts"
+import { backlogIgnored, DIR, listJobs, loadJob, notesDir, reconcileJob, saveJob, stateDir } from "./store.ts"
 import { backlogDir, backlogTool, githubIssue, githubIssues, githubRepo, goalOf, localBackend, publishForm, publishIssue, readPublish, type BacklogItem } from "./backlog.ts"
 import { moveJob, moveTask, stage, type Job, type Task, type TaskStatus } from "./state.ts"
 import { BRANCH_PREFIX, exec, jobBranch, LEGACY_BRANCH_PREFIX, planArea, repoRel, type Exec } from "./integration.ts"
@@ -186,7 +186,7 @@ function version(): string {
 }
 
 // What the plugin knows about the sessions the runner started, shared by every instance of the plugin in one server.
-// The hub runs one instance per directory, and a worker in its worktree (.micromanager/worktrees/…) is served by
+// The hub runs one instance per directory, and a worker in its worktree (<state dir>/worktrees/…) is served by
 // another instance than the one that started it (live test in the user's hub: a worker's question outside its
 // directory went to the user, because that instance did not know the session; it waited for an answer nobody saw).
 // On globalThis, so it is shared even if the server loads this module once per instance.
@@ -2701,7 +2701,7 @@ const plugin = {
                 // no note yet
               }
               // A reader's report is its result, so the whole note (up to a limit) comes back.
-              return `${taskReport(job, task)}${note ? `\n\n${note.slice(-15000)}` : ""}`
+              return `${taskReport(job, task, stateDir(project))}${note ? `\n\n${note.slice(-15000)}` : ""}`
             }
             return [`job ${job.id} on branch ${job.integrationBranch ?? jobBranch(job.id)}:`, ...job.tasks.map((t) => `- ${t.id} ${t.title}: ${t.status}${t.priority !== 3 ? ` · priority ${t.priority}` : ""}${t.dependsOn.length ? ` · after ${t.dependsOn.join(", ")}` : ""}${t.session ? ` · session ${t.session}` : ""}`),
               "The user can watch a task's worker with: opencode -s <session>",
@@ -3294,6 +3294,14 @@ const plugin = {
             }))
             steering.set(sessionID, openJobsNote(notes, open.at(-1)!.id))
             record({ kind: "open-jobs", sessionID, jobs: open.map((j) => j.id) })
+          }
+          // A project on an old state directory keeps working there; the user hears once per session that it can move.
+          const state = stateDir(project)
+          if (state !== DIR) {
+            const move = `[micromanager] This project keeps its jobs in ${state}/, the state directory's old name. When no job is at work, the user can move it to ${DIR}/ with \`npm run migrate -- --project ${project} --apply\` in the plugin's checkout (a dry run without --apply). Mention it once, in one sentence, after answering.`
+            const before = steering.get(sessionID)
+            steering.set(sessionID, before ? `${before}\n\n${move}` : move)
+            record({ kind: "legacy-state", sessionID, dir: state })
           }
         }
       }

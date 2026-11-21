@@ -6,20 +6,52 @@ import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-// Where jobs live: <project>/.micromanager/jobs/<id>.json. Inside the project, so workers can read their notes without
-// an external_directory ask; kept out of git through the repository's own .git/info/exclude.
-export const PROJECT_STATE = ".micromanager"
-// The directory's name before 2026-10-19. A project that has it keeps using it: its jobs, notes and git worktrees live
-// there, and moving a worktree under a running worker would pull the directory out from under it.
-export const LEGACY_PROJECT_STATE = ".jev-micromanager"
+// Where jobs live: <project>/.opencode/omacode/jobs/<id>.json. Inside the project, so workers can read their notes
+// without an external_directory ask; inside OpenCode's own directory, since it is OpenCode's state with a plugin; kept
+// out of git through the repository's own .git/info/exclude.
+//
+// What that costs (checked 2026-11-21, OpenCode 2.2.5): OpenCode loads nothing below it as an agent, command, mode or
+// plugin and reloads no config when it changes, but it watches .opencode/ recursively, so every directory of a worktree
+// here holds one inotify watch (node_modules, .git, .venv and __pycache__ excepted). And a session inside a worktree
+// reads every opencode.json above it: nothing may write one into the state directory.
+export const PROJECT_STATE = ".opencode/omacode"
+// Its names before, newest first: .micromanager (until 2026-11-21) and .jev-micromanager (until 2026-10-19). A
+// project that has one keeps using it until `migrate` moves it: its jobs, notes and git worktrees live there, and moving
+// a worktree under a running worker would pull the directory out from under it.
+export const LEGACY_PROJECT_STATES = [".micromanager", ".jev-micromanager"] as const
+// Every name the state directory has had, the current one first: what a path is matched against.
+export const STATE_DIRS: readonly string[] = [PROJECT_STATE, ...LEGACY_PROJECT_STATES]
 
-// The project's state directory: the old one while the project has it and not the new one.
+// The project's state directory: the current one when the project has it, else an old one it still has, else the
+// current one for a project that has none yet.
 export function stateDir(project: string): string {
-  return existsSync(join(project, LEGACY_PROJECT_STATE)) && !existsSync(join(project, PROJECT_STATE)) ? LEGACY_PROJECT_STATE : PROJECT_STATE
+  if (existsSync(join(project, PROJECT_STATE))) return PROJECT_STATE
+  return LEGACY_PROJECT_STATES.find((old) => existsSync(join(project, old))) ?? PROJECT_STATE
 }
 
 export function statePath(project: string, ...segments: string[]): string {
   return join(project, stateDir(project), ...segments)
+}
+
+// Whether a project-relative path ("a/b", no leading slash) is a state directory or lies inside one, under any name.
+export function inStateDir(rel: string): boolean {
+  const path = rel.replace(/\/+$/, "")
+  return STATE_DIRS.some((dir) => path === dir || path.startsWith(`${dir}/`) || path.endsWith(`/${dir}`) || path.includes(`/${dir}/`))
+}
+
+// Splits an absolute path at the first state directory in it, under any name: the project before it, the state
+// directory's name, and the rest after it ("" for the directory itself). undefined for a path outside every one.
+export function splitState(path: string): { project: string; dir: string; rest: string } | undefined {
+  let best: { project: string; dir: string; rest: string } | undefined
+  let bestAt = Infinity
+  for (const dir of STATE_DIRS) {
+    const inner = path.indexOf(`/${dir}/`)
+    const at = inner >= 0 ? inner : path.endsWith(`/${dir}`) ? path.length - dir.length - 1 : -1
+    if (at < 0 || at >= bestAt) continue
+    bestAt = at
+    best = { project: path.slice(0, at) || "/", dir, rest: path.slice(at + dir.length + 2) }
+  }
+  return best
 }
 
 // What was decided and measured: ${XDG_STATE_HOME:-~/.local/state}/micromanager, with decisions.jsonl and

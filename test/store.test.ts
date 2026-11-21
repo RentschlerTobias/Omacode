@@ -7,7 +7,7 @@ import { test } from "node:test"
 
 import { matchShortcut, resolvePolicy, validatePolicies } from "../packages/micromanager/src/policy.ts"
 import { newJob } from "../packages/micromanager/src/state.ts"
-import { backlogIgnored, excludeFromGit, jobId, LEGACY_DIR, listJobs, loadJob, reconcileJob, saveJob, saveNote, stateDir } from "../packages/micromanager/src/store.ts"
+import { backlogIgnored, excludeFromGit, DIR, jobId, LEGACY_PROJECT_STATES, listJobs, loadJob, reconcileJob, saveJob, saveNote, stateDir } from "../packages/micromanager/src/store.ts"
 
 test("jobs round-trip through their file, newest first", () => {
   const project = mkdtempSync(join(tmpdir(), "jd-store-"))
@@ -29,8 +29,8 @@ test("the state directory is excluded from git once, and only in a repository", 
     assert.equal(excludeFromGit(project), true)
     assert.equal(excludeFromGit(project), true)
     const lines = readFileSync(join(project, ".git", "info", "exclude"), "utf8").split("\n")
-    assert.equal(lines.filter((l) => l === "**/.micromanager/*").length, 1)
-    assert.equal(lines.filter((l) => l === "!**/.micromanager/backlog/").length, 1)
+    assert.equal(lines.filter((l) => l === `**/${DIR}/*`).length, 1)
+    assert.equal(lines.filter((l) => l === `!**/${DIR}/backlog/`).length, 1)
   } finally {
     rmSync(project, { recursive: true, force: true })
   }
@@ -45,18 +45,18 @@ test("the exclude file of the repository is found when the project is a subdirec
     mkdirSync(project, { recursive: true })
     assert.equal(excludeFromGit(project), true)
     const exclude = readFileSync(join(root, ".git", "info", "exclude"), "utf8")
-    assert.match(exclude, /^\*\*\/\.micromanager\/\*$/m)
+    assert.ok(exclude.split("\n").includes(`**/${DIR}/*`))
     assert.match(exclude, /^\.opencode\/memory\/$/m)
     assert.equal(excludeFromGit(project), true, "idempotent")
     const lines = readFileSync(join(root, ".git", "info", "exclude"), "utf8").split("\n")
-    assert.equal(lines.filter((l) => l === "**/.micromanager/*").length, 1)
+    assert.equal(lines.filter((l) => l === `**/${DIR}/*`).length, 1)
     assert.equal(lines.filter((l) => l === ".opencode/memory/").length, 1)
     // Below the root as well: the jobs stay out of git, the backlog and the contracts are the user's to commit.
     const ignored = (path: string) => { try { execFileSync("git", ["check-ignore", "-q", "--no-index", path], { cwd: project }); return true } catch { return false } }
-    assert.equal(ignored(".micromanager/jobs/job-1.json"), true)
-    assert.equal(ignored(".micromanager/worktrees/job-1/a.js"), true)
-    assert.equal(ignored(".micromanager/backlog/faster-search.md"), false)
-    assert.equal(ignored(".micromanager/contracts/job-1/C1.json"), false)
+    assert.equal(ignored(`${DIR}/jobs/job-1.json`), true)
+    assert.equal(ignored(`${DIR}/worktrees/job-1/a.js`), true)
+    assert.equal(ignored(`${DIR}/backlog/faster-search.md`), false)
+    assert.equal(ignored(`${DIR}/contracts/job-1/C1.json`), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -73,7 +73,7 @@ test("the exclude file of a worktree checkout is the main repository's", () => {
     const wt = join(root, "wt")
     execFileSync("git", ["-C", root, "worktree", "add", "-q", wt])
     assert.equal(excludeFromGit(wt), true)
-    assert.match(readFileSync(join(root, ".git", "info", "exclude"), "utf8"), /^\*\*\/\.micromanager\/\*$/m)
+    assert.ok(readFileSync(join(root, ".git", "info", "exclude"), "utf8").split("\n").includes(`**/${DIR}/*`))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -83,7 +83,7 @@ test("a corrupt job file is skipped and the good ones are still listed", () => {
   const project = mkdtempSync(join(tmpdir(), "jd-corrupt-"))
   try {
     saveJob(project, newJob("job-a", "first", new Date("2026-10-04T10:00:00Z")))
-    writeFileSync(join(project, ".micromanager", "jobs", "job-broken.json"), "{ half a fi")
+    writeFileSync(join(project, DIR, "jobs", "job-broken.json"), "{ half a fi")
     assert.deepEqual(listJobs(project).map((j) => j.id), ["job-a"])
     assert.equal(loadJob(project, "job-broken"), undefined)
   } finally {
@@ -91,17 +91,17 @@ test("a corrupt job file is skipped and the good ones are still listed", () => {
   }
 })
 
-test("a project from before the rename keeps its .jev-micromanager directory; a new one gets .micromanager", () => {
+test("a project from before the rename keeps its old state directory; a new one gets the current name", () => {
   const old = mkdtempSync(join(tmpdir(), "jd-legacy-"))
   const fresh = mkdtempSync(join(tmpdir(), "jd-fresh-"))
   try {
-    mkdirSync(join(old, LEGACY_DIR, "jobs"), { recursive: true })
+    mkdirSync(join(old, LEGACY_PROJECT_STATES[1], "jobs"), { recursive: true })
     saveJob(old, newJob("job-old", "goal"))
-    assert.ok(existsSync(join(old, ".jev-micromanager", "jobs", "job-old.json")), "its jobs stay where its worktrees are")
+    assert.ok(existsSync(join(old, LEGACY_PROJECT_STATES[1], "jobs", "job-old.json")), "its jobs stay where its worktrees are")
     assert.deepEqual(listJobs(old).map((j) => j.id), ["job-old"])
-    assert.equal(stateDir(fresh), ".micromanager")
+    assert.equal(stateDir(fresh), DIR)
     saveJob(fresh, newJob("job-new", "goal"))
-    assert.ok(existsSync(join(fresh, ".micromanager", "jobs", "job-new.json")))
+    assert.ok(existsSync(join(fresh, DIR, "jobs", "job-new.json")))
   } finally {
     rmSync(old, { recursive: true, force: true })
     rmSync(fresh, { recursive: true, force: true })
@@ -232,13 +232,13 @@ test("an exclude line from before that hid the whole state directory is replaced
   const project = mkdtempSync(join(tmpdir(), "jd-migrate-"))
   try {
     execFileSync("git", ["init", "-q", project])
-    writeFileSync(join(project, ".git", "info", "exclude"), "# mine\n*.log\n.micromanager/\n.opencode/memory/\n")
+    writeFileSync(join(project, ".git", "info", "exclude"), `# mine\n*.log\n${DIR}/\n.opencode/memory/\n`)
     assert.equal(backlogIgnored(project), true)
     assert.equal(excludeFromGit(project), true)
-    assert.equal(readFileSync(join(project, ".git", "info", "exclude"), "utf8"), "# mine\n*.log\n.opencode/memory/\n**/.micromanager/*\n!**/.micromanager/backlog/\n!**/.micromanager/contracts/\n")
+    assert.equal(readFileSync(join(project, ".git", "info", "exclude"), "utf8"), `# mine\n*.log\n.opencode/memory/\n**/${DIR}/*\n!**/${DIR}/backlog/\n!**/${DIR}/contracts/\n`)
     assert.equal(backlogIgnored(project), false)
     // The project's own .gitignore that names the whole directory still wins; the caller is told.
-    writeFileSync(join(project, ".gitignore"), ".micromanager/\n")
+    writeFileSync(join(project, ".gitignore"), `${DIR}/\n`)
     assert.equal(backlogIgnored(project), true)
   } finally {
     rmSync(project, { recursive: true, force: true })

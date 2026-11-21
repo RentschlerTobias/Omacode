@@ -86,7 +86,7 @@ the decision client and the plugin securing every task:
    `explorer`, …), a short title, and a prompt that ends with `Files:` (what it may change) and `Checks:` (e.g.
    `npm test`) for a worker that writes. The call returns at once; the workers show up in OpenCode as the
    micromanager's child sessions, and the micromanager stays free to talk with you.
-2. **Each writer works in its own git worktree** under `.jev-micromanager/worktrees/`, branched off the session's
+2. **Each writer works in its own git worktree** under `.opencode/omacode/worktrees/`, branched off the session's
    branch `jev/<job>`: OpenCode starts the child in your checkout, and the plugin moves it into the worktree before
    its first step. Your checkout is never touched. Readers work on the session branch and change nothing.
 
@@ -257,7 +257,7 @@ the decision client and the plugin securing every task:
    | `contract` | draft what "better" means for a task with no fixed end; the baseline is measured at once |
    | `contract_round` | work a draft contract out with you (preferences, red team, loopholes, baseline) and freeze it |
    | `evolve_task` | improve one function by evolution (OpenEvolve) against a frozen contract, in the sandbox; the plugin offers it by itself where it fits ("Evolver / Trial / One worker", your choice in a form) |
-   | `backlog` | list, show, add or change the project's waiting jobs in `.micromanager/backlog/` |
+   | `backlog` | list, show, add or change the project's waiting jobs in `.opencode/omacode/backlog/` |
    | `decide_change` | accept or refuse a writer's request to change a check or a frozen test |
 
 6. **Checkpoints and rewind.** Every merged task is a commit `Tn: title` on `jev/<job>`, authored with your git
@@ -292,7 +292,7 @@ the decision client and the plugin securing every task:
    first decides, the next break ties inside a noise band), guards that may not get worse than today, the corpus,
    repeats (the median counts), a stop rule (`evaluations`, `seconds`) and, for a slow evaluator, a `quick` stage on
    small instances that the evolver runs first. The plugin measures the baseline on the job
-   branch at once and keeps the contract in the job and in `.micromanager/contracts/<job>/C1.json`. A writer started
+   branch at once and keeps the contract in the job and in `.opencode/omacode/contracts/<job>/C1.json`. A writer started
    with a line `Contract: C1` (or `"contract"` in its todo) is measured after its checks pass: an invalid result (a
    non-zero exit, a timeout, no `MM_SCORE` line, a missing score) or a broken guard is a fix round like a failing
    check, and after a rebase it is measured again. Its score, the contract's version and the reward (the first
@@ -304,8 +304,8 @@ the decision client and the plugin securing every task:
    many of them passed. Any ordinary check may print
    `MM_SCORE {"cases":{"passed":7,"total":8}}` too; that grades a build task in the outcome log without deciding it.
 
-8. **The backlog.** Jobs that wait live in `.micromanager/backlog/<slug>.md` (front matter plus Markdown), and you commit
-   them: the plugin's exclude lines leave that directory and `.micromanager/contracts/` to git and keep the rest out.
+8. **The backlog.** Jobs that wait live in `.opencode/omacode/backlog/<slug>.md` (front matter plus Markdown), and you commit
+   them: the plugin's exclude lines leave that directory and `.opencode/omacode/contracts/` to git and keep the rest out.
    When a job is merged or discarded, the follow-ups its workers reported that no task took up, and a trial whose
    attempts all failed, become drafts there. `plan_job` with the goal `backlog:<slug>` starts an item; the `backlog`
    tool lists and edits them. With the project's repository in `"githubBacklog"` (e.g. `["owner/name"]`), its issues
@@ -315,9 +315,17 @@ the decision client and the plugin securing every task:
 9. **Large or unclear jobs.** `plan_job` lets a planner write a full plan with acceptance points, optionally
    after a planning session with you. You approve it, and `run_job` runs it.
 
-Jobs and task notes live in `.micromanager/` (`.jev-micromanager/` in older projects), kept out of git through the repository's `.git/info/exclude` — found
-with `git rev-parse --git-common-dir`, so it works when the project is a subdirectory of a larger repository and when
-it is itself a worktree.
+Jobs, task notes and worktrees live in `.opencode/omacode/`, kept out of git through the repository's
+`.git/info/exclude` — found with `git rev-parse --git-common-dir`, so it works when the project is a subdirectory of a
+larger repository and when it is itself a worktree. OpenCode loads nothing from there as config, but it watches
+`.opencode/` recursively, so each directory of a worktree holds one inotify watch (`node_modules`, `.git`, `.venv` and
+`__pycache__` excepted); worktrees go away when their task is merged.
+
+A project from before keeps its state where it was, `.micromanager/` or `.jev-micromanager/`, and the micromanager
+mentions once per session that it can move. In the plugin's checkout, `npm run migrate -- --project <dir>` says what
+would move and `--apply` moves it: one rename of the whole directory, then every path a job keeps is rewritten and
+git's worktree links are repaired. It refuses while a task is at work, or when state exists in two places. Renaming or
+moving the project folder itself needs nothing: jobs and worktrees are relinked when the jobs are next read.
 
 **Overview.** `job_status` shows an ASCII board of the job: each task with its state, role, model, what it does or
 waits for and what it cost so far (its worker and helpers, or the evolver's model calls), plus the job's tokens,
@@ -437,7 +445,7 @@ as a **trial**: attempts at once, each in its own worktree on another model fami
   a review of the two best changes by a model of a third family, then by cost and size. The note says why the winner
   won.
 - **user** (designers by default): every attempt runs to its end, and those that pass are held with no deadline.
-  When the last one ends you get a desktop notification and a comparison page, `.micromanager/trials/<job>-<task>.html`,
+  When the last one ends you get a desktop notification and a comparison page, `.opencode/omacode/trials/<job>-<task>.html`,
   with each version's picture (the task's `Preview:` page, or its `index.html`), model, cost and size, and the
   micromanager asks you with a form: one version (merged), **combine** (the version your words name first is continued
   with the others' changes beside it, and merges when it passes), or **none** (the task is done again with your

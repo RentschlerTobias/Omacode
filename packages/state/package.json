@@ -37,7 +37,8 @@
     "./roles": "./src/roles.ts",
     "./routing": "./src/routing.ts",
     "./picks": "./src/picks.ts",
-    "./board": "./src/board.ts"
+    "./board": "./src/board.ts",
+    "./migrate": "./src/migrate.ts"
   },
   "files": [
     "src"

@@ -6,6 +6,7 @@ import { isAbsolute, resolve, sep } from "node:path"
 import { hardRule, readsOnly } from "./decide.ts"
 import { MICROMANAGER, roleById } from "./roles.ts"
 import { DEFAULT_PRIORITY, isDone, type Acceptance, type FollowUp, type Job, type Task } from "./state.ts"
+import { STATE_DIRS } from "@omacode/core/paths"
 
 export interface PlannedTask {
   readonly id: string
@@ -467,7 +468,7 @@ export function checkSetProblems(checks: readonly string[], writer: boolean): st
 
 // The task-worktree path shape inside the plugin's state directory: ".../worktrees/<job>--T3". A check that cds there
 // runs against a worktree, not the user's checkout; the plugin already runs it in its own task directory.
-const TASK_WORKTREE = /(?:^|\/)(?:\.micromanager|\.jev-micromanager)\/worktrees\/[^/]+--T[^/]+\/?$/
+const TASK_WORKTREE = new RegExp(`(?:^|/)(?:${STATE_DIRS.map((dir) => dir.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")})/worktrees/[^/]+--T[^/]+/?$`)
 
 function cwdTargets(check: string): string[] {
   const out: string[] = []

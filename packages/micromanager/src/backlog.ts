@@ -1,4 +1,4 @@
-// The job backlog (design.md §25, P6): jobs that wait, one Markdown file each in <project>/.micromanager/backlog/,
+// The job backlog (design.md §25, P6): jobs that wait, one Markdown file each in <project>/<state dir>/backlog/,
 // committed with the project. A job's follow-ups that nobody started and a trial whose attempts all failed become
 // drafts here when the job ends, so nothing found on the way is lost with the session; the user or the micromanager
 // starts an item later with plan_job backlog:<slug>, or as todos.

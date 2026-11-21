@@ -1461,7 +1461,7 @@ function noteText(task: Task, report: string, results: readonly { command: strin
 
 // What the orchestrator learns when a delegated task ends (omo-hybrid): status and why, the worker's report, the
 // checks, and its follow-ups with a hint when another task already covers their files.
-export function taskReport(job: Job, task: Task): string {
+export function taskReport(job: Job, task: Task, state = "the project's state directory"): string {
   const open = new Set(job.tasks.filter((t) => t.id !== task.id && !isDone(t) && t.status !== "cancelled").flatMap((t) => t.files))
   const gate = [...task.stages].reverse().find((s) => s.stage === "gate")
   const follow = (task.followUps ?? []).map((f) => `  - ${f.what}${f.why ? ` (${f.why})` : ""}${f.files.length ? ` · files: ${f.files.join(", ")}` : ""}${f.files.length && f.files.every((x) => open.has(x)) ? " · another open task has these files" : ""}`)
@@ -1473,7 +1473,7 @@ export function taskReport(job: Job, task: Task): string {
     task.status === "merged" && task.summary ? `  report: ${task.summary.replace(/\s+/g, " ").slice(-400)}` : "",
     follow.length ? `  follow-ups the worker found (yours to decide):\n${follow.join("\n")}` : "",
     task.sessions?.length ? `  sessions: ${task.sessions.join(", ")} (open one with: opencode -s <id>)` : "",
-    `  notes: notes/${job.id}/${task.id}.md in the project's .micromanager directory`,
+    `  notes: notes/${job.id}/${task.id}.md in ${state}`,
   ].filter(Boolean).join("\n")
 }
 

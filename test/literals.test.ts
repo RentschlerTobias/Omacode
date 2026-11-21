@@ -18,11 +18,11 @@ import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 
-import { LEGACY_PROJECT_STATE, PROJECT_STATE } from "../packages/core/src/paths.ts"
+import { LEGACY_PROJECT_STATES, PROJECT_STATE } from "../packages/core/src/paths.ts"
 
 const ROOT = join(import.meta.dirname, "..")
 
-export const LITERALS = [PROJECT_STATE, LEGACY_PROJECT_STATE] as const
+export const LITERALS = [PROJECT_STATE, ...LEGACY_PROJECT_STATES] as const
 
 export type LiteralPair = readonly [file: string, literal: string]
 export type ScannedFile = { readonly path: string; readonly text: string }
@@ -32,84 +32,55 @@ export type LiteralScan = { readonly stray: readonly LiteralHit[]; readonly stal
 // Shorthands so the allowlist names the directories through the one place that defines them: this file then spells no
 // literal itself, and cannot shield a stray one behind an entry of its own.
 const P = PROJECT_STATE
-const L = LEGACY_PROJECT_STATE
+const L = LEGACY_PROJECT_STATES[0]
+const O = LEGACY_PROJECT_STATES[1]
 
 // Today's tree, generated from a scan: one entry per (file, literal) pair that names a state directory. Paths are
 // project-relative. Remove an entry when its literal leaves the file; the stale check fails until you do.
 export const ALLOW: ReadonlyArray<LiteralPair> = [
-  // The one place the names are defined: the two constants are these strings, and every other file asks this one.
+  // The one place the names are defined: the constants are these strings, and every other file asks this one.
   ["packages/core/src/paths.ts", P],
   ["packages/core/src/paths.ts", L],
-  // Property access that happens to contain the new name as a substring; the scan is a substring scan.
-  ["packages/full/src/plugin.ts", P],
-  // Comment: where the backlog lives.
-  ["packages/micromanager/src/backlog.ts", P],
-  // Comments and a legacy-name comment in the worktree-area rules.
-  ["packages/micromanager/src/decide.ts", P],
-  ["packages/micromanager/src/decide.ts", L],
-  ["packages/micromanager/src/graph.ts", P],
-  // The secret/.git filter also hides the state directory.
-  ["packages/micromanager/src/look.ts", P],
-  ["packages/micromanager/src/look.ts", L],
-  // The repository files nogit manages.
-  ["packages/micromanager/src/nogit.ts", P],
-  ["packages/micromanager/src/nogit.ts", L],
-  // The task-worktree pattern carries both layouts.
-  ["packages/micromanager/src/plan.ts", P],
-  ["packages/micromanager/src/plan.ts", L],
-  // Comment: the hub serves workers inside their worktree.
-  ["packages/micromanager/src/plugin.ts", P],
-  // Prompt text naming the notes directory.
-  ["packages/micromanager/src/runner.ts", P],
-  // The backlog tool's description.
-  ["packages/micromanager/src/tools.ts", P],
-  // Comment: the worktree lives under the state directory.
-  ["packages/micromanager/src/worktree/git.ts", P],
-  // Comment: where the control file lives.
-  ["packages/state/src/control.ts", P],
-  // Role-path globs and their prose: both layouts stay reachable during the migration.
-  ["packages/state/src/roles.ts", P],
-  ["packages/state/src/roles.ts", L],
-  // The git-exclude writer and its comments.
-  ["packages/state/src/store.ts", P],
-  // Comment: a worker's worktree lies inside the project.
-  ["packages/tui/src/progress.ts", P],
-  // Session metadata that happens to contain the new name as a substring.
-  ["packages/tui/src/switcher.ts", P],
-  // Tests: fixtures and expectations that name today's directories.
-  ["test/backlog.test.ts", P],
-  ["test/decide.test.ts", P],
+  ["packages/core/src/paths.ts", O],
+  // Property access that happens to contain an old name as a substring (the micromanager deps and session metadata);
+  // the scan is a substring scan.
+  ["packages/full/src/plugin.ts", L],
+  ["packages/tui/src/switcher.ts", L],
+  // Tests: fixtures and expectations that name a directory, most of them a project from before the move.
+  ["test/backlog.test.ts", L],
   ["test/decide.test.ts", L],
-  ["test/helpers.test.ts", L],
-  ["test/native.test.ts", P],
-  ["test/nogit.test.ts", P],
-  ["test/permissions.test.ts", P],
-  ["test/pick.test.ts", P],
-  ["test/plan.test.ts", P],
-  ["test/progress.test.ts", P],
+  ["test/decide.test.ts", O],
+  ["test/helpers.test.ts", O],
+  ["test/nogit.test.ts", L],
+  ["test/permissions.test.ts", L],
+  ["test/pick.test.ts", L],
+  ["test/plan.test.ts", L],
   ["test/progress.test.ts", L],
-  ["test/roles.test.ts", L],
-  ["test/runner.test.ts", P],
-  ["test/runner.test.ts", L],
-  ["test/sandbox.test.ts", P],
-  ["test/store.test.ts", P],
-  ["test/store.test.ts", L],
-  ["test/tools.test.ts", P],
+  ["test/progress.test.ts", O],
+  ["test/roles.test.ts", O],
+  ["test/runner.test.ts", O],
+  ["test/sandbox.test.ts", L],
   ["test/tools.test.ts", L],
-  ["test/watchdog.test.ts", L],
+  ["test/tools.test.ts", O],
+  ["test/watchdog.test.ts", O],
 ]
 
 const pairKey = (file: string, literal: string): string => `${file}\u0000${literal}`
 
 // The first occurrence's line and the number of occurrences (non-overlapping; the literals cannot overlap).
+// A literal as it is written in a string or in a regular expression: every "." and "/" may carry a backslash, so an
+// escaped name in a regex literal counts as well as a plain one in a string (a regex in decide.ts once hid that way).
+function pattern(literal: string): RegExp {
+  return new RegExp(literal.split("").map((c) => (c === "." || c === "/" ? `\\\\?\\${c}` : c.replace(/[-[\]{}()*+?^$|\\]/g, "\\$&"))).join(""), "g")
+}
+
 function occurrences(text: string, literal: string): { line: number; count: number } {
-  const first = text.indexOf(literal)
-  if (first === -1) return { line: 0, count: 0 }
-  let count = 0
-  for (let index = first; index !== -1; index = text.indexOf(literal, index + literal.length)) count++
+  const hits = [...text.matchAll(pattern(literal))]
+  if (hits.length === 0) return { line: 0, count: 0 }
+  const first = hits[0]!.index!
   let line = 1
   for (let index = 0; index < first; index++) if (text.charCodeAt(index) === 10) line++
-  return { line, count }
+  return { line, count: hits.length }
 }
 
 // The checker, run over the real tree by the tests below and over a fixture by the self-test, so both outcomes are
@@ -165,8 +136,8 @@ const staleMessage = (stale: ReadonlyArray<LiteralPair>): string =>
       "\nRemove the entry; keeping it would shield a future literal in the same file."
 
 test("the scan searches for real names, so a renamed constant cannot turn it into a search for nothing", () => {
-  assert.ok(PROJECT_STATE.length > 1 && LEGACY_PROJECT_STATE.length > 1)
-  assert.notEqual(PROJECT_STATE, LEGACY_PROJECT_STATE)
+  assert.ok(LITERALS.every((literal) => literal.length > 1))
+  assert.equal(new Set(LITERALS).size, LITERALS.length)
   // Each name is found in today's tree: if a constant were renamed to something unused, the scan would pass over
   // every file and prove nothing. paths.ts itself must carry both.
   const files = scanTree()
@@ -210,5 +181,5 @@ test("the checker reports a stray literal and a stale entry and accepts a listed
   const { stray, stale } = checkLiterals(files, allow)
   assert.deepEqual(stray, [{ file: "packages/stray.ts", literal: L, line: 2, count: 1 }])
   assert.deepEqual(stale, [["packages/stray.ts", P]])
-  assert.equal(stray.some((hit) => hit.file === "packages/listed.ts" && hit.literal === P), false, "a listed hit is accepted")
+  assert.equal(stray.some((hit) => hit.file === "packages/listed.ts" && (hit.literal as string) === P), false, "a listed hit is accepted")
 })

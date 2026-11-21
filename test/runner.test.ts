@@ -7,7 +7,7 @@ import { test } from "node:test"
 import { lastAssistantText, parseReport } from "../packages/micromanager/src/brief.ts"
 import { DEFAULT_REGISTRY, route } from "../packages/micromanager/src/registry.ts"
 import { Runner, summary, toModel, type SessionApi } from "../packages/micromanager/src/runner.ts"
-import { loadJob } from "../packages/micromanager/src/store.ts"
+import { DIR, loadJob } from "../packages/micromanager/src/store.ts"
 import { tempDir } from "./harness.ts"
 
 function repo(): string {
@@ -85,8 +85,8 @@ test("plan -> run: tasks pass their checks one by one and land as commits on the
   assert.match(log, /T2: write notes\nT1: write add.js\ninit/)
   assert.equal(existsSync(join(project, "add.js")), false, "the user's checkout is untouched")
   assert.equal(loadJob(project, job.id)?.phase, "integrate")
-  assert.match(readFileSync(join(project, ".git", "info", "exclude"), "utf8"), /\.micromanager\//)
-  assert.match(readFileSync(join(project, ".micromanager", "notes", job.id, "T1.md"), "utf8"), /test -f add.js \(exit 0\)/)
+  assert.ok(readFileSync(join(project, ".git", "info", "exclude"), "utf8").includes(`${DIR}/`))
+  assert.match(readFileSync(join(project, DIR, "notes", job.id, "T1.md"), "utf8"), /test -f add.js \(exit 0\)/)
   // workers run inside the job's worktree, on the routed model, with their role's agent
   const worker = fake.created.find((c) => c.agent === "coder")!
   assert.equal((worker.location as { directory: string }).directory, done.integrationWorktree)

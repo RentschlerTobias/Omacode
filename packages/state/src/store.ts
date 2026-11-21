@@ -1,4 +1,4 @@
-// Where jobs live: <project>/.micromanager/jobs/<id>.json, one file per job, written atomically.
+// Where jobs live: <project>/<state dir>/jobs/<id>.json, one file per job, written atomically.
 //
 // Inside the project, so workers can read their notes without an external_directory ask; kept out of git through
 // the repository's own .git/info/exclude, which is local and needs no .gitignore change (design.md §8.2).
@@ -7,12 +7,12 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
-import { LEGACY_PROJECT_STATE as LEGACY_DIR, PROJECT_STATE as DIR, stateDir } from "@omacode/core/paths"
+import { LEGACY_PROJECT_STATES, PROJECT_STATE as DIR, splitState, STATE_DIRS, stateDir } from "@omacode/core/paths"
 import { excludeFromGit, gitCommonDir } from "@omacode/core/project"
 
 import type { Job } from "./state.ts"
 
-export { DIR, LEGACY_DIR, stateDir }
+export { DIR, LEGACY_PROJECT_STATES, STATE_DIRS, stateDir }
 
 export {
   reconcileJob,
@@ -77,19 +77,17 @@ export function loadJob(project: string, id: string): Job | undefined {
   return job
 }
 
-// A path the job keeps inside its project's state directory, written while the project was somewhere else: the folder
-// was renamed, moved or copied since. Only a whole string that is such a path counts, never one inside a text. A copy
-// is rewritten too although the old path still exists: those worktrees belong to the original, not to this project.
+// A path the job keeps inside its project's state directory, written while the project was somewhere else or while
+// its state directory had another name: the folder was renamed, moved or copied since, or `migrate` moved the state
+// directory. Only a whole string that is such a path counts, never one inside a text. A copy is rewritten too although
+// the old path still exists: those worktrees belong to the original, not to this project.
 function movedPath(value: string, project: string): string | undefined {
   if (!value.startsWith("/") || /\s/.test(value)) return undefined
-  for (const dir of [DIR, LEGACY_DIR]) {
-    const at = value.indexOf(`/${dir}/`)
-    if (at < 0) continue
-    const old = value.slice(0, at)
-    if (old === project) return undefined
-    return join(project, value.slice(at + 1))
-  }
-  return undefined
+  const at = splitState(value)
+  if (!at) return undefined
+  const dir = stateDir(project)
+  if (at.project === project && at.dir === dir) return undefined
+  return join(project, dir, at.rest)
 }
 
 // Rewrites, in place, every path of the job that points into the state directory at the project's old place, so a

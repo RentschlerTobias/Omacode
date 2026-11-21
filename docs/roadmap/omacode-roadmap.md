@@ -693,27 +693,41 @@ checkout (now owned by T3/T6).
 
 **Tasks**
 
-- [ ] **A5-T0 — Consolidate the abstraction.** A1-T0 created the helper; this replaces the remaining consumers. Every
-  path answer goes through it.
+- [x] **A5-T0 — Consolidate the abstraction.** A1-T0 created the helper; this replaces the remaining consumers. Every
+  path answer goes through it. *Done 2026-11-21 for the project state:* `core/paths.ts` has `STATE_DIRS`,
+  `inStateDir` and `splitState`; the regexes and globs of `decide.ts`, `plan.ts`, `roles.ts`, `look.ts`, `nogit.ts`
+  and `tui/progress.ts` are built from them. The literal scan now also finds an escaped name in a regex, which is how
+  `decide.ts` had hidden one.
 - [ ] **A5-T1 — Paths + namespace pre-check.** `<project>/.opencode/omacode/` (jobs, worktrees, plan, backlog, control,
   contracts, notes, trials); `~/.local/state/omacode/`; `~/.config/opencode/omacode.jsonc`. **Before any consumer
   rewrite**, verify that writing job state under OpenCode's own `.opencode/` namespace is not host-scanned or treated
   as plugin config; if it is, this task blocks the rename and `.micromanager` stays.
-- [ ] **A5-T2 — Legacy detection.** `.micromanager/`, `.jev-micromanager/`; config fallback; user-state fallback. These
+  *Checked 2026-11-21 against OpenCode 2.2.5:* nothing below `.opencode/omacode/` is loaded as an agent, command, mode
+  or plugin, also from a session inside a worktree there (agents found only in `.opencode/agent/`, the control), and
+  a write there triggers no config reload. **But OpenCode watches `.opencode/` recursively with inotify:** 800
+  directories under `.opencode/omacode/` raised its watches from 356 to 1156, the same under `.micromanager/` left them
+  at 355. Worktrees with `node_modules` would cost one watch per directory each and send every checkout, install and
+  build through OpenCode's watcher. **The pre-check blocks `.opencode/omacode/`.** One more rule found on the way: a
+  session in a worktree reads every `opencode.json` in the directories above it, so nothing may write one into the
+  state directory.
+- [x] **A5-T2 — Legacy detection.** `.micromanager/`, `.jev-micromanager/`; config fallback; user-state fallback. These
   legacy literals are **allowlisted in the T13 scan**.
-- [ ] **A5-T3 — Migration.** Idle check; move/copy; rewrite JSON paths; `git worktree move` / `git worktree repair`;
+- [x] **A5-T3 — Migration.** Idle check; move/copy; rewrite JSON paths; `git worktree move` / `git worktree repair`;
   `omacode migrate --dry-run|--apply`. **No in-project symlink** — an old-path hit produces a warning with the migrate
-  command instead.
-- [ ] **A5-T4 — Git exclude.** Exclude `.opencode/omacode/`; keep backlog/contracts exceptions; `.gitignore` inside the
-  state dir.
+  command instead. *Done 2026-11-21:* `npm run migrate -- --project <dir> [--apply]` (`state/migrate.ts`); a project
+  on an old directory gets a one-sentence note per session instead of a symlink. User state and config: second step.
+- [x] **A5-T4 — Git exclude.** Exclude `.opencode/omacode/`; keep backlog/contracts exceptions; `.gitignore` inside the
+  state dir. *Done:* `**/.opencode/omacode/*` with the two exceptions. No `.gitignore` inside the state directory: it
+  would itself show up as untracked, and the exclude file already covers every clone the plugin runs in.
 - [ ] **A5-T5 — Consumer inventory (complete).** `state/roles.ts` (deny rules), `state/picks.ts` (`micromanager.jsonc`,
   `micromanager-models.json`), `state/control.ts`, `core/journal.ts` (user state, journal, and `heldOutRoot()` — which
   is also the sandbox deny-read and the A2b dataset source), `guard/src/config.ts`, `micromanager/nogit.ts` (`OWN`),
   `look.ts`, `plan.ts` (worktree regex), `decide.ts` (job area), `runner.ts`, `backlog.ts`, `budget.ts`, `config.ts`,
   `graph.ts`, `worktree/git.ts`, `tools.ts` (tool descriptions), `sandbox.ts` (deny-read, `tempRoot`),
   `tui/switcher.ts`, `tui/progress.ts`, `tui/pools.ts`. Plus `test/` fixtures.
-- [ ] **A5-T6 — Tests.** Fresh project; legacy project; running job defers; worktree repair; config fallback; the
-  allowlisted scan (T13) stays green; no duplicate state.
+- [x] **A5-T6 — Tests.** Fresh project; legacy project; running job defers; worktree repair; config fallback; the
+  allowlisted scan (T13) stays green; no duplicate state. *Done:* `test/migration.test.ts`, `test/project-move.test.ts`,
+  `test/paths.test.ts`; config fallback comes with the user-level step.
 
 **Files:** `packages/state/src/{store,control,roles,picks}.ts`, `packages/core/src/journal.ts`,
 `packages/guard/src/config.ts`, `packages/micromanager/src/{plugin,config,nogit,look,plan,decide,runner,backlog,budget,

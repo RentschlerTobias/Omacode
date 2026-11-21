@@ -14,6 +14,8 @@ import { createServer, type Server } from "node:http"
 import { homedir, tmpdir } from "node:os"
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path"
 
+import { inStateDir } from "@omacode/core/paths"
+
 const IMAGES: Readonly<Record<string, string>> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif" }
 const PAGES = new Set([".html", ".htm", ".svg"])
 const MIME: Readonly<Record<string, string>> = {
@@ -147,7 +149,7 @@ export function lookTarget(input: { path?: string; url?: string }, dir: string, 
 
 // Files the static server never hands out: environment files, git's own and the plugin's.
 function forbidden(rel: string): boolean {
-  return rel.split("/").some((part) => /^\.env(\..*)?$/.test(part) && !/^\.env\.example$/.test(part) || part === ".git" || part === ".micromanager" || part === ".jev-micromanager")
+  return inStateDir(rel) || rel.split("/").some((part) => /^\.env(\..*)?$/.test(part) && !/^\.env\.example$/.test(part) || part === ".git")
 }
 
 // The worker's directory over http on 127.0.0.1, read-only, so absolute asset paths (/assets/x.css) resolve.

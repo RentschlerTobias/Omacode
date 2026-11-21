@@ -5,14 +5,18 @@ import { join } from "node:path"
 import { test } from "node:test"
 
 import {
-  LEGACY_PROJECT_STATE,
+  inStateDir,
+  LEGACY_PROJECT_STATES,
   PROJECT_STATE,
+  splitState,
   stateDir,
   statePath,
   userConfigDir,
   userConfigPath,
   userStateDir,
 } from "../packages/core/src/paths.ts"
+
+const [LEGACY_PROJECT_STATE, OLDEST_PROJECT_STATE] = LEGACY_PROJECT_STATES
 
 test("stateDir keeps a project from before the rename on its old directory; everything else gets the new name", () => {
   const legacy = mkdtempSync(join(tmpdir(), "mm-legacy-"))
@@ -23,9 +27,14 @@ test("stateDir keeps a project from before the rename on its old directory; ever
     assert.equal(stateDir(legacy), LEGACY_PROJECT_STATE)
     // Once the new directory exists the project is on it: an old one left behind does not win.
     mkdirSync(join(both, LEGACY_PROJECT_STATE))
-    mkdirSync(join(both, PROJECT_STATE))
+    mkdirSync(join(both, PROJECT_STATE), { recursive: true })
     assert.equal(stateDir(both), PROJECT_STATE)
     assert.equal(stateDir(fresh), PROJECT_STATE)
+    // Of two old ones, the newer name wins.
+    mkdirSync(join(fresh, OLDEST_PROJECT_STATE))
+    assert.equal(stateDir(fresh), OLDEST_PROJECT_STATE)
+    mkdirSync(join(fresh, LEGACY_PROJECT_STATE))
+    assert.equal(stateDir(fresh), LEGACY_PROJECT_STATE)
   } finally {
     for (const dir of [legacy, both, fresh]) rmSync(dir, { recursive: true, force: true })
   }
@@ -71,4 +80,14 @@ test("userConfigPath is <XDG_CONFIG_HOME>/opencode/<name>, or ~/.config/opencode
     if (before === undefined) delete process.env.XDG_CONFIG_HOME
     else process.env.XDG_CONFIG_HOME = before
   }
+})
+
+test("a path is split at its state directory under any name, and nothing else is", () => {
+  assert.deepEqual(splitState(`/p/${PROJECT_STATE}/worktrees/job-1`), { project: "/p", dir: PROJECT_STATE, rest: "worktrees/job-1" })
+  assert.deepEqual(splitState(`/p/q/${OLDEST_PROJECT_STATE}`), { project: "/p/q", dir: OLDEST_PROJECT_STATE, rest: "" })
+  assert.deepEqual(splitState(`/p/${LEGACY_PROJECT_STATE}/worktrees/j/${PROJECT_STATE}/x`)?.dir, LEGACY_PROJECT_STATE, "the first one counts")
+  assert.equal(splitState("/p/.opencode/agent/x.md"), undefined)
+  assert.equal(inStateDir(`${PROJECT_STATE}/jobs/a.json`), true)
+  assert.equal(inStateDir(`sub/${LEGACY_PROJECT_STATE}`), true)
+  assert.equal(inStateDir(".opencode/agent/x.md"), false)
 })

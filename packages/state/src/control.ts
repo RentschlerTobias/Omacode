@@ -1,5 +1,5 @@
 // A job's switches: whether it was started, how it runs (auto-continue, parallel, review), whether the user stopped it,
-// and why auto-continue pauses. Kept in .micromanager/control/<job>.json, apart from the job file: the TUI writes it
+// and why auto-continue pauses. Kept in <state dir>/control/<job>.json, apart from the job file: the TUI writes it
 // (the sidebar toggles and STOP, src/tui.tsx) while the server owns the job file and saves it whenever a worker moves
 // on, so one shared file would lose writes. The server reads it at every step, cached on mtime and size.
 //

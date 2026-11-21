@@ -9,7 +9,7 @@ import { costText, detail, ICON } from "@omacode/state/board"
 import { settled, startable } from "@omacode/state"
 import { family } from "@omacode/state/roles"
 import type { Job, Task, TaskStatus } from "@omacode/state"
-import { DIR, LEGACY_DIR } from "@omacode/state/store"
+import { splitState } from "@omacode/core/paths"
 import { modesPath } from "@omacode/core/paths"
 import { readFileSync } from "node:fs"
 
@@ -51,8 +51,8 @@ export interface JobView {
   readonly rows: readonly TaskRow[]
 }
 
-// The project a session works in: a worker's worktree lies inside the project, under .micromanager/worktrees/ (or the
-// directory's old name, in a project from before the rename).
+// The project a session works in: a worker's worktree lies inside the project, under <state dir>/worktrees/ (under
+// whichever name the project's state directory has).
 export type Mode = "plan" | "build"
 
 // The mode the orchestrator is in for this session. packages/micromanager/src/mode.ts writes it, plan is the default,
@@ -68,8 +68,7 @@ export function modeOfSession(sessionID: string, file = modesPath()): Mode {
 }
 
 export function projectOf(directory: string): string {
-  const at = [DIR, LEGACY_DIR].map((dir) => directory.indexOf(`/${dir}/`)).find((i) => i !== -1)
-  return at === undefined ? directory : directory.slice(0, at)
+  return splitState(directory)?.project ?? directory
 }
 
 const worksOn = (task: Task, sessionID: string) => task.session === sessionID || (task.sessions ?? []).includes(sessionID)

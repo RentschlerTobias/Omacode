@@ -13,7 +13,7 @@
 //   1. a hard rule no layer can pass: the user's keys and credential stores, their home itself, the system
 //      directories, the secret files inside ~/.config, another job's branch in the repository's own git data. The
 //      user's `allowOutside` setting is the one thing that lifts it, and only for the paths it names (below);
-//   2. the job's own area: any worktree under <project>/.micromanager/worktrees/, this job's integration
+//   2. the job's own area: any worktree under <project>/<state dir>/worktrees/, this job's integration
 //      worktree included. Path-based, never a substring: `worktrees-old` is not `worktrees`;
 //   3. task-vouched: a path the task text names with its full path, for a read only (a named path is a vouch for
 //      reading it, not for changing it);
@@ -29,7 +29,7 @@ import { DeciderError } from "./decider.ts"
 import type { Decider } from "./backends.ts"
 import { WRITERS } from "./profile.ts"
 import { MICROMANAGER, roleByAgent } from "./roles.ts"
-import { stateDir } from "./store.ts"
+import { STATE_DIRS } from "./store.ts"
 
 // The node a permission case is journalled under. It is not a configured backend of its own: the mode decides, and the
 // permission path uses the cloud client only (src/backends.ts cloudAnswers). A2b supplies its training export and the
@@ -421,13 +421,14 @@ export function readsOnlyInside(request: PermissionRequest, root: string): boole
   )
 }
 
-// The task worktree a directory lies in, or undefined. Two layouts, both under the project's state directory (either
-// name, .micromanager or .jev-micromanager in a project from before the rename): a build task's
+// The task worktree a directory lies in, or undefined. Two layouts, both under the project's state directory (under
+// any of its names, core/paths.ts STATE_DIRS): a build task's
 // <project>/<stateDir>/worktrees/<job>--T<id>, and a plan's own <project>/<stateDir>/plan/<job>/worktrees/<task>.
 // Only a task's own worktree, never the job's integration worktree: that one is the merge train's target and the
 // readers' tree, so nothing may change it outside a merge. A project inside a larger repository works in
 // <worktree>/<rel>; the area is the whole worktree either way.
-const TASK_WORKTREE = /^(.*\/\.(?:jev-)?micromanager\/(?:worktrees\/[^/]+--T[\w.]+|plan\/[^/]+\/worktrees\/[\w.-]+))(?:\/|$)/
+const STATE_NAMES = STATE_DIRS.map((dir) => dir.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")).join("|")
+const TASK_WORKTREE = new RegExp(`^(.*/(?:${STATE_NAMES})/(?:worktrees/[^/]+--T[\\w.]+|plan/[^/]+/worktrees/[\\w.-]+))(?:/|$)`)
 
 export function taskWorktree(directory: string | undefined): string | undefined {
   return directory ? normalizeOutside(directory).match(TASK_WORKTREE)?.[1] : undefined
@@ -499,14 +500,18 @@ export function riskClass(request: PermissionRequest): "read" | "write" {
   return request.action === "shell" && readsOnly(request.resources) ? "read" : "write"
 }
 
-// The job's own area: any worktree under <directory>/<stateDir>/worktrees/ (src/store.ts stateDir), this job's
-// integration worktree included, and the plan's own drafts under <directory>/<stateDir>/plan/: a plan worktree is the
-// job's own area too. Compared segment by segment, so a sibling that merely starts with the same name is outside.
+// The job's own area: any worktree under <directory>/<state dir>/worktrees/, this job's integration worktree included,
+// and the plan's own drafts under <directory>/<state dir>/plan/: a plan worktree is the job's own area too. Under any
+// name the state directory has had (STATE_DIRS): all of them are the plugin's, and a job of a project not yet migrated
+// keeps its worktrees under the old one. Compared segment by segment, so a sibling that merely starts with the same
+// name is outside.
 export function inJobArea(directory: string | undefined, path: string): boolean {
   if (!directory) return false
-  const state = normalizeOutside(join(directory, stateDir(directory)))
   const want = normalizeOutside(path)
-  return [join(state, "worktrees"), join(state, "plan")].some((area) => under(want, area))
+  return STATE_DIRS.some((dir) => {
+    const state = normalizeOutside(join(directory, dir))
+    return [join(state, "worktrees"), join(state, "plan")].some((area) => under(want, area))
+  })
 }
 
 // The absolute paths a task text names, `~` expanded. A named file vouches for its directory too, as the plugin's own

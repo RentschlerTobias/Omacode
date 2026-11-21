@@ -10,7 +10,7 @@
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
-import { stateDir } from "@omacode/core/paths"
+import { inStateDir, STATE_DIRS } from "@omacode/core/paths"
 
 import { exec as defaultExec, type Exec } from "./integration.ts"
 
@@ -28,7 +28,8 @@ const GENERATED = new Set(["node_modules", ".venv", "venv", "__pycache__", "dist
 // Names that hold secrets: keys, certificates, environment files, credentials.
 export const SECRET = [/^\.env(\..+)?$/i, /\.(pem|key|p12|pfx|kdbx|keystore|jks)$/i, /^id_(rsa|ed25519|ecdsa|dsa)(\.pub)?$/i, /^(credentials|secrets?)(\..+)?$/i, /^\.netrc$/i, /^\.npmrc$/i, /^\.pypirc$/i]
 // The plugin's own state and anything above this size stay out.
-const OWN = new Set([".micromanager", ".jev-micromanager", ".git"])
+// The state directory under any of its names (inStateDir) and git's own.
+const own = (relPath: string, name: string) => name === ".git" || inStateDir(relPath)
 export const MAX_FILE_BYTES = 10 * 1024 * 1024
 const MAX_ENTRIES = 20_000 // a folder this large is surveyed only so far
 
@@ -65,7 +66,7 @@ export function surveyFolder(project: string): Survey {
       }
       if (st.isSymbolicLink()) continue
       if (st.isDirectory()) {
-        if (OWN.has(name)) continue
+        if (own(relPath, name)) continue
         if (GENERATED.has(name)) { excluded.push(`${relPath}/`); continue }
         walk(path, relPath)
         continue
@@ -80,7 +81,7 @@ export function surveyFolder(project: string): Survey {
   walk(project, "")
   let top: string[] = []
   try {
-    top = readdirSync(project).filter((n) => !OWN.has(n)).slice(0, 40)
+    top = readdirSync(project).filter((n) => !own(n, n)).slice(0, 40)
   } catch {
     // an unreadable folder: nothing to show
   }
@@ -107,8 +108,6 @@ export function copyForPlan(project: string, dest: string): PlanCopy {
   let bytes = 0
   let seen = 0
   const excluded: string[] = []
-  // The state directory by its resolved name, so a project that kept the old one is skipped too.
-  const own = stateDir(project)
   mkdirSync(dest, { recursive: true })
   const walk = (dir: string, out: string, rel: string) => {
     let names: string[]
@@ -131,7 +130,7 @@ export function copyForPlan(project: string, dest: string): PlanCopy {
       if (st.isSymbolicLink()) { excluded.push(relPath); continue }
       if (st.isDirectory()) {
         // The state directory holds dest itself, so skipping it is also what keeps the copy from recursing into it.
-        if (OWN.has(name) || name === own) { excluded.push(`${relPath}/`); continue }
+        if (own(relPath, name)) { excluded.push(`${relPath}/`); continue }
         if (GENERATED.has(name)) { excluded.push(`${relPath}/`); continue }
         try {
           mkdirSync(target, { recursive: true })
@@ -170,8 +169,8 @@ export async function initRepo(project: string, excluded: readonly string[], run
   const had = existsSync(ignore) ? readFileSync(ignore, "utf8") : ""
   const lines = had.split("\n").map((l) => l.trim())
   // The plugin's state stays out, except its backlog and contracts, which are the user's to commit (design.md §25).
-  const own = [...OWN].filter((n) => n !== ".git").flatMap((n) => [`${n}/*`, `!${n}/backlog/`, `!${n}/contracts/`])
-  const add = own.concat(excluded.map((p) => `/${p}`)).filter((p) => !lines.includes(p))
+  const ours = STATE_DIRS.flatMap((n) => [`${n}/*`, `!${n}/backlog/`, `!${n}/contracts/`])
+  const add = ours.concat(excluded.map((p) => `/${p}`)).filter((p) => !lines.includes(p))
   if (add.length) writeFileSync(ignore, `${had}${had && !had.endsWith("\n") ? "\n" : ""}${had ? "\n" : ""}# left out of the first commit by micromanager\n${add.join("\n")}\n`)
   const staged = await run("git", ["add", "-A"], { cwd: project })
   if (staged.code !== 0) return { ok: false, text: `git add failed: ${staged.stderr.trim()}` }

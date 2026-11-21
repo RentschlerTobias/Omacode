@@ -6,6 +6,8 @@
 //               node src/cli.ts status [--project dir] [--all] [--watch]   (an ASCII board of the newest job, or of all)
 //               node src/cli.ts memory-adopt [--project dir] [--yes] [slug…]   (take memory kept under old keys, from
 //                                                                before renames or moves, into the project)
+//               node src/cli.ts migrate [--project dir] [--apply]   (move the state directory from an old name to
+//                                                                the current one, core/paths.ts; a dry run without --apply)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
@@ -16,6 +18,7 @@ import { createInterface } from "node:readline/promises"
 
 import { adopt, adoptCandidates } from "@omacode/context/adopt"
 import { MemoryStore } from "@omacode/context/store"
+import { applyMigration, planMigration } from "@omacode/state/migrate"
 
 import { DEFAULT_BACKENDS, Decider, cloudKey, makeAskers } from "./backends.ts"
 import { benchPath, buildReport, drift, formatBench, formatDrift, formatN7, formatSweep, guardMetrics, loadCases, loadGuardCorpus, loadN7, loadPermissionCorpus, scoreCases, scoreN7, scorePermissions, sweep, writeBench, type Case, type PermissionSeen } from "./bench.ts"
@@ -67,6 +70,24 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
   if (command === "memory-adopt") return await memoryAdopt(args)
+  if (command === "migrate") {
+    const project = resolve(flag(args, "project") ?? process.env.INIT_CWD ?? process.cwd())
+    const plan = planMigration(project)
+    console.log(`project ${project}`)
+    if (!plan.from) {
+      console.log(plan.note)
+      return plan.problems.length ? 1 : 0
+    }
+    console.log(`${args.includes("--apply") ? "" : "dry run: "}${plan.note}`)
+    for (const problem of plan.problems) console.log(`  cannot move now: ${problem}`)
+    if (!args.includes("--apply")) {
+      if (!plan.problems.length) console.log("run it again with --apply to move")
+      return plan.problems.length ? 1 : 0
+    }
+    const result = applyMigration(plan)
+    console.log(result.text)
+    return result.moved ? 0 : 1
+  }
   if (command === "status") {
     const project = flag(args, "project") ?? process.cwd()
     const draw = () => {

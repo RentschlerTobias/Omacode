@@ -9,7 +9,9 @@ import { after, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
 
-import { LEGACY_PROJECT_STATE as LEGACY, PROJECT_STATE as STATE } from "../packages/core/src/paths.ts"
+import { LEGACY_PROJECT_STATES, PROJECT_STATE as STATE } from "../packages/core/src/paths.ts"
+
+const LEGACY = LEGACY_PROJECT_STATES[1]
 import { pathSlug, projectId, projectRoot, PROJECT_FILE } from "../packages/core/src/project.ts"
 import { Memory } from "../packages/context/src/memory.ts"
 import { loadJob, relocateJob, saveJob } from "../packages/state/src/store.ts"

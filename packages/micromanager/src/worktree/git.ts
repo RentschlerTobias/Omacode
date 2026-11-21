@@ -2,7 +2,7 @@
 // puts a task's commits back on the job's branch. It works on its own, with no micromanager installed.
 //
 // The job's own branch and worktree (design.md §11): workers change files there, never in the user's checkout.
-// The worktree lives inside the project, under .micromanager/worktrees/, so workers stay inside the project
+// The worktree lives inside the project, under <state dir>/worktrees/, so workers stay inside the project
 // directory (no external_directory ask) and git ignores it through .git/info/exclude.
 //
 // Branches used to be named jev/<job>. New jobs use micromanager/<job>; old job files keep their recorded branch, so

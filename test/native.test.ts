@@ -15,7 +15,7 @@ import { planDocPath, readPlanDoc, writePlanDoc, type PlanDoc } from "../package
 import { WRITERS } from "../packages/micromanager/src/profile.ts"
 import { roleByAgent } from "../packages/micromanager/src/roles.ts"
 import { moveJob, newJob, type Task } from "../packages/micromanager/src/state.ts"
-import { loadJob, saveJob } from "../packages/micromanager/src/store.ts"
+import { DIR, loadJob, saveJob } from "../packages/micromanager/src/store.ts"
 import { updateControl } from "../packages/micromanager/src/control.ts"
 import { FIX_ROUNDS } from "../packages/micromanager/src/watchdog.ts"
 import { tempDir } from "./harness.ts"
@@ -450,9 +450,9 @@ function snapshot(dir: string, skip: readonly string[]): Record<string, string> 
   const out: Record<string, string> = {}
   const walk = (at: string, rel: string) => {
     for (const entry of readdirSync(at, { withFileTypes: true })) {
-      if (!rel && skip.includes(entry.name)) continue
       const path = join(at, entry.name)
       const key = rel ? `${rel}/${entry.name}` : entry.name
+      if (skip.includes(key)) continue
       if (entry.isDirectory()) walk(path, key)
       else if (entry.isFile()) out[key] = createHash("sha256").update(readFileSync(path)).digest("hex")
       else out[key] = `not a regular file: ${entry.isSymbolicLink() ? "symlink" : "other"}`
@@ -774,7 +774,7 @@ test("a writer works in its own worktree; failing checks go back to it, passing 
 
   assert.equal(native.claim("ses_w1", d.prompt), undefined, "only a child's first prompt claims")
   const claimed = native.claim("ses_w1", child(d.prompt))!
-  assert.equal(claimed.dir, join(project, ".micromanager", "worktrees", `${d.job.id}--T1`))
+  assert.equal(claimed.dir, join(project, DIR, "worktrees", `${d.job.id}--T1`))
   assert.equal(claimed.parent, "ses_mm")
   assert.equal(git(claimed.dir, "branch", "--show-current"), `micromanager/${d.job.id}--T1`)
   assert.equal(native.claim("ses_w2", child(d.prompt)), undefined, "a task is claimed once")
@@ -1282,7 +1282,7 @@ test("a trial whose attempts all fail tells the micromanager to split the task, 
   assert.equal(native.noteFollowUps("ses_a2", "FOLLOWUP: fix the flaky date test | again").length, 0, "known already")
   const first = native.backlog(project, d.job, false)
   assert.deepEqual(first.drafts.map((i) => [i.slug, i.origin, i.from]), [["fix-the-flaky-date-test", "later", `${d.job.id}/T1`], ["make-it-pass", "trial-failed", `${d.job.id}/T1`]])
-  assert.match(readFileSync(join(project, ".micromanager", "backlog", "make-it-pass.md"), "utf8"), /checks:\n  - test -f never\.txt\n/)
+  assert.match(readFileSync(join(project, DIR, "backlog", "make-it-pass.md"), "utf8"), /checks:\n  - test -f never\.txt\n/)
   assert.deepEqual(native.backlog(project, d.job, false).drafts, [], "written once")
   assert.equal(loadJob(project, d.job.id)!.later![0]!.draft, "fix-the-flaky-date-test")
 })
@@ -1314,7 +1314,7 @@ test("a fitness contract: its baseline is measured, a writer is measured against
   await assert.rejects(native.delegate(project, "ses_mm", { agent: "coder", description: "speed", prompt: "Make it faster.\nContract: C1\nFiles: ms.txt\nChecks: test -s ms.txt" }, MODEL), /contract C1 is a draft; finish its round first/)
   await native.freezeContract(project, job.id, "C1")
   assert.deepEqual(job.contracts![0]!.frozen!.files, { "bench.sh": git(project, "hash-object", "bench.sh") })
-  assert.ok(existsSync(join(project, ".micromanager", "contracts", job.id, "C1.json")))
+  assert.ok(existsSync(join(project, DIR, "contracts", job.id, "C1.json")))
   assert.deepEqual(job.contracts![0]!.baseline!.values, { ms: 100, hits: 10 })
   assert.equal(job.counters.evals, 1)
 
@@ -1845,7 +1845,7 @@ test("a user trial holds every passed attempt with no deadline, and asks the use
   assert.ok(tasks[0]!.pickAsked)
   assert.equal(shots.length, 2)
   assert.deepEqual(told, ["Pick a version of T1"])
-  const page = join(project, ".micromanager", "trials", `${d.job.id}-T1.html`)
+  const page = join(project, DIR, "trials", `${d.job.id}-T1.html`)
   assert.match(readFileSync(page, "utf8"), /Pick a version of T1[\s\S]*data:image\/png;base64/)
   assert.ok(existsSync(w1.dir), "a held attempt keeps its worktree")
 

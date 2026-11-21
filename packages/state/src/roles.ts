@@ -13,6 +13,7 @@ export interface Rule {
 }
 
 import type { RoleId } from "./schema.ts"
+import { STATE_DIRS } from "@omacode/core/paths"
 export type { RoleId }
 
 export interface Role {
@@ -60,12 +61,12 @@ const askShell = [rule("shell", "ask")]
 const noDelegation = [rule("subagent", "deny")]
 // The plugin's state (job files, notes) is not for agents: a local planner looped on it in a live test. Paths are
 // relative to the session's directory; a worker inside its worktree never needs to climb up into jobs or notes.
-const STATE_PATHS = [".micromanager", ".jev-micromanager"].flatMap((dir) => [`${dir}*`, `*/${dir}/jobs*`, `*/${dir}/notes*`]) // the old name too
+const STATE_PATHS = STATE_DIRS.flatMap((dir) => [`${dir}*`, `*/${dir}/jobs*`, `*/${dir}/notes*`]) // the old names too
 const noStateDir = [
   ...["read", "glob", "grep", "list", "edit", "write", "patch"].flatMap((tool) => STATE_PATHS.map((path) => rule(tool, "deny", path))),
   // The backlog and the contracts are meant to be read (design.md §25); the last matching rule wins, so these come after
   // the denials. Only the plugin writes them.
-  ...["read", "glob", "grep", "list"].flatMap((tool) => [".micromanager", ".jev-micromanager"].flatMap((dir) => [`${dir}/backlog*`, `${dir}/contracts*`].map((path) => rule(tool, "allow", path)))),
+  ...["read", "glob", "grep", "list"].flatMap((tool) => STATE_DIRS.flatMap((dir) => [`${dir}/backlog*`, `${dir}/contracts*`].map((path) => rule(tool, "allow", path)))),
 ]
 
 export const TEST_RUNNERS = [
@@ -256,7 +257,7 @@ export function roleById(id: string): Role | undefined {
 // two names. The second form repeats the first with a leading "*/", because a caller may name the file from the
 // repository root. A plan's own artifacts live here too, so the plan agent may write them while noStateDir denies the
 // rest of the directory (A1-T4).
-const PLAN_PATHS = [".micromanager", ".jev-micromanager"].flatMap((dir) => [`${dir}/plan*`, `*/${dir}/plan*`])
+const PLAN_PATHS = STATE_DIRS.flatMap((dir) => [`${dir}/plan*`, `*/${dir}/plan*`])
 // Who reads a plan: build mode's micromanager, which decides from plan.md whether to execute it or plan it again.
 const PLAN_READERS = ["read", "glob", "grep", "list"] as const
 const planReads = PLAN_READERS.flatMap((tool) => PLAN_PATHS.map((path) => rule(tool, "allow", path)))
