@@ -36,6 +36,10 @@ FIRST = ("text", "utterance", "task", "question")
 # The encoder runs eager attention (DeBERTa rejects SDPA), so the attention matrix is n² and a 24 000-character state
 # peaked at 13.7 GB and took 72 s for one decision (measured 2026-11-18). 4 000 characters stays under 0.5 GB and 5 s.
 MAX_CHARS = 2000
+# The entity endpoint reads in chunks of 384 tokens (gliner2 extract_entities_long), so its memory does not grow with
+# the text and the decision clamp does not apply: before 2026-11-21 it did, and a name past character 2 000 of a text
+# was never found, so never redacted. This bound is time, not memory: about 50 chunks.
+MAX_ENTITY_CHARS = 64_000
 
 
 def clamp(text: str, limit: int = MAX_CHARS) -> tuple[str, bool]:
@@ -129,7 +133,7 @@ def decide(classifier: Classifier, body: Mapping[str, Any], model: str, alive: C
     return out
 
 
-def extract(finder: Any, body: Mapping[str, Any], alive: Callable[[], bool] = lambda: True, max_chars: int = MAX_CHARS) -> dict[str, Any]:
+def extract(finder: Any, body: Mapping[str, Any], alive: Callable[[], bool] = lambda: True, max_chars: int = MAX_ENTITY_CHARS) -> dict[str, Any]:
     """The spans of each label in each text. Labels go to GLiNER2 without its marker characters and come back as asked."""
     t0 = time.perf_counter()
     texts = body.get("texts")
@@ -230,7 +234,7 @@ class GlinerClassifier:
 
 
 def make_handler(
-    classifier: Classifier, model: str, max_chars: int = MAX_CHARS, token: str | None = None
+    classifier: Classifier, model: str, max_chars: int = MAX_CHARS, token: str | None = None, max_entity_chars: int = MAX_ENTITY_CHARS
 ) -> type[BaseHTTPRequestHandler]:
     expected = f"Bearer {token}" if token else None
 
@@ -279,7 +283,7 @@ def make_handler(
                     self._send(501, {"error": "this server finds no entities"})
                     return
                 try:
-                    self._send(200, extract(classifier, body, alive=alive, max_chars=max_chars))
+                    self._send(200, extract(classifier, body, alive=alive, max_chars=max_entity_chars))
                 except ValueError as exc:
                     self._send(400, {"error": f"bad request: {exc}"})
                 except (Abandoned, BrokenPipeError):
@@ -308,12 +312,13 @@ def main() -> None:
     parser.add_argument("--entity-model", default=None, help="the checkpoint for /v1/entities (names and addresses); default: --model")
     parser.add_argument("--threads", type=int, default=2, help="torch threads: 8 arenas cost more memory than they win on one request")
     parser.add_argument("--max-chars", type=int, default=MAX_CHARS, help="the longest text one decision reads; eager attention is n²")
+    parser.add_argument("--max-entity-chars", type=int, default=MAX_ENTITY_CHARS, help="the longest text the entity endpoint reads; it reads in chunks")
     parser.add_argument("--no-preload", action="store_true", help="load the model on the first request instead of at start")
     args = parser.parse_args()
     classifier = GlinerClassifier(args.model, args.threads, args.entity_model)
     if not args.no_preload:
         classifier.preload()
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner", args.max_chars, os.environ.get("DECIDER_TOKEN") or None))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(classifier, "gliner", args.max_chars, os.environ.get("DECIDER_TOKEN") or None, args.max_entity_chars))
     print(f"decider on http://{args.host}:{args.port} ({args.model}, CPU)", flush=True)
     server.serve_forever()
 

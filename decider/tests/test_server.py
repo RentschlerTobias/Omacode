@@ -187,10 +187,28 @@ class CapTest(unittest.TestCase):
         self.assertTrue(out["truncated"])
         self.assertLessEqual(len(fake.calls[0][0]), 100)
 
-    def test_an_entity_text_is_clamped_too(self) -> None:
+    def test_an_entity_text_is_bounded_by_its_own_limit(self) -> None:
         class FakeFinder:
             def entities(self, text, labels, threshold):
                 return []
 
-        out = extract(FakeFinder(), {"texts": ["z" * 9000], "labels": ["person"], "threshold": 0.5})
+        self.assertNotIn("truncated", extract(FakeFinder(), {"texts": ["z" * 9000], "labels": ["person"], "threshold": 0.5}))
+        out = extract(FakeFinder(), {"texts": ["z" * 9000], "labels": ["person"], "threshold": 0.5}, max_chars=5000)
         self.assertTrue(out["truncated"])
+
+
+def test_entities_read_past_the_decision_clamp():
+    """A name at character 10 000 is found: the entity endpoint reads in chunks, not the decision's first 2 000."""
+    seen = []
+
+    class Finder:
+        def entities(self, text, labels, threshold):
+            seen.append(len(text))
+            at = text.find("Erika Mustermann")
+            return [{"label": labels[0], "text": "Erika Mustermann", "start": at, "end": at + 16, "score": 0.9}] if at >= 0 else []
+
+    text = "x " * 5000 + "Erika Mustermann wohnt hier."
+    out = extract(Finder(), {"texts": [text], "labels": ["person name"]})
+    assert out["entities"][0][0]["text"] == "Erika Mustermann"
+    assert seen == [len(text)]
+    assert "truncated" not in out
