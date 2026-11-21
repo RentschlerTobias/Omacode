@@ -388,11 +388,18 @@ fine-tuning, so both need fine-tuning anyway.
   raises the logit by +6.1 at 700 chars, +1.3 at 2,000, +0.3 at 8,000 and not at all from 16,000. A classification
   pools the whole text into one judgement, so one attack disappears in a long harmless text. The flat memory is real
   (SDPA builds no n×n matrix; mmBERT-small's activations are small next to the loaded libraries).
-- [ ] **P6-T1b** Classify in windows: the decider splits a long state into windows (about 1,500 chars, overlapping) and
+- [x] **P6-T1b** Classify in windows: the decider splits a long state into windows (about 1,500 chars, overlapping) and
   takes the **highest** score per guard, since one window with an injection makes the text an injection; choice and
   score nodes read the head window as today. This replaces the head clamp of 44c5bf6, which today leaves everything
   past the first 2,000 characters unchecked. Cost with gliner-guard: about 0.2 s per window, linear in length, flat
   memory. Test: an injection only at the end of a 30,000-character text is found.
+  *Done 2026-11-21, in the client (`gate.ts` `windows`, no change to the wire format):* windows of 1 500 characters with
+  200 overlap, the highest score per guard; `checkGuards` reads up to 24 windows (about 31 000 characters) and reports
+  `unread` past them; before, the client sent only the last 2 000 characters. Measured with today's GLiNER2.5 on the
+  CPU: 1.6 s per window, 37 s for 30 000 characters per pass, so `injectionScore`, which runs on every tool result,
+  stays at 7 windows (about the 9 000 characters it read before) until the successor's 0.2 s per window. The same run
+  scored a plain "ignore all previous instructions" at 0.47–0.51 for injection, right at the 0.5 floor: the zero-shot
+  weakness P6 exists for.
 - [ ] **P6-T2** The training set from `export-dataset`, labelled by the cloud decider (D19, the label factory), split
   into decisions (guards, N5 profile, N13) and entities (names, addresses), with a held-out set.
 - [ ] **P6-T3** Fine-tune **gliner-guard-uniencoder** (not a bare mmBERT) on our labels: the three guards mapped onto its

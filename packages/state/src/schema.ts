@@ -35,6 +35,7 @@ export interface GateResult {
   readonly scores: Partial<Record<Guard, number>>
   readonly checked: boolean
   readonly decision?: string
+  readonly unread?: number // characters past the last window, not read (gate.ts MAX_WINDOWS)
 }
 export interface JobFlags {
   localOnly?: boolean
