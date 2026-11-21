@@ -39,7 +39,8 @@
     "./tools": "./src/tools.ts",
     "./registry": "./src/registry.ts",
     "./services": "./src/services.ts",
-    "./project": "./src/project.ts"
+    "./project": "./src/project.ts",
+    "./supervisor": "./src/supervisor.ts"
   },
   "files": [
     "src"

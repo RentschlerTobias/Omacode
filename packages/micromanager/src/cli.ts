@@ -15,6 +15,8 @@
 //                                                                [--out decider/data/entities.jsonl]
 //                                                                (P6-T3a: made-up names and addresses with their spans)
 //                                                                (P6-T2: synthetic and public training cases for the guards)
+//               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | remove [--purge]
+//                                                                (A6: the decider and the embedding service as one user service)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
@@ -38,6 +40,8 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
+import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
+import { exec } from "./worktree/git.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -80,6 +84,29 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "memory-adopt") return await memoryAdopt(args)
   if (command === "synth-guards") return await synthGuards(args)
   if (command === "synth-entities") return await synthEntities(args)
+  if (command === "services") {
+    const [verb] = args
+    if (verb === "status") {
+      console.log(servicesStatus())
+      return 0
+    }
+    if (verb === "remove") {
+      console.log(await removeServices(exec, { purge: args.includes("--purge") }))
+      return 0
+    }
+    if (verb === "install") {
+      const size = flag(args, "embedding")
+      if (size && !(size in EMBEDDING_SIZES)) {
+        console.error(`--embedding must be one of ${Object.keys(EMBEDDING_SIZES).join(", ")}`)
+        return 1
+      }
+      const r = await installServices(exec, { ...(size ? { embedding: size as EmbeddingSize } : {}), replace: args.includes("--replace"), log: (line) => console.log(line) })
+      if (!r.ok) console.error(r.text)
+      return r.ok ? 0 : 1
+    }
+    console.error("usage: services install [--embedding 0.6b|4b|8b] [--replace] | status | remove [--purge]")
+    return 1
+  }
   if (command === "migrate" && args.includes("--user")) {
     const plan = planUserMigration()
     const apply = args.includes("--apply")
