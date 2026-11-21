@@ -36,11 +36,9 @@ export function memoryRoot(): string {
   return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "micromanager", "memory")
 }
 
-// A project's slug: its directory name and a short hash of its path, so two checkouts named alike stay apart.
-export function projectSlug(dir: string): string {
-  const name = basename(dir).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "project"
-  return `${name}-${createHash("sha256").update(dir).digest("hex").slice(0, 6)}`
-}
+// A project's path slug: its directory name and a short hash of its path. Only the id a project is first given
+// (@omacode/core/project); entries are keyed by projectId, which survives renaming the folder.
+export { pathSlug as projectSlug } from "@omacode/core/project"
 
 const STOPWORDS = new Set("the a an and or of to in on at for with by from is are was be it this that as do does how what when where which who not no yes can will would should my your our der die das und oder ein eine ist sind zu im in am mit von für auf wie was wann wo nicht ja kann soll ich du wir es".split(" "))
 
@@ -153,6 +151,11 @@ export class MemoryStore {
   get(id: string): Entry | undefined {
     const file = join(this.root, "entries", `${id}.md`)
     return existsSync(file) ? parseEntry(readFileSync(file, "utf8")) : undefined
+  }
+
+  // Whether anything is kept for this project itself (not the user's or the global entries it also sees).
+  hasProject(project: string): boolean {
+    return this.#db.prepare("select 1 from entries where scope = 'project' and project = ? limit 1").get(project) !== undefined
   }
 
   // Entries visible to a project: the user's, the global ones and that project's.

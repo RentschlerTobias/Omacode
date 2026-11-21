@@ -72,7 +72,6 @@ export const ALLOW: ReadonlyArray<LiteralPair> = [
   ["packages/state/src/roles.ts", L],
   // The git-exclude writer and its comments.
   ["packages/state/src/store.ts", P],
-  ["packages/state/src/store.ts", L],
   // Comment: a worker's worktree lies inside the project.
   ["packages/tui/src/progress.ts", P],
   // Session metadata that happens to contain the new name as a substring.

@@ -5,9 +5,10 @@
 
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
-import { dirname, isAbsolute, join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { LEGACY_PROJECT_STATE as LEGACY_DIR, PROJECT_STATE as DIR, stateDir } from "@omacode/core/paths"
+import { excludeFromGit, gitCommonDir } from "@omacode/core/project"
 
 import type { Job } from "./state.ts"
 
@@ -37,50 +38,9 @@ function atomicWrite(path: string, text: string): void {
   renameSync(tmp, path)
 }
 
-// The git directory that holds the shared state of the repository: <project>/.git for a plain checkout, the main
-// repository's .git for a worktree. Git answers relative to the cwd it ran in, so a relative answer is resolved
-// against the project. Anything git cannot answer (no repository, git missing, timeout) means "not a repository".
-function gitCommonDir(project: string): string | undefined {
-  try {
-    const out = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: project,
-      encoding: "utf8",
-      timeout: 3000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim()
-    if (!out) return undefined
-    return isAbsolute(out) ? out : join(project, out)
-  } catch {
-    return undefined
-  }
-}
-
-// Adds the state directory (.micromanager/, or the legacy .jev-micromanager/) to the repository's local exclude file once; a directory that is no git repository is left alone.
-// The job state and the project memory (.opencode/memory/, opencode-agent-memory's place) stay out of git.
-//
-// The exclude file belongs to the repository, not to the project: a project is often a subdirectory of a monorepo, where
-// <project>/.git does not exist at all, and a worktree checkout keeps it outside the project as well. Asking git is the
-// only way to find it; guessing left a real run with `?? .jev-micromanager/` in git status and nothing said so.
-export function excludeFromGit(project: string): boolean {
-  const common = gitCommonDir(project)
-  if (!common) return false
-  // atomicWrite creates the directory: a bare or hand-made repo can lack .git/info entirely.
-  const exclude = join(common, "info", "exclude")
-  const before = existsSync(exclude) ? readFileSync(exclude, "utf8") : ""
-  // The backlog and the contracts are the user's to commit (design.md §25); everything else in the state directory
-  // stays out. A bare "<dir>/" line from before would hide them, and git cannot re-include a file below an excluded
-  // directory, so that line is replaced rather than added to. "**/": a pattern with a slash in it is anchored at the
-  // repository root, and the project is often a subdirectory of it.
-  const dir = stateDir(project)
-  const lines = before.split("\n").filter((line) => line.trim() !== `${dir}/` && line.trim() !== dir)
-  while (lines.length && lines.at(-1) === "") lines.pop()
-  for (const entry of [`**/${dir}/*`, `!**/${dir}/backlog/`, `!**/${dir}/contracts/`, ".opencode/memory/"]) {
-    if (!lines.some((line) => line.trim() === entry || line.trim() === entry.replace(/\/$/, ""))) lines.push(entry)
-  }
-  const after = `${lines.join("\n")}\n`
-  if (after !== before) atomicWrite(exclude, after)
-  return true
-}
+// The exclude file and the repository's common directory moved to @omacode/core/project, where the project id needs
+// them too; they are re-exported for the callers that know them from here.
+export { excludeFromGit, gitCommonDir }
 
 // Whether a file in the backlog would be ignored by git all the same: a .gitignore of the project's own that names the
 // whole state directory beats the exclude file's re-include. The caller says so once instead of letting drafts vanish.
@@ -103,10 +63,72 @@ export function saveJob(project: string, job: Job): string {
 export function loadJob(project: string, id: string): Job | undefined {
   const path = join(jobsDir(project), `${id}.json`)
   if (!existsSync(path)) return undefined
+  let job: Job
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as Job
+    job = JSON.parse(readFileSync(path, "utf8")) as Job
   } catch {
     return undefined
+  }
+  const moved = relocateJob(job, project)
+  if (moved.length > 0) {
+    repairWorktrees(project, moved)
+    saveJob(project, job)
+  }
+  return job
+}
+
+// A path the job keeps inside its project's state directory, written while the project was somewhere else: the folder
+// was renamed, moved or copied since. Only a whole string that is such a path counts, never one inside a text. A copy
+// is rewritten too although the old path still exists: those worktrees belong to the original, not to this project.
+function movedPath(value: string, project: string): string | undefined {
+  if (!value.startsWith("/") || /\s/.test(value)) return undefined
+  for (const dir of [DIR, LEGACY_DIR]) {
+    const at = value.indexOf(`/${dir}/`)
+    if (at < 0) continue
+    const old = value.slice(0, at)
+    if (old === project) return undefined
+    return join(project, value.slice(at + 1))
+  }
+  return undefined
+}
+
+// Rewrites, in place, every path of the job that points into the state directory at the project's old place, so a
+// renamed or moved project finds its worktrees again. Returns the rewritten paths that exist, for repairWorktrees.
+export function relocateJob(job: Job, project: string): string[] {
+  const found = new Set<string>()
+  const walk = (node: unknown): unknown => {
+    if (typeof node === "string") {
+      const next = movedPath(node, project)
+      if (next === undefined) return node
+      if (existsSync(next)) found.add(next)
+      return next
+    }
+    if (Array.isArray(node)) {
+      for (let i = 0; i < node.length; i++) node[i] = walk(node[i])
+      return node
+    }
+    if (node && typeof node === "object") {
+      const record = node as Record<string, unknown>
+      for (const key of Object.keys(record)) record[key] = walk(record[key])
+    }
+    return node
+  }
+  walk(job)
+  return [...found]
+}
+
+// Git links a worktree and its repository by absolute paths in both directions, so after the folder moved neither finds
+// the other: the worktree says "not a git repository" and the repository lists it as prunable. `git worktree repair`
+// with the worktrees' new paths, run in the moved checkout, rewrites both sides. Only directories that are worktrees
+// (a .git file) are named; git ≥ 2.29 is enough.
+export function repairWorktrees(project: string, paths: readonly string[]): boolean {
+  const worktrees = paths.filter((path) => existsSync(join(path, ".git")))
+  if (worktrees.length === 0 || !gitCommonDir(project)) return false
+  try {
+    execFileSync("git", ["worktree", "repair", ...worktrees], { cwd: project, timeout: 10_000, stdio: "ignore" })
+    return true
+  } catch {
+    return false
   }
 }
 

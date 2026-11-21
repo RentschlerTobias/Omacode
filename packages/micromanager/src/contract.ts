@@ -15,6 +15,7 @@ import { isAbsolute, join, relative, resolve } from "node:path"
 
 import { checkProblem, checkSafetyProblem } from "./plan.ts"
 import { heldOutRoot } from "@omacode/core/heldout"
+import { projectId } from "@omacode/core/project"
 import type { Run } from "./integration.ts"
 
 // The contract travels with the job's JSON; state.ts owns the interfaces, the fields are declared here (as
@@ -221,8 +222,12 @@ function fmt(n: number): string {
 // worker only hears how many passed.
 export { heldOutRoot } from "@omacode/core/heldout"
 
+// Keyed by the project's id, not its path, so a renamed or moved project still finds its held-out cases. A directory
+// under the old key (a hash of the path, before 2026-11-21) is still found while the project has not moved.
 export function heldOutDir(project: string, jobId: string, contractId: string): string {
-  return join(heldOutRoot(), createHash("sha256").update(resolve(project)).digest("hex").slice(0, 12), jobId, contractId)
+  const legacy = join(heldOutRoot(), createHash("sha256").update(resolve(project)).digest("hex").slice(0, 12), jobId, contractId)
+  if (existsSync(legacy)) return legacy
+  return join(heldOutRoot(), projectId(project, { create: true }), jobId, contractId)
 }
 
 // Copies the held-out cases from a directory outside the project into the contract's held-out directory: their hash

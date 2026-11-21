@@ -10,7 +10,9 @@ import { capture, type Candidate, type Verdict } from "./capture.ts"
 import { Embedder, type EmbedOptions } from "./embed.ts"
 import { coreBlock, recall, recallBlock, type Recalled } from "./recall.ts"
 import { search, type SearchResult } from "./search.ts"
-import { MemoryStore, projectSlug, type Entry } from "./store.ts"
+import { projectId } from "@omacode/core/project"
+
+import { MemoryStore, type Entry } from "./store.ts"
 
 export interface MemoryOptions {
   readonly root?: string
@@ -54,15 +56,19 @@ export class Memory {
     return this.#store
   }
 
-  slug(dir: string | undefined): string | undefined {
-    return dir ? projectSlug(dir) : undefined
+  // The project's id, not its path: a renamed or moved project keeps its memory, and a session in one of its worktrees
+  // reads and writes the project's memory rather than a worktree's own. A project that has memory, or is about to be
+  // given some (write), gets its id file now, before a rename could cut the two apart.
+  slug(dir: string | undefined, write = false): string | undefined {
+    if (!dir) return undefined
+    return projectId(dir, { create: write || ((id) => this.store()?.hasProject(id) === true) })
   }
 
   // Moves the old per-project block (.opencode/memory/jev-project.md, src/memory.ts) into the store, once.
   migrate(projectDir: string | undefined): number {
     const s = this.store()
     if (!s || !projectDir) return 0
-    const slug = projectSlug(projectDir)
+    const slug = this.slug(projectDir, readMemory(projectDir).length > 0)!
     const marker = join(s.root, `.migrated-${slug}`)
     if (existsSync(marker)) return 0
     const lines = readMemory(projectDir)
@@ -93,7 +99,7 @@ export class Memory {
   async capture(c: Candidate, projectDir: string | undefined, session?: string): Promise<Verdict | undefined> {
     const s = this.store()
     if (!s) return undefined
-    const slug = this.slug(projectDir)
+    const slug = this.slug(projectDir, true)
     return await capture(s, this.#embedder, this.#decider, c, { ...(slug ? { project: slug } : {}), ...(session ? { session } : {}), journal: this.#journal })
   }
 
