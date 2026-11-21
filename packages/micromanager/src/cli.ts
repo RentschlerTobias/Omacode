@@ -10,7 +10,7 @@
 //                                                                the current one, core/paths.ts; a dry run without --apply)
 //               node src/cli.ts migrate --user [--apply]   (the same for the user's state, memory and settings files)
 //               node src/cli.ts synth-guards [--model provider/model] [--per 25] [--public] [--topics g/id,…] [--langs de,en]
-//                                                                [--out decider/data/guards.jsonl]
+//                                                                [--relabel] [--rows] [--out decider/data/guards.jsonl]
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -35,7 +35,7 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
-import { normal, opencodeAsk, publicCases, synthesize, TOPICS, trainingRows, type Case as GuardCase } from "./synth.ts"
+import { normal, opencodeAsk, publicCases, relabel, synthesize, TOPICS, trainingRows, type Case as GuardCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`)
@@ -267,6 +267,13 @@ async function synthGuards(args: readonly string[]): Promise<number> {
   mkdirSync(dir(out), { recursive: true })
   const ask = opencodeAsk(model, dir(out))
   const log = (line: string) => console.error(line)
+  if (args.includes("--relabel")) {
+    const r = await relabel(ask, have, Number(flag(args, "concurrency") ?? 4), log)
+    writeFileSync(out, r.cases.map((c) => JSON.stringify(c)).join("\n") + "\n")
+    if (args.includes("--rows")) writeFileSync(out.replace(/\.jsonl$/, ".rows.jsonl"), trainingRows(r.cases).map((row) => JSON.stringify(row)).join("\n") + "\n")
+    console.log(`relabelled: ${r.changed} cases changed a label, ${r.dropped} dropped, ${r.failed} batches unanswered; ${r.cases.length} in ${out}`)
+    return 0
+  }
   const { cases, stats } = args.includes("--public")
     ? await publicCases(ask, fetch, seen, log, Number(flag(args, "concurrency") ?? 4))
     : await synthesize(ask, model, {

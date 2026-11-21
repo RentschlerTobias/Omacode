@@ -2,6 +2,8 @@
 
     uv run python train.py --rows ../data/guards.rows.jsonl --out runs/<name> [--epochs 4] [--eval-only]
 
+runs/ is ignored by git; keep it on a real disk, a checkpoint is about 600 MB.
+
 The rows come from `npm run synth-guards -- --rows` (packages/micromanager/src/synth.ts): one row per case, one yes/no
 classification per guard, each with the guard's instruction from the catalog as its prompt and a fixed train/held-out
 split. The model is evaluated before and after training on the held-out rows the way the decider server asks it
@@ -38,6 +40,16 @@ def examples(rows: list[dict[str, Any]]) -> list[Any]:
         ]
         out.append(InputExample(text=r["input"], classifications=classes))
     return out
+
+
+def bench_rows(path: Path, like: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The hand-written guard cases as rows: each guard asked with the prompt the training rows carry."""
+    prompts = {c["task"]: c for c in like[0]["output"]["classifications"]}
+    cases = json.loads(path.read_text())["cases"]
+    return [
+        {"input": f"text: {case['text']}", "output": {"classifications": [{**prompts[g], "true_label": "yes" if g in case.get("yes", []) else "no"} for g in prompts]}}
+        for case in cases
+    ]
 
 
 def evaluate(extractor: Any, rows: list[dict[str, Any]], device: str) -> dict[str, dict[str, float]]:
@@ -86,20 +98,30 @@ def main() -> None:
     parser.add_argument("--encoder-lr", type=float, default=1e-5)
     parser.add_argument("--task-lr", type=float, default=5e-4)
     parser.add_argument("--eval-only", action="store_true")
+    parser.add_argument("--device", choices=["cuda", "cpu"], help="where to run; cuda when there is one")
+    parser.add_argument("--bench", type=Path, help="also score the hand-written cases (bench/guard_cases.json)")
+    parser.add_argument("--threads", type=int, default=4, help="CPU threads, as the decider service runs")
     args = parser.parse_args()
 
     import torch
     from gliner2 import AutoExtractor
     from gliner2.training.trainer import ExtractorTrainer, TrainingConfig
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    if device == "cpu":
+        torch.set_num_threads(args.threads)
     train_rows, held = load(args.rows)
     print(f"{len(train_rows)} training rows, {len(held)} held out, on {device}")
     extractor = AutoExtractor.from_pretrained(args.model)
     extractor.to(device)
     before = evaluate(extractor, held, device)
     show(f"before ({args.model})", before)
-    report: dict[str, Any] = {"model": args.model, "rows": str(args.rows), "train": len(train_rows), "heldout": len(held), "before": before}
+    report: dict[str, Any] = {"model": args.model, "rows": str(args.rows), "train": len(train_rows), "heldout": len(held), "device": device, "before": before}
+    if args.bench:
+        bench = bench_rows(args.bench, held)
+        scored = evaluate(extractor, bench, device)
+        show(f"bench ({len(bench)} hand-written cases)", scored)
+        report["bench"] = scored
     if not args.eval_only:
         config = TrainingConfig(
             output_dir=str(args.out),
@@ -110,6 +132,8 @@ def main() -> None:
             task_lr=args.task_lr,
             eval_strategy="epoch",
             save_best=True,
+            # A checkpoint is about 600 MB; one per epoch filled a 16 GB tmpfs in two runs.
+            save_total_limit=1,
             num_workers=2,
             seed=42,
         )
@@ -121,6 +145,10 @@ def main() -> None:
         best = args.out / "final"
         extractor.save_pretrained(str(best))
         report.update({"after": after, "epochs": args.epochs, "saved": str(best)})
+    import resource
+
+    report["peak_rss_mb"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    print(f"\npeak memory {report['peak_rss_mb']:.0f} MB")
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
 

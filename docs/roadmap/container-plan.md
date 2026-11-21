@@ -400,8 +400,13 @@ fine-tuning, so both need fine-tuning anyway.
   stays at 7 windows (about the 9 000 characters it read before) until the successor's 0.2 s per window. The same run
   scored a plain "ignore all previous instructions" at 0.47–0.51 for injection, right at the 0.5 floor: the zero-shot
   weakness P6 exists for.
-- [ ] **P6-T2** The training set from `export-dataset`, labelled by the cloud decider (D19, the label factory), split
+- [x] **P6-T2** The training set from `export-dataset`, labelled by the cloud decider (D19, the label factory), split
   into decisions (guards, N5 profile, N13) and entities (names, addresses), with a held-out set.
+  *Done 2026-11-21, differently:* the journal has no labelled rows, and the user decided the set holds no journal text
+  at all, so the tuned weights stay shippable. `npm run synth-guards` (`synth.ts`): DeepSeek V4.1 Flash writes cases
+  over 34 topics in German and English, a second pass labels all three guards, and contradictions are dropped; plus
+  deepset/prompt-injections (Apache-2.0). `decider/data/guards.jsonl`, held-out by text hash. N5/N13 and entities are
+  not in it yet.
 - [ ] **P6-T3** Fine-tune **gliner-guard-uniencoder** (not a bare mmBERT) on our labels: the three guards mapped onto its
   attack and harm labels plus German examples, "sensitive" as a task of its own, and the N5 profile and N13 decisions.
   The decider maps each guard onto the model's own labels instead of a generic yes/no question; the decider's lock
@@ -411,6 +416,12 @@ fine-tuning, so both need fine-tuning anyway.
   learning rate, mixed-in general data against forgetting; a held-out set before and after.
 - [ ] **P6-T4** Compare with GLiNER on `bench-guards` and the entity cases: quality per guard, peak memory and latency
   on long inputs, on the CPU. The swap happens only if quality is at least as good.
+  *First measurement 2026-11-21* (`decider/train/train.py --eval-only --device cpu --bench`, 4 threads, held-out 333 cases,
+  after six epochs on 1 698): gliner-guard tuned vs GLiNER2.5-multi-Decide — injection recall 0.91 / false alarms 1 %
+  vs 0.28 / 17 %, harmful 0.91 / 0 % vs 0.49 / 9 %, sensitive 0.71 / 4 % vs 0.21 / 6 %; 41 vs 145 ms per question;
+  2.6 vs 3.2 GB peak. On the 16 hand-written bench cases three errors, all traced to the data (adult fiction called
+  harmful, a poisoning request missed, an injection asking for keys called sensitive by noisy labels); a second round
+  adds two topics and relabels the set with sharper rules.
 - [ ] **P6-T5** Export to ONNX; the decider server runs on ONNX Runtime, so the image drops PyTorch (about 1 GB). The
   wire format (`/v1/systemone`, `/v1/entities`) stays; the plugin does not change.
 - [ ] **P6-T6** The new checkpoint goes into the image as its own stable layer (like P1-T9); `--max-chars` is raised to
