@@ -668,13 +668,13 @@ checkout (now owned by T3/T6).
 
 **Tasks**
 
-- [ ] **A4-T1 — Access matrix.** `memory_search`: all agents; `list`/`get`: primaries + readers; `set`/`replace`:
+- [x] **A4-T1 — Access matrix.** `memory_search`: all agents; `list`/`get`: primaries + readers; `set`/`replace`:
   primaries + writers.
-- [ ] **A4-T2 — Stop deleting search.** Remove the `shapeContext` line that deletes memory tools for non-micromanager
+- [x] **A4-T2 — Stop deleting search.** Remove the `shapeContext` line that deletes memory tools for non-micromanager
   agents; keep the summarizer tool-less.
-- [ ] **A4-T3 — Core memory.** Verify core memory is injected for every non-summarizer session.
-- [ ] **A4-T4 — Writer writes.** Writers may `memory_set`; keep duplicate/contradiction checks and `LEARNED` capture.
-- [ ] **A4-T5 — Tests.** Native build/plan, writer, reader, summarizer; duplicate; contradiction; memory off.
+- [x] **A4-T3 — Core memory.** Verify core memory is injected for every non-summarizer session.
+- [x] **A4-T4 — Writer writes.** Writers may `memory_set`; keep duplicate/contradiction checks and `LEARNED` capture.
+- [x] **A4-T5 — Tests.** Native build/plan, writer, reader, summarizer; duplicate; contradiction; memory off.
 
 **Files:** `packages/context/src/tools.ts`, `packages/micromanager/src/plugin.ts`,
 `test/{context,plugin-family}.test.ts`.
@@ -684,6 +684,11 @@ checkout (now owned by T3/T6).
 **Acceptance:** every agent can search; a writer can store a validated fact; the summarizer has no tools.
 
 **Risks:** writers storing noise → keep capture validation and caps.
+
+*Done 2026-11-21:* one table, `MEMORY_ACCESS` in `context/tools.ts`, decides both the tool list (`shapeContext`) and
+a refused call; "primary" is every agent that is not a worker role or the summarizer. Writer roles lost their
+`memory_set`/`memory_replace` deny rule (`state/roles.ts`, `WRITER_ROLES` now lives there); every role keeps
+`journal_write` denied. Core memory was already injected for every session but the summarizer's; a test holds it.
 
 ---
 

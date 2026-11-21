@@ -7,7 +7,7 @@ import { CHOICE_FLOOR, CLASSIFY, NOUL_FLOOR, roleChoice, RISKS, skillQuestion, t
 import type { Question } from "./decider.ts"
 import { recallQuestions, recalled } from "./memory.ts"
 import { resolvePolicy, type Policies } from "./policy.ts"
-import { ROLES, TEST_RUNNERS, roleById, type Role, type Rule } from "./roles.ts"
+import { ROLES, TEST_RUNNERS, WRITER_ROLES, roleById, type Role, type Rule } from "./roles.ts"
 import type { Acceptance, Task } from "./state.ts"
 
 import type { BudgetTier, PermProfile, Profile, ToolGroup } from "@omacode/state/schema"
@@ -22,9 +22,8 @@ export const TOOL_GROUPS: Record<ToolGroup, readonly string[]> = {
 // What a role is for: these groups are never narrowed away from it.
 const ROLE_NEEDS: Partial<Record<string, readonly ToolGroup[]>> = { test: ["shell"], review: ["shell"], research: ["web"] }
 
-// Roles that change files; a task with declared files needs one of them, a task without files must not get one. An
-// investigator writes only in its plan worktree, so it is a writer too: it gets a worktree and a sandbox.
-export const WRITERS = new Set(["code", "test", "visual", "write", "debug", "investigator"])
+// Roles that change files (state/roles.ts WRITER_ROLES, which the memory's rules use too).
+export const WRITERS = WRITER_ROLES
 
 export interface Skill {
   readonly name: string

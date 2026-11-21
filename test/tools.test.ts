@@ -432,7 +432,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
     await evaluate(e as never)
     return e
   }
-  return { journal, run, delegationHook: take("execute.before")! }
+  return { journal, run, delegationHook: take("execute.before")!, contextHook: take("sess:context")! }
 }
 
 test("the plugin says it is loaded, and what it thinks it is doing", async (t) => {
@@ -583,4 +583,63 @@ test("undo_merge takes back the last merge only while the checkout is where the 
   const moved = head(project)
   assert.match((await undoMerge(project, j, "yes")).text, /checkout moved on since the merge/)
   assert.equal(head(project), moved)
+})
+
+// A4: which memory tools each kind of agent sees, by the one table the tools also refuse calls by, and core memory in
+// every session but the summarizer's.
+test("every agent searches the memory; readers browse it, writers store in it, the summarizer gets nothing", async (t) => {
+  const { MEMORY_IDS } = await import("../packages/micromanager/src/context/tools.ts")
+  const { MemoryStore } = await import("../packages/context/src/store.ts")
+  const { projectId } = await import("../packages/core/src/project.ts")
+  const data = tempDir("mm-a4-data-")
+  const beforeData = process.env.XDG_DATA_HOME
+  process.env.XDG_DATA_HOME = data
+  t.after(() => {
+    if (beforeData === undefined) delete process.env.XDG_DATA_HOME
+    else process.env.XDG_DATA_HOME = beforeData
+  })
+  const store = new MemoryStore(join(data, "omacode", "memory"), { git: false })
+  store.add({ scope: "user", text: "The user wants answers in German.", pinned: true })
+  const { contextHook } = await loadedPlugin(t, {})
+  const shown = async (agent: string, sessionID: string) => {
+    const input = { sessionID, agent, tools: Object.fromEntries(Object.values(MEMORY_IDS).map((id) => [id, {}])), messages: [], system: [] as { text: string }[] }
+    await contextHook(input as never)
+    return { tools: Object.keys(input.tools).sort(), core: input.system.map((p) => p.text).join("\n") }
+  }
+  const all = Object.values(MEMORY_IDS).sort()
+  assert.deepEqual((await shown("build", "ses_build")).tools, all, "OpenCode's own agents are ones the user talks to")
+  assert.deepEqual((await shown("coder", "ses_coder")).tools, ["memory_replace", "memory_search", "memory_set"])
+  assert.deepEqual((await shown("explorer", "ses_explorer")).tools, ["memory_get", "memory_list", "memory_search"])
+  assert.deepEqual((await shown("summarizer", "ses_sum")).tools, [])
+  for (const [agent, session] of [["build", "ses_b2"], ["coder", "ses_c2"], ["explorer", "ses_e2"]]) {
+    assert.match((await shown(agent!, session!)).core, /answers in German/, `${agent} gets core memory`)
+  }
+  assert.equal((await shown("summarizer", "ses_s2")).core, "", "the summarizer reads only its transcript")
+  assert.ok(projectId(PROJECT))
+})
+
+test("a memory tool refuses a call its agent may not make, by the same table", async () => {
+  const { installMemoryTools, MEMORY_ACCESS, memoryAllowed } = await import("../packages/micromanager/src/context/tools.ts")
+  assert.deepEqual([...MEMORY_ACCESS.summarizer], [])
+  assert.equal(memoryAllowed("set", "writer"), true)
+  assert.equal(memoryAllowed("set", "reader"), false)
+  assert.equal(memoryAllowed("list", "writer"), false)
+  const { draft, added } = fakeDraft()
+  const stored: string[] = []
+  const handlers = { search: ok, list: ok, get: ok, set: async (text: string) => { stored.push(text); return "Stored" }, replace: ok }
+  installMemoryTools(draft, handlers, (c) => (c.agent === "coder" ? "writer" : c.agent === "explorer" ? "reader" : "primary"))
+  const set = byId(added, "memory_set").run
+  assert.deepEqual(await set({ text: "npm test runs the suite", scope: "project", core: "no" }, { agent: "coder" }), { content: "Stored" })
+  assert.match((await set({ text: "x", scope: "project", core: "no" }, { agent: "explorer" })).content, /^Not for you: memory_set .*LEARNED/)
+  assert.deepEqual(stored, ["npm test runs the suite"])
+})
+
+test("writing roles are not denied memory_set; reading roles are", async () => {
+  const { ROLES } = await import("../packages/micromanager/src/roles.ts")
+  const { WRITERS } = await import("../packages/micromanager/src/profile.ts")
+  for (const role of ROLES) {
+    const denied = role.rules.some((r) => r.action === "memory_set" && r.effect === "deny")
+    assert.equal(denied, !WRITERS.has(role.id), role.id)
+    assert.ok(role.rules.some((r) => r.action === "journal_write" && r.effect === "deny"), `${role.id} never writes the journal`)
+  }
 })

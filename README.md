@@ -497,10 +497,19 @@ session's system prompt, within a budget, and change there only at the session's
   entry, no two
   saying the same, within a budget per role. The micromanager gets the same at each user turn, for that request only,
   without what it got in its last three turns.
-- Workers end their report with `LEARNED:` lines. The micromanager has `memory_set`, `memory_replace`, `memory_list` and
-  `memory_get`; readers have `memory_search`. Every write is searched against the memory first, and the decision client
-  says whether it
-  is new, a duplicate, a refinement of an entry (which it replaces) or a contradiction (reported back to ask the user).
+- Who uses which tool is one table (`context/tools.ts` `MEMORY_ACCESS`), for the tool list and for refusing a call:
+
+  | | `memory_search` | `memory_list`, `memory_get` | `memory_set`, `memory_replace` |
+  |---|---|---|---|
+  | agents the user talks to (micromanager, OpenCode's build and plan, your own) | yes | yes | yes |
+  | reading workers (explorer, researcher, reviewer, …) | yes | yes | — |
+  | writing workers (coder, tester, debugger, …) | yes | — | yes |
+  | summarizer | — | — | — |
+
+  Workers also end their report with `LEARNED:` lines. Every write, by tool or by `LEARNED:`, is searched against the
+  memory first, and the decision client says whether it is new, a duplicate, a refinement of an entry (which it
+  replaces) or a contradiction (reported back to ask the user). Core memory is in every session's system prompt but
+  the summarizer's.
 - Vectors come from Qwen3-Embedding on the CPU (`./install.sh --embedding 4b`: downloads the model and runs
   `micromanager-embedding.service` on port 8093). Without the service the memory searches by keywords and fills in
   the vectors later. `"memory": false` in `omacode.jsonc` turns it off, `"memory": { "embedding": false }` keeps

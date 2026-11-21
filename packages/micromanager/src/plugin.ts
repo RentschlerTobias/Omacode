@@ -44,7 +44,7 @@ import { CoreSnapshots, RecentRecalls } from "./context/recall.ts"
 import { ledger as contextLedger } from "./context/ledger.ts"
 import { Summarizer } from "./context/summary.ts"
 import { writeMemoryStats, writeStatus } from "./context/status.ts"
-import { installMemoryTools, MEMORY_IDS } from "./context/tools.ts"
+import { installMemoryTools, MEMORY_IDS, memoryAllowed, type MemoryClass, type MemoryTool } from "./context/tools.ts"
 import { lastAssistantText } from "./brief.ts"
 import { firstInterval, nextInterval, review, signalFor } from "./checkpoint.ts"
 import { floorsFor, jobStartDecisionLine, loadBench } from "./bench.ts"
@@ -2139,6 +2139,13 @@ const plugin = {
     }
     const recents = new RecentRecalls()
     const readerAgent = (agent?: string) => { const r = agent ? roleByAgent(agent) : undefined; return Boolean(r && !WRITERS.has(r.id)) }
+    // What an agent is for the memory's tools (context/tools.ts MEMORY_ACCESS): a worker role is a reader or a writer,
+    // the summarizer is nothing, and every other agent is one the user talks to.
+    const memoryClass = (agent?: string): MemoryClass => {
+      if (agent === SUMMARIZER_AGENT) return "summarizer"
+      const r = agent ? roleByAgent(agent) : undefined
+      return r ? (WRITERS.has(r.id) ? "writer" : "reader") : "primary"
+    }
     log("info", mode === "cloud" ? "decider: cloud mode (redacted, previewed; guards local)" : "decider: local mode (nothing leaves this machine)")
     // The loop watchdog judges the planner and worker sessions the runner starts; a signal interrupts the session
     // and the runner reads why (design.md §10.1).
@@ -3194,7 +3201,7 @@ const plugin = {
             record({ kind: "memory.write", verdict: "replaced", id, text: text.slice(0, 200) })
             return `Replaced: ${describeEntry(e)}`
           },
-        }, (tool, tctx) => tctx.agent === MICROMANAGER.agent || (tool === "search" && readerAgent(tctx.agent)))
+        }, (tctx) => memoryClass(tctx.agent))
       } catch (err) {
         log("error", `memory tools not installed: ${String(err)}`)
       }
@@ -3472,7 +3479,8 @@ const plugin = {
           }
         }
         if (input.tools) for (const id of TOOL_IDS) delete input.tools[id]
-        if (input.tools) for (const [tool, id] of Object.entries(MEMORY_IDS)) if (!(tool === "search" && readerAgent(input.agent))) delete input.tools[id]
+        // The memory's tools by MEMORY_ACCESS: the same table the tools refuse a call by.
+        if (input.tools) for (const [tool, id] of Object.entries(MEMORY_IDS) as [MemoryTool, string][]) if (!memoryAllowed(tool, memoryClass(input.agent))) delete input.tools[id]
         if (input.tools && !(input.sessionID && native.isWriter(input.sessionID))) delete input.tools[FINISH_ID]
         if (input.tools && !(input.sessionID && native.hasGraph(input.sessionID))) delete input.tools[GRAPH_ID]
         if (input.tools && !(input.sessionID && native.isWriter(input.sessionID))) for (const id of Object.values(HELPER_IDS)) delete input.tools[id]

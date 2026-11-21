@@ -1,12 +1,35 @@
-// The memory's tools, Letta-style: memory_search for the micromanager and the reading roles; memory_list, memory_get,
-// memory_set and memory_replace for the micromanager only. Workers report LEARNED lines instead (src/roles.ts); every
-// write goes through search and Jev (src/context/capture.ts), so a tool call cannot store a duplicate or quietly
-// overwrite a fact.
+// The memory's tools, Letta-style (roadmap A4). Who may use which is one table, MEMORY_ACCESS, read both where the
+// tools are listed to a model and where a call is refused, so the two cannot disagree. Every write goes through search
+// and the decider (capture.ts), so a tool call cannot store a duplicate or quietly overwrite a fact; workers' LEARNED
+// lines take the same way.
 
 import type { ToolContext, ToolDraft } from "@omacode/core/tools"
 
 export const MEMORY_IDS = { search: "memory_search", list: "memory_list", get: "memory_get", set: "memory_set", replace: "memory_replace" } as const
 export type MemoryTool = keyof typeof MEMORY_IDS
+
+// What an agent is, as far as the memory is concerned: a primary agent the user talks to (the micromanager, OpenCode's
+// build and plan, the user's own), a reading or a writing worker of the micromanager, or the summarizer, which reads
+// only the transcript it is handed.
+export type MemoryClass = "primary" | "reader" | "writer" | "summarizer"
+
+// Everyone searches; primaries and readers browse (list, get); primaries and writers store (set, replace), a writer
+// what it found out while changing code. The summarizer gets nothing.
+export const MEMORY_ACCESS: Record<MemoryClass, ReadonlySet<MemoryTool>> = {
+  primary: new Set(["search", "list", "get", "set", "replace"]),
+  reader: new Set(["search", "list", "get"]),
+  writer: new Set(["search", "set", "replace"]),
+  summarizer: new Set(),
+}
+
+export function memoryAllowed(tool: MemoryTool, kind: MemoryClass): boolean {
+  return MEMORY_ACCESS[kind].has(tool)
+}
+
+function refusal(tool: MemoryTool): string {
+  const who = (Object.keys(MEMORY_ACCESS) as MemoryClass[]).filter((k) => MEMORY_ACCESS[k].has(tool))
+  return `Not for you: ${MEMORY_IDS[tool]} is for ${who.map((k) => (k === "primary" ? "the agents the user talks to" : `${k}s`)).join(" and ")}.${tool === "set" || tool === "replace" ? " Report a lasting fact as a LEARNED line instead." : ""}`
+}
 
 export interface MemoryHandlers {
   search(query: string, ctx: ToolContext): Promise<string>
@@ -26,7 +49,7 @@ const DESCRIPTIONS: Record<MemoryTool, string> = {
 
 const FIELDS: Record<MemoryTool, readonly string[]> = { search: ["query"], list: [], get: ["id"], set: ["text", "scope", "core"], replace: ["id", "text"] }
 
-export function installMemoryTools(draft: ToolDraft, handlers: MemoryHandlers, allowed: (tool: MemoryTool, ctx: ToolContext) => boolean): void {
+export function installMemoryTools(draft: ToolDraft, handlers: MemoryHandlers, classOf: (ctx: ToolContext) => MemoryClass): void {
   const read = draft.get("read")
   const str = read?.input?.fields?.path
   if (!read?.input?.mapFields || !str) throw new Error("the built-in read tool has no input schema to build from")
@@ -38,7 +61,7 @@ export function installMemoryTools(draft: ToolDraft, handlers: MemoryHandlers, a
       description: DESCRIPTIONS[tool],
       input: read.input.mapFields(() => Object.fromEntries((fields.length ? fields : ["note"]).map((f) => [f, str]))),
       execute: async (args: Record<string, unknown>, ctx: ToolContext) => {
-        if (!allowed(tool, ctx ?? {})) return { content: tool === "search" ? "Only the micromanager and the reading agents may search the memory." : "Only the micromanager may change the memory; report a lasting fact as a LEARNED line instead." }
+        if (!memoryAllowed(tool, classOf(ctx ?? {}))) return { content: refusal(tool) }
         const v = (k: string) => String(args?.[k] ?? "").trim()
         try {
           const content =

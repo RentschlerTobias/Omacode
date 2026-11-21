@@ -48,9 +48,14 @@ export function family(model: string): string {
 
 const rule = (action: string, effect: Effect, resource = "*"): Rule => ({ action, resource, effect })
 const WRITE_TOOLS = ["edit", "write", "patch"] as const
-// Workers never write the memory themselves; they report LEARNED lines and search and Jev decide what is kept
-// (src/context/capture.ts).
-const noMemory = ["memory_set", "memory_replace", "memory_oversized", "journal_write"].map((t) => rule(t, "deny"))
+// Roles that change files; a task with declared files needs one of them, a task without files must not get one. An
+// investigator writes only in its plan worktree, so it is a writer too: it gets a worktree and a sandbox.
+export const WRITER_ROLES: ReadonlySet<string> = new Set(["code", "test", "visual", "write", "debug", "investigator"])
+
+// Writers may store what they found out (memory_set, memory_replace: roadmap A4), through the same search and decider
+// check every write takes (context/capture.ts); readers report LEARNED lines, which take that way too. Nobody but the
+// plugin writes the journal.
+const noMemory = (id: RoleId) => [...(WRITER_ROLES.has(id) ? [] : ["memory_set", "memory_replace"]), "memory_oversized", "journal_write"].map((t) => rule(t, "deny"))
 const WEB_TOOLS = ["webfetch", "websearch"] as const
 
 const noWrite = WRITE_TOOLS.map((tool) => rule(tool, "deny"))
@@ -128,7 +133,8 @@ Do only that sub-task. When you finish, answer with: what you did, which files y
 each acceptance point whether it is met. A refused permission is not a blocker: nobody is asked while you run, so carry
 on without it and say in your report what you wanted it for and what you did instead. If something blocks you, say what
 and stop; do not guess. If you learned a lasting fact that later tasks will need and cannot see quickly in the code
-(how to run the tests, where something lives, a pitfall), end your report with one line per fact: LEARNED: <the fact>.`
+(how to run the tests, where something lives, a pitfall), end your report with one line per fact: LEARNED: <the fact>.
+memory_search finds what earlier work on this project learned; ask it before working something out again.`
 
 // Agent ids: the orchestrator is the micromanager, the workers are named after their role (the user's choice,
 // 2026-10-05). Nouns, since OpenCode's built-in agents are already called plan and explore.
@@ -152,7 +158,7 @@ const role = (
   system: string,
   rules: readonly Rule[],
   models: readonly string[],
-): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory, ...noQuestion], models })
+): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory(id), ...noQuestion], models })
 
 export const ROLES: readonly Role[] = [
   role(
