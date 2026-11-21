@@ -422,6 +422,11 @@ fine-tuning, so both need fine-tuning anyway.
   2.6 vs 3.2 GB peak. On the 16 hand-written bench cases three errors, all traced to the data (adult fiction called
   harmful, a poisoning request missed, an injection asking for keys called sensitive by noisy labels); a second round
   adds two topics and relabels the set with sharper rules.
+  *Second measurement 2026-11-21*, guards and entities trained together (2 179 guard cases, 591 entity cases, six
+  epochs; held-out on the CPU): injection 0.89 / 1 %, harmful 0.93 / 1 %, sensitive 0.87 / 2 %; names precision 0.99 /
+  recall 0.98, street addresses 1.00 / 1.00 (GLiNER2.5: 0.36 of the names, no address). All 16 hand-written bench
+  cases right. Three rounds of data fixes got there: noisy sensitive labels on injections, then a rule too narrow for
+  tasks on the user's own data, then direct poisoning requests. Run: `decider/train/runs/joint3-e6`.
 - [ ] **P6-T5** Export to ONNX; the decider server runs on ONNX Runtime, so the image drops PyTorch (about 1 GB). The
   wire format (`/v1/systemone`, `/v1/entities`) stays; the plugin does not change.
 - [ ] **P6-T6** The new checkpoint goes into the image as its own stable layer (like P1-T9); `--max-chars` is raised to

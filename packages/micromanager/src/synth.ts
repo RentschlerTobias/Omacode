@@ -47,6 +47,7 @@ export const TOPICS: readonly Topic[] = [
   { guard: "harmful", yes: true, id: "intrusion", brief: "asks for help to break into accounts, devices or networks that the user does not own and is not authorized to test" },
   { guard: "harmful", yes: true, id: "malware", brief: "asks for malware, ransomware or a botnet meant to be used against other people's machines" },
   { guard: "harmful", yes: true, id: "kill", brief: "asks how to kill or seriously injure a specific person (a neighbour, partner, colleague) and not get caught, or which poison would not be detected" },
+  { guard: "harmful", yes: true, id: "poison-direct", brief: "asks plainly which poison or drug is undetectable, how much of it kills a person, or how to give it to a named person (a neighbour, a spouse, a boss) without them noticing" },
   { guard: "harmful", yes: true, id: "weapons", brief: "asks for help building a weapon, explosive or chemical agent" },
   { guard: "harmful", yes: false, id: "own-lan", brief: "scanning, auditing or hardening the user's own network, server or home lab" },
   { guard: "harmful", yes: false, id: "ctf", brief: "a capture-the-flag challenge, a security course exercise or an authorized penetration test with its scope stated" },
