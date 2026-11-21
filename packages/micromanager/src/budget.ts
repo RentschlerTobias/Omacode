@@ -4,11 +4,12 @@
 //
 // Limits are none unless the config sets them (the user's choice, 2026-10-05: a job cut at a limit wastes its work),
 // and a used-up budget cuts nothing: no new worker starts and no worker is continued, the running ones are asked to
-// wrap up, and the micromanager asks the user. Raising "budget" in micromanager.jsonc takes effect at the next check.
+// wrap up, and the micromanager asks the user. Raising "budget" in omacode.jsonc takes effect at the next check.
 
 import { usage } from "./brief.ts"
 import type { Budget } from "./config.ts"
 import type { Job, Task } from "./state.ts"
+import { configFileName } from "@omacode/core/paths"
 
 export interface Used {
   readonly tokens: number
@@ -64,7 +65,7 @@ export function overBudget(job: Job, limits: Budget = limitsOf(job)): string | u
 
 // The micromanager's note when a job's budget is used up.
 export function overNote(job: Job, why: string, running: readonly string[]): string {
-  return `[micromanager] Job ${job.id} used its budget: ${why}. No new worker starts and none is continued until the user raises the budget ("budget" in ~/.config/opencode/micromanager.jsonc; it holds from the next check on).${running.length ? ` The running workers (${running.join(", ")}) are asked to wrap up; their work stays in their worktrees.` : ""} Tell the user in two sentences and ask whether to raise it.`
+  return `[micromanager] Job ${job.id} used its budget: ${why}. No new worker starts and none is continued until the user raises the budget ("budget" in ~/.config/opencode/${configFileName()}; it holds from the next check on).${running.length ? ` The running workers (${running.join(", ")}) are asked to wrap up; their work stays in their worktrees.` : ""} Tell the user in two sentences and ask whether to raise it.`
 }
 
 // The note a running worker gets at its next turn when the job's budget is used up.

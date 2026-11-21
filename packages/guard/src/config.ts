@@ -3,6 +3,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import { stripComments } from "@omacode/core/jsonc"
 import { DEFAULT_REDACT, parseRedact, type RedactSettings } from "@omacode/core/redact-config"
+import { CONFIG_FILE, LEGACY_CONFIG_FILES } from "@omacode/core/paths"
 
 function configDir(): string {
   return process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
@@ -24,7 +25,7 @@ export function guardConfigPath(projectDir?: string): string | undefined {
   const dirs = projectDir ? [join(projectDir, ".opencode")] : []
   dirs.push(join(configDir(), "opencode"))
   for (const dir of dirs) {
-    for (const name of ["guard.jsonc", "micromanager.jsonc"]) {
+    for (const name of ["guard.jsonc", CONFIG_FILE, ...LEGACY_CONFIG_FILES]) {
       const path = join(dir, name)
       if (existsSync(path)) return path
     }
@@ -38,8 +39,10 @@ export function loadGuardSettings(projectDir?: string): RedactSettings {
   for (const dir of dirs) {
     const guard = parseOne(join(dir, "guard.jsonc"), false)
     if (guard) return guard
-    const fallback = parseOne(join(dir, "micromanager.jsonc"), true)
-    if (fallback) return fallback
+    for (const name of [CONFIG_FILE, ...LEGACY_CONFIG_FILES]) {
+      const fallback = parseOne(join(dir, name), true)
+      if (fallback) return fallback
+    }
   }
   return DEFAULT_REDACT
 }

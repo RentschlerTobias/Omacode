@@ -1,4 +1,4 @@
-// ~/.config/opencode/micromanager-models.json: the models the user picked per role in the TUI.
+// ~/.config/opencode/omacode-models.json (or its old name): the models the user picked per role in the TUI.
 // The orchestrator reads it at each delegation; the TUI reads and writes it.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs"
@@ -8,6 +8,7 @@ import { dirname, join } from "node:path"
 import { stripComments } from "@omacode/core/jsonc"
 import { DEFAULT_ROUTING, type Routing } from "./routing.ts"
 import { roleById, type RoleId } from "./roles.ts"
+import { configFilePath, picksFilePath } from "@omacode/core/paths"
 
 export interface Picks {
   readonly models: Partial<Record<RoleId, readonly string[]>>
@@ -17,14 +18,11 @@ export interface Picks {
 export const NO_PICKS: Picks = { models: {} }
 
 function configPath(): string {
-  const base = process.env.XDG_CONFIG_HOME || join(homedir(), ".config")
-  const path = join(base, "opencode", "micromanager.jsonc")
-  const old = join(base, "opencode", "jev-micromanager.jsonc")
-  return !existsSync(path) && existsSync(old) ? old : path
+  return configFilePath()
 }
 
 export function picksPath(): string {
-  return join(dirname(configPath()), "micromanager-models.json")
+  return picksFilePath()
 }
 
 export function parseModels(raw: Record<string, unknown> | undefined): Partial<Record<RoleId, readonly string[]>> {
@@ -80,7 +78,7 @@ export function savePicks(picks: Picks, path = picksPath()): void {
   renameSync(tmp, path)
 }
 
-// Read the routing overrides from micromanager.jsonc without loading the rest of the settings.
+// Read the routing overrides from omacode.jsonc without loading the rest of the settings.
 export function loadRouting(path = configPath()): Routing {
   try {
     return parseRouting(readFileSync(path, "utf8"))

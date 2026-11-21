@@ -73,7 +73,7 @@ The worker skills need no step in either case: the plugin registers them itself 
 
 Restart the OpenCode server afterwards: plugins load when it starts, so restart the server your TUI attaches to,
 not only the background service `opencode run` uses. The `plugin` record in the journal and the header of
-`job_status` name the plugin commit a server runs. Settings go into `~/.config/opencode/micromanager.jsonc`; none are
+`job_status` name the plugin commit a server runs. Settings go into `~/.config/opencode/omacode.jsonc`; none are
 needed to start (see the optional settings under "Use").
 
 ## Use
@@ -122,7 +122,7 @@ the decision client and the plugin securing every task:
      value always gets the same placeholder (`PERSON_1`, `SECRET_2`, `email3@redacted.invalid`), so a model can still
      reason about it and the prompt cache holds. The model's tool calls get the real values back: files all of them, so
      an edit keeps a file's key; commands everything but secrets; web tools nothing. The vault lives in
-     `~/.local/state/micromanager/vault.json` (mode 600, out of every sandbox); OpenCode's database and the TUI keep the
+     `~/.local/state/omacode/vault.json` (mode 600, out of every sandbox); OpenCode's database and the TUI keep the
      real text, so a model's reply to you can show a placeholder. Your git name and e-mail and the values in
      `"redact": { "allow": [...] }` are never replaced. With the GLiNER server down, names go unchecked and the
      journal says so (`redact.names-unavailable`); `redact.new` records each new placeholder, never its value.
@@ -327,6 +327,12 @@ would move and `--apply` moves it: one rename of the whole directory, then every
 git's worktree links are repaired. It refuses while a task is at work, or when state exists in two places. Renaming or
 moving the project folder itself needs nothing: jobs and worktrees are relinked when the jobs are next read.
 
+The user's own files moved the same way on 2026-11-21: `~/.local/state/micromanager` → `~/.local/state/omacode`,
+`~/.local/share/micromanager` (the memory) → `~/.local/share/omacode`, and beside OpenCode's config
+`micromanager.jsonc` → `omacode.jsonc`, `micromanager-models.json` → `omacode-models.json`. While only the old name
+exists it is used; `npm run migrate -- --user` shows what would move and `--apply` moves it (quit OpenCode first). Two
+places at once are not merged: the command stops and names both.
+
 **Overview.** `job_status` shows an ASCII board of the job: each task with its state, role, model, what it does or
 waits for and what it cost so far (its worker and helpers, or the evolver's model calls), plus the job's tokens,
 requests and cost. The sidebar puts each task's cost after its line too. In a terminal, in the project:
@@ -384,15 +390,15 @@ below.
 the vision model; a click on a role, or `/pools`, opens a popup like `/model` with every model the host runs, the
 pool's members checked. ↵ checks or unchecks a model, "clear all" unchecks the whole pool to pick a new one from
 nothing, "back to the default" drops the pick, a pool never becomes empty (esc right after "clear all" keeps the old
-one). The picks go to `~/.config/opencode/micromanager-models.json`, which the server reads at each delegation, so
-they hold from the next task on without a restart; they win over `models` in `micromanager.jsonc`, and the journal's
+one). The picks go to `~/.config/opencode/omacode-models.json`, which the server reads at each delegation, so
+they hold from the next task on without a restart; they win over `models` in `omacode.jsonc`, and the journal's
 `routing` record says `picked: true`. The micromanager itself runs on the session's model: change that with `/model`.
 
 Permission requests go to the decision client first and to you when it is not sure (`src/decide.ts`). Some phases of the
 design
 are still to come: see docs/plan.md.
 
-Optional settings in `~/.config/opencode/micromanager.jsonc`:
+Optional settings in `~/.config/opencode/omacode.jsonc`:
 
 ```jsonc
 {
@@ -432,7 +438,7 @@ package, so a git install has them without a step; a skill of your own with the 
 never names that skill in a brief. The local GLiNER
 decision server (`decider/`, see its README) answers guard questions on the CPU, and `npm run bench-guards`
 measures them; the journal
-`~/.local/state/micromanager/decisions.jsonl` feeds `npm run eval` and `npm run export-dataset`.
+`~/.local/state/omacode/decisions.jsonl` feeds `npm run eval` and `npm run export-dataset`.
 
 Writers run one at a time by default: after a failed attempt, the next model gets a retry rather than two more
 worktrees starting speculatively. Set `"trials": 2`–`4`, or put `Method: trial` in the task, to run a hard writer task
@@ -454,7 +460,7 @@ as a **trial**: attempts at once, each in its own worktree on another model fami
 - **first**: the first attempt whose checks pass is merged and the others stop.
 
 When all attempts fail, the micromanager is told what each hit and splits the task. Every writer's end, with its model, difficulty, gate result,
-tokens and cost, goes to `~/.local/state/micromanager/outcomes.jsonl`, with how a trial's winner was chosen and which
+tokens and cost, goes to `~/.local/state/omacode/outcomes.jsonl`, with how a trial's winner was chosen and which
 attempts passed but lost; `npm run export-dataset -- --target router` turns it into one row per task, the training
 data for a router (docs/design.md §23).
 
@@ -483,7 +489,7 @@ the system prompt. `node bench/context-replay.ts` replays the recorded sessions 
 and reports the context and cost they would have had (on the sessions up to 2026-10-23: coders 24% less context with
 the rules alone). The journal records `context.epoch` and `context.summary`.
 
-**Memory.** One Markdown file per entry in a git repository, `~/.local/share/micromanager/memory/`, readable and editable
+**Memory.** One Markdown file per entry in a git repository, `~/.local/share/omacode/memory/`, readable and editable
 by hand; the SQLite index next to it is rebuilt from the files whenever it falls behind. Entries belong to the user
 (preferences), to every project (tool pitfalls) or to one project. Pinned entries are core memory: they stand in every
 session's system prompt, within a budget, and change there only at the session's next epoch.
@@ -497,7 +503,7 @@ session's system prompt, within a budget, and change there only at the session's
   is new, a duplicate, a refinement of an entry (which it replaces) or a contradiction (reported back to ask the user).
 - Vectors come from Qwen3-Embedding on the CPU (`./install.sh --embedding 4b`: downloads the model and runs
   `micromanager-embedding.service` on port 8093). Without the service the memory searches by keywords and fills in
-  the vectors later. `"memory": false` in `micromanager.jsonc` turns it off, `"memory": { "embedding": false }` keeps
+  the vectors later. `"memory": false` in `omacode.jsonc` turns it off, `"memory": { "embedding": false }` keeps
   keywords only, and a different size needs `"memory": { "embedding": { "model": "qwen3-embedding-8b" } }`.
 - A project's entries are keyed by its id in `<state dir>/project.json`, which moves with the folder, so a renamed,
   moved or copied project keeps its memory; a session in one of its worktrees uses the project's memory. Memory kept
@@ -512,7 +518,7 @@ session's system prompt, within a budget, and change there only at the session's
 into the session's context as a bar (`│` marks where a summary starts), what its epochs removed, a line per running
 worker with its own bar (`⚠` past the summary mark), the memory (entries, core size, whether vectors are on, today's
 writes, duplicates and conflicts) and the notes the last request got from it. The server writes the numbers to
-`~/.local/state/micromanager/context/`; the context is estimated from characters and leaves out the tool
+`~/.local/state/omacode/context/`; the context is estimated from characters and leaves out the tool
 descriptions, so it reads about 2k tokens low.
 
 ## Flow chart
@@ -520,7 +526,7 @@ descriptions, so it reads about 2k tokens low.
 `docs/flow.html` is a self-contained page (no server) that shows how the plugin decides: the model routing lane
 (role → needs → model) and the permission lane (hard rules → deleted paths → the decision client → the floors → allow /
 deny /
-user). Open it in a browser and load `~/.local/state/micromanager/decisions.jsonl` with the button or by dropping
+user). Open it in a browser and load `~/.local/state/omacode/decisions.jsonl` with the button or by dropping
 it on the page; over http a `decisions.jsonl` next to the page is picked up automatically. Each decision is
 listed, and selecting one highlights the exact path it took through the chart.
 
@@ -530,7 +536,7 @@ listed, and selecting one highlights the exact path it took through the chart.
 `opencode.log`. **The journal is the channel that persists**, and it is worth knowing what to look for:
 
 ```bash
-J=~/.local/state/micromanager/decisions.jsonl
+J=~/.local/state/omacode/decisions.jsonl
 grep '"kind":"plugin"' $J | tail -1 | jq     # one per server start
 ```
 

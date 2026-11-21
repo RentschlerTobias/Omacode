@@ -21,6 +21,7 @@ import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { heldOutRoot } from "@omacode/core/heldout"
+import { configFileName, userStateDir } from "@omacode/core/paths"
 import { looksSecret } from "@omacode/core/secrets"
 
 // The registries a build or a test run reaches for its dependencies.
@@ -37,7 +38,7 @@ export const DENY_READ: readonly string[] = [
   "~/.ssh", "~/.gnupg", "~/.netrc", "~/.password-store", "~/.local/share/keyrings", "~/.pki",
   "~/.config/opencode", "~/.config/gh", "~/.config/hub", "~/.docker", "~/.kube", "~/.aws", "~/.azure", "~/.config/gcloud",
   "~/.mozilla", "~/.config/chromium", "~/.config/google-chrome", "~/.config/BraveSoftware",
-  "~/.local/share/opencode", "~/.local/state/micromanager",
+  "~/.local/share/opencode", "~/.local/state/omacode", "~/.local/state/micromanager",
 ]
 
 // Variables a command keeps. A name ending in "*" is a prefix.
@@ -138,7 +139,7 @@ export function rulesFor(input: RuleInput): Rules {
     filesystem: {
       // The held-out cases of fitness contracts (src/contract.ts) live in the plugin's state directory, which DENY_READ
       // names by its default place; with XDG_STATE_HOME set it is elsewhere, so it is named by where it is.
-      denyRead: [...DENY_READ, heldOutRoot(), tempRoot(), join(input.dir, "**/.env"), join(input.dir, "**/.env.*")],
+      denyRead: [...DENY_READ, userStateDir(), heldOutRoot(), tempRoot(), join(input.dir, "**/.env"), join(input.dir, "**/.env.*")],
       allowRead: [join(input.dir, "**/.env.example"), ...(input.temp ? [input.temp] : [])],
       allowWrite: own,
       // A frozen test inside the writer's own worktree: `sed -i` must not get around what the edit tools may not do.
@@ -170,7 +171,7 @@ const BASE: Rules = { network: { allowedDomains: [...REGISTRIES], deniedDomains:
 // commands to Jev again.
 export async function startSandbox(enabled = true): Promise<Wrapper> {
   const off = (reason: string): Wrapper => ({ available: false, reason, wrap: async (command) => command, stop: async () => undefined })
-  if (!enabled) return off("switched off in micromanager.jsonc")
+  if (!enabled) return off(`switched off in ${configFileName()}`)
   try {
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime")
     if (!SandboxManager.isSupportedPlatform()) return off(`no sandbox on ${process.platform}`)

@@ -2,7 +2,7 @@
 // each worker role may run on, picked by the user (the user, 2026-10-20: "buttons in the sidebar for the models, a
 // popup like /model, several choices per agent"). Plain data, so it is tested without a TUI.
 //
-// A role's pool is the user's pick (src/config.ts loadPicks), else micromanager.jsonc's "models", else the pool of
+// A role's pool is the user's pick (src/config.ts loadPicks), else omacode.jsonc's "models", else the pool of
 // src/roles.ts. Each task still goes to the pool's least-used model (src/routing.ts); a pick only says which ones.
 
 import type { Picks } from "@omacode/state/picks"
@@ -109,7 +109,7 @@ export function toggle(row: PoolRow, model: string): string[] | undefined {
 }
 
 // The picks after the user changed one row: a pool equal to the default is no pick, so the default can move on with
-// the code (and with micromanager.jsonc) instead of being frozen in the file.
+// the code (and with omacode.jsonc) instead of being frozen in the file.
 export function updatePicks(picks: Picks, config: Routing, key: PoolRow["key"], models: readonly string[] | typeof RESET): Picks {
   const reset = models === RESET
   if (key === VISION) {

@@ -1731,7 +1731,7 @@ test("no dependency was added for HTTP, WebSocket, multipart or PNG", () => {
   const pkg = JSON.parse(readFileSync(new URL("../packages/artifact/package.json", import.meta.url), "utf8")) as {
     dependencies?: Record<string, string>
   }
-  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["@omacode/sandbox"])
+  assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["@omacode/core", "@omacode/sandbox"])
 
   const root = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
     dependencies?: Record<string, string>

@@ -354,7 +354,7 @@ function relativeDir(project: string): string {
 
 // --- GitHub issues (P7, opt-in per repository) ------------------------------------------------------------------
 
-// Issues labelled micromanager in a repository the user opted in ("githubBacklog" in micromanager.jsonc). The body
+// Issues labelled micromanager in a repository the user opted in ("githubBacklog" in omacode.jsonc). The body
 // holds the same front matter and Markdown as a file; an issue without one is read as a draft with its text as goal.
 // Reading is free. Writing happens only in publishIssue, after the user's yes in a form.
 export const ISSUE_LABEL = "micromanager"

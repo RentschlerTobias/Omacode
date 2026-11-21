@@ -1,4 +1,4 @@
-// ~/.config/opencode/micromanager.jsonc: optional overrides of the routing (JSON with // comments).
+// ~/.config/opencode/omacode.jsonc (or its old name, core/paths.ts): optional overrides of the routing (JSON with // comments).
 
 import { existsSync, readFileSync } from "node:fs"
 
@@ -12,16 +12,14 @@ import { DEFAULT_GRACE, DEFAULT_PICK, DEFAULT_TRIALS, MAX_TRIALS, type Grace, ty
 import type { NotifyMode } from "./scheduler.ts"
 import { DEFAULT_REDACT, parseRedact, type RedactSettings } from "@omacode/core/redact-config"
 import { stripComments } from "@omacode/core/jsonc"
-import { userConfigPath } from "@omacode/core/paths"
+import { configFilePath } from "@omacode/core/paths"
 import { embeddingModel, serviceUrl } from "@omacode/core/services"
 
 export { DEFAULT_REDACT, parseRedact, stripComments, type RedactSettings }
 
-// The name before 2026-10-19 (jev-micromanager.jsonc) is still read while the new one does not exist.
+// omacode.jsonc, or an old name while the user has only that (core/paths.ts LEGACY_CONFIG_FILES).
 export function configPath(): string {
-  const path = userConfigPath("micromanager.jsonc")
-  const old = userConfigPath("jev-micromanager.jsonc")
-  return !existsSync(path) && existsSync(old) ? old : path
+  return configFilePath()
 }
 
 import {

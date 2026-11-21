@@ -99,3 +99,45 @@ test("a project without state, or already on the current name, has nothing to mo
   assert.equal(planMigration(fresh).from, undefined)
   assert.deepEqual(applyMigration(planMigration(fresh)).moved, false)
 })
+
+test("the user's directories and settings keep their old names until migrate --user moves them", async () => {
+  const { configFilePath, picksFilePath, userDataDir, userStateDir } = await import("../packages/core/src/paths.ts")
+  const { applyUserMigration, planUserMigration } = await import("../packages/state/src/migrate.ts")
+  const home = join(ROOT, "home")
+  const saved = { state: process.env.XDG_STATE_HOME, data: process.env.XDG_DATA_HOME, config: process.env.XDG_CONFIG_HOME }
+  process.env.XDG_STATE_HOME = join(home, "state")
+  process.env.XDG_DATA_HOME = join(home, "share")
+  process.env.XDG_CONFIG_HOME = join(home, "config")
+  try {
+    // A fresh user gets the current names.
+    assert.equal(userStateDir(), join(home, "state", "omacode"))
+    assert.equal(configFilePath(), join(home, "config", "opencode", "omacode.jsonc"))
+    assert.deepEqual(planUserMigration().moves, [])
+    // A user from before keeps the old ones.
+    for (const dir of [join(home, "state", "micromanager"), join(home, "share", "micromanager", "memory"), join(home, "config", "opencode")]) mkdirSync(dir, { recursive: true })
+    writeFileSync(join(home, "state", "micromanager", "decisions.jsonl"), "{}\n")
+    writeFileSync(join(home, "config", "opencode", "micromanager.jsonc"), "{ \"budget\": {} }\n")
+    writeFileSync(join(home, "config", "opencode", "micromanager-models.json"), "{}\n")
+    assert.equal(userStateDir(), join(home, "state", "micromanager"))
+    assert.equal(userDataDir(), join(home, "share", "micromanager"))
+    assert.equal(configFilePath(), join(home, "config", "opencode", "micromanager.jsonc"))
+    assert.equal(picksFilePath(), join(home, "config", "opencode", "micromanager-models.json"))
+    const plan = planUserMigration()
+    assert.equal(plan.moves.length, 4)
+    assert.deepEqual(plan.problems, [])
+    assert.equal(applyUserMigration(plan).moved, 4)
+    assert.equal(userStateDir(), join(home, "state", "omacode"))
+    assert.equal(readFileSync(join(userStateDir(), "decisions.jsonl"), "utf8"), "{}\n")
+    assert.equal(existsSync(join(userDataDir(), "memory")), true)
+    assert.equal(configFilePath(), join(home, "config", "opencode", "omacode.jsonc"))
+    assert.equal(picksFilePath(), join(home, "config", "opencode", "omacode-models.json"))
+    // Both names at once: nothing is merged.
+    mkdirSync(join(home, "state", "micromanager"))
+    assert.match(planUserMigration().problems.join(), /both .* exist/)
+  } finally {
+    for (const [key, value] of [["XDG_STATE_HOME", saved.state], ["XDG_DATA_HOME", saved.data], ["XDG_CONFIG_HOME", saved.config]] as const) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})

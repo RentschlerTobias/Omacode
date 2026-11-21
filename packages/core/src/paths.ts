@@ -4,7 +4,7 @@
 
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 
 // Where jobs live: <project>/.opencode/omacode/jobs/<id>.json. Inside the project, so workers can read their notes
 // without an external_directory ask; inside OpenCode's own directory, since it is OpenCode's state with a plugin; kept
@@ -54,10 +54,38 @@ export function splitState(path: string): { project: string; dir: string; rest: 
   return best
 }
 
-// What was decided and measured: ${XDG_STATE_HOME:-~/.local/state}/micromanager, with decisions.jsonl and
-// outcomes.jsonl. Per user, not per project, so a journal survives a fresh checkout.
+// The user's own directories, per user and not per project: ${XDG_STATE_HOME:-~/.local/state}/omacode for what was
+// decided and measured (decisions.jsonl, outcomes.jsonl, the vault, the context state, held-out cases) and
+// ${XDG_DATA_HOME:-~/.local/share}/omacode for what is kept (the memory). Their name until 2026-11-21 was micromanager;
+// a user who has only the old one keeps using it until `migrate --user` moves it.
+export const USER_DIR = "omacode"
+export const LEGACY_USER_DIRS = ["micromanager"] as const
+
+function xdg(variable: "XDG_STATE_HOME" | "XDG_DATA_HOME", fallback: string): string {
+  return process.env[variable] || join(homedir(), ".local", fallback)
+}
+
+// The current name when it exists, else an old one that exists, else the current one: the same rule as stateDir.
+function current(base: string, name: string, legacy: readonly string[]): string {
+  if (existsSync(join(base, name))) return join(base, name)
+  const old = legacy.find((n) => existsSync(join(base, n)))
+  return join(base, old ?? name)
+}
+
+export function userStateBase(): string {
+  return xdg("XDG_STATE_HOME", "state")
+}
+
+export function userDataBase(): string {
+  return xdg("XDG_DATA_HOME", "share")
+}
+
 export function userStateDir(): string {
-  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "micromanager")
+  return current(userStateBase(), USER_DIR, LEGACY_USER_DIRS)
+}
+
+export function userDataDir(): string {
+  return current(userDataBase(), USER_DIR, LEGACY_USER_DIRS)
 }
 
 // The micromanager's mode per session (src/mode.ts writes it, the TUI reads it as a badge): plan is the default, and
@@ -74,4 +102,25 @@ export function userConfigDir(): string {
 
 export function userConfigPath(name: string): string {
   return join(userConfigDir(), name)
+}
+
+// The plugin's settings file and the TUI's model picks, beside OpenCode's config. Old names, newest first, are read
+// while the current one does not exist: micromanager.jsonc until 2026-11-21, jev-micromanager.jsonc until 2026-10-19.
+export const CONFIG_FILE = "omacode.jsonc"
+export const LEGACY_CONFIG_FILES = ["micromanager.jsonc", "jev-micromanager.jsonc"] as const
+export const PICKS_FILE = "omacode-models.json"
+export const LEGACY_PICKS_FILES = ["micromanager-models.json"] as const
+
+// The settings file in a directory (the user's config directory by default, or a project's .opencode/).
+export function configFilePath(dir = userConfigDir()): string {
+  return current(dir, CONFIG_FILE, LEGACY_CONFIG_FILES)
+}
+
+export function picksFilePath(dir = userConfigDir()): string {
+  return current(dir, PICKS_FILE, LEGACY_PICKS_FILES)
+}
+
+// The settings file's name as the user should edit it, for messages ("budget" in omacode.jsonc).
+export function configFileName(): string {
+  return basename(configFilePath())
 }

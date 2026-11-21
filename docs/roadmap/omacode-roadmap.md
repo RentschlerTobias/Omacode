@@ -698,7 +698,7 @@ checkout (now owned by T3/T6).
   `inStateDir` and `splitState`; the regexes and globs of `decide.ts`, `plan.ts`, `roles.ts`, `look.ts`, `nogit.ts`
   and `tui/progress.ts` are built from them. The literal scan now also finds an escaped name in a regex, which is how
   `decide.ts` had hidden one.
-- [ ] **A5-T1 — Paths + namespace pre-check.** `<project>/.opencode/omacode/` (jobs, worktrees, plan, backlog, control,
+- [x] **A5-T1 — Paths + namespace pre-check.** `<project>/.opencode/omacode/` (jobs, worktrees, plan, backlog, control,
   contracts, notes, trials); `~/.local/state/omacode/`; `~/.config/opencode/omacode.jsonc`. **Before any consumer
   rewrite**, verify that writing job state under OpenCode's own `.opencode/` namespace is not host-scanned or treated
   as plugin config; if it is, this task blocks the rename and `.micromanager` stays.
@@ -710,6 +710,10 @@ checkout (now owned by T3/T6).
   build through OpenCode's watcher. **The pre-check blocks `.opencode/omacode/`.** One more rule found on the way: a
   session in a worktree reads every `opencode.json` in the directories above it, so nothing may write one into the
   state directory.
+  *The user's decision the same day:* stay in `.opencode/` all the same ("it is OpenCode with a plugin"); the watch
+  cost is documented, `node_modules`/`.git`/`.venv`/`__pycache__` are not watched, and worktrees go when merged.
+  *User level, done 2026-11-21:* `~/.local/state/omacode`, `~/.local/share/omacode`, `omacode.jsonc`,
+  `omacode-models.json`, each with its old name as fallback (`core/paths.ts`), moved by `npm run migrate -- --user`.
 - [x] **A5-T2 — Legacy detection.** `.micromanager/`, `.jev-micromanager/`; config fallback; user-state fallback. These
   legacy literals are **allowlisted in the T13 scan**.
 - [x] **A5-T3 — Migration.** Idle check; move/copy; rewrite JSON paths; `git worktree move` / `git worktree repair`;
@@ -719,7 +723,7 @@ checkout (now owned by T3/T6).
 - [x] **A5-T4 — Git exclude.** Exclude `.opencode/omacode/`; keep backlog/contracts exceptions; `.gitignore` inside the
   state dir. *Done:* `**/.opencode/omacode/*` with the two exceptions. No `.gitignore` inside the state directory: it
   would itself show up as untracked, and the exclude file already covers every clone the plugin runs in.
-- [ ] **A5-T5 — Consumer inventory (complete).** `state/roles.ts` (deny rules), `state/picks.ts` (`micromanager.jsonc`,
+- [x] **A5-T5 — Consumer inventory (complete).** `state/roles.ts` (deny rules), `state/picks.ts` (`micromanager.jsonc`,
   `micromanager-models.json`), `state/control.ts`, `core/journal.ts` (user state, journal, and `heldOutRoot()` — which
   is also the sandbox deny-read and the A2b dataset source), `guard/src/config.ts`, `micromanager/nogit.ts` (`OWN`),
   `look.ts`, `plan.ts` (worktree regex), `decide.ts` (job area), `runner.ts`, `backlog.ts`, `budget.ts`, `config.ts`,

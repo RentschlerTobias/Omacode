@@ -23,7 +23,7 @@ test("plan is the default: a session that never chose is planning", () => {
 test("a mode survives a restart", () => {
   forgetModes()
   setMode("ses_a", "build")
-  const file = join(home, "micromanager", "modes.json")
+  const file = join(home, "omacode", "modes.json")
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { ses_a: "build" }, "the mode is on disk")
   forgetModes()
   loadModes()

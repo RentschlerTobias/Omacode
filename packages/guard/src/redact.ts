@@ -16,6 +16,7 @@ import { dirname, join } from "node:path"
 
 import { looksSecret } from "@omacode/core/secrets"
 import { serviceHeaders } from "@omacode/core/services"
+import { userStateDir } from "@omacode/core/paths"
 
 // "path" and "ip" belong to the egress gate (src/egress.ts): a decision payload names the machine it was made on, so
 // the home directory and addresses are numbered there. The vault keeps no entries for them — every request carries
@@ -183,7 +184,7 @@ export interface VaultOptions {
 }
 
 export function vaultPath(): string {
-  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "micromanager", "vault.json")
+  return join(userStateDir(), "vault.json")
 }
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")

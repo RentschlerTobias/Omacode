@@ -61,6 +61,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@omacode/core": "0.1.1",
     "@omacode/sandbox": "0.1.1"
   }
 }

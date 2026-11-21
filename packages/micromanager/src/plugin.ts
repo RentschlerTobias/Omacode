@@ -88,6 +88,7 @@ import { DEEP, idleAttempt, parseReview, reviewPrompt, trialSize, type Assessmen
 import { Accountant, chargeTask, limitsOf, overBudget, overNote, sessionUsage, wrapUpNote } from "./budget.ts"
 import { seedFromJournal, Usage } from "./usage.ts"
 import { CHECKPOINT_STEPS, MAX_STEPS, Watchdog, type Signal } from "./watchdog.ts"
+import { configFileName } from "@omacode/core/paths"
 
 // What the permission hook "evaluate" gets (opencode 2.0.18): the planned effect can be changed in place.
 interface Evaluation {
@@ -1560,7 +1561,7 @@ const plugin = {
         const ref = d.attempt ?? d.planned
         const target = resumed ? native.jobOf(resumed)?.job : ref ? native.current(project, ref.job) ?? loadJob(project, ref.job) : budgetJob(call.sessionID)?.job
         const why = target && overNow(target)
-        if (why) throw new DelegationError(`Not ${resumed ? "continued" : "started"}: job ${target.id} used its budget (${why}). Ask the user whether to raise it ("budget" in ~/.config/opencode/micromanager.jsonc); nothing starts until then.`)
+        if (why) throw new DelegationError(`Not ${resumed ? "continued" : "started"}: job ${target.id} used its budget (${why}). Ask the user whether to raise it ("budget" in ~/.config/opencode/${configFileName()}); nothing starts until then.`)
       }
       if (resumed) {
         // STOP holds every worker of the job, the one continued by its session too (live run, 2026-10-20: OpenCode's
@@ -2101,7 +2102,7 @@ const plugin = {
     // the micromanager's user turns, LEARNED lines and the memory tools through search and Jev. Off by itself when its
     // store cannot open; keyword search while the embedding service is down.
     const memorySettings = loadSettings().memory
-    const memory = new Memory(decider, (e) => journalMemory(e), { embed: memorySettings.embedding, ...(memorySettings.enabled ? {} : { off: "turned off in micromanager.jsonc" }) })
+    const memory = new Memory(decider, (e) => journalMemory(e), { embed: memorySettings.embedding, ...(memorySettings.enabled ? {} : { off: `turned off in ${configFileName()}` }) })
     try {
       const moved = memory.migrate(project)
       if (moved) log("info", `memory: ${moved} entries moved from .opencode/memory/jev-project.md`)

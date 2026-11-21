@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFile
 import { homedir } from "node:os"
 import { basename, join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { userDataDir } from "@omacode/core/paths"
 
 export type Scope = "user" | "global" | "project"
 
@@ -33,7 +34,7 @@ export interface Entry {
 export const CORE_BUDGET: Record<Scope, number> = { user: 2000, global: 2000, project: 4000 }
 
 export function memoryRoot(): string {
-  return join(process.env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "micromanager", "memory")
+  return join(userDataDir(), "memory")
 }
 
 // A project's path slug: its directory name and a short hash of its path. Only the id a project is first given

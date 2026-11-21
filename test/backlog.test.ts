@@ -9,6 +9,7 @@ import { parseGithubBacklog } from "../packages/micromanager/src/config.ts"
 import type { Exec } from "../packages/micromanager/src/integration.ts"
 import { useVault, Vault } from "../packages/micromanager/src/redact.ts"
 import { newJob, stage, type Task } from "../packages/micromanager/src/state.ts"
+import { PROJECT_STATE } from "../packages/core/src/paths.ts"
 
 const item = (extra: Partial<BacklogItem> = {}): BacklogItem => ({
   slug: "faster-search",
@@ -76,12 +77,12 @@ test("a follow-up and a trial that failed on every attempt become drafts that sa
 
 test("the backlog tool lists, adds, shows and changes items in the project", () => {
   const project = mkdtempSync(join(tmpdir(), "jd-backlog-"))
-  assert.match(backlogTool(project, "list", "", ""), /empty \(\.micromanager\/backlog\/\)/)
+  assert.ok(backlogTool(project, "list", "", "").includes(`empty (${PROJECT_STATE}/backlog/)`))
   assert.match(backlogTool(project, "add", "", JSON.stringify({ title: "Faster search", kind: "optimize", goal: "4 s is too slow", checks: ["npm test"] })), /^Added faster-search \(draft\)/)
   assert.match(backlogTool(project, "add", "", JSON.stringify({ title: "Faster search", checks: ["Run the tests."] })), /^Not added: .* reads like a sentence/)
   assert.match(backlogTool(project, "add", "", JSON.stringify({ title: "Docs", status: "ready", order: 5 })), /^Added docs \(ready\)/)
-  assert.ok(existsSync(join(project, ".micromanager", "backlog", "faster-search.md")))
-  assert.match(readFileSync(join(project, ".micromanager", "backlog", "faster-search.md"), "utf8"), /Needs a fitness contract before it can run/)
+  assert.ok(existsSync(join(project, PROJECT_STATE, "backlog", "faster-search.md")))
+  assert.match(readFileSync(join(project, PROJECT_STATE, "backlog", "faster-search.md"), "utf8"), /Needs a fitness contract before it can run/)
   assert.equal(backlogTool(project, "set", "faster-search", "order=1"), "faster-search is draft, order 1.")
   assert.match(backlogTool(project, "set", "faster-search", "status=later"), /status is one of/)
   assert.match(backlogTool(project, "list", "", ""), /- docs \[ready, build, order 5\] Docs\n- faster-search \[draft, optimize, order 1\] Faster search/)

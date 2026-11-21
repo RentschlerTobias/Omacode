@@ -8,6 +8,7 @@
 //                                                                before renames or moves, into the project)
 //               node src/cli.ts migrate [--project dir] [--apply]   (move the state directory from an old name to
 //                                                                the current one, core/paths.ts; a dry run without --apply)
+//               node src/cli.ts migrate --user [--apply]   (the same for the user's state, memory and settings files)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
@@ -18,7 +19,7 @@ import { createInterface } from "node:readline/promises"
 
 import { adopt, adoptCandidates } from "@omacode/context/adopt"
 import { MemoryStore } from "@omacode/context/store"
-import { applyMigration, planMigration } from "@omacode/state/migrate"
+import { applyMigration, applyUserMigration, planMigration, planUserMigration } from "@omacode/state/migrate"
 
 import { DEFAULT_BACKENDS, Decider, cloudKey, makeAskers } from "./backends.ts"
 import { benchPath, buildReport, drift, formatBench, formatDrift, formatN7, formatSweep, guardMetrics, loadCases, loadGuardCorpus, loadN7, loadPermissionCorpus, scoreCases, scoreN7, scorePermissions, sweep, writeBench, type Case, type PermissionSeen } from "./bench.ts"
@@ -70,6 +71,24 @@ export async function main(argv: readonly string[]): Promise<number> {
     }
   }
   if (command === "memory-adopt") return await memoryAdopt(args)
+  if (command === "migrate" && args.includes("--user")) {
+    const plan = planUserMigration()
+    const apply = args.includes("--apply")
+    if (plan.moves.length === 0 && plan.problems.length === 0) {
+      console.log("the user's state, memory and settings are on their current names; nothing to move")
+      return 0
+    }
+    for (const move of plan.moves) console.log(`${apply ? "" : "dry run: "}${move.what}: ${move.from} → ${move.to}`)
+    for (const problem of plan.problems) console.log(`  cannot move: ${problem}`)
+    for (const warning of plan.warnings) console.log(`  note: ${warning}`)
+    if (!apply) {
+      if (!plan.problems.length) console.log("run it again with --apply to move")
+      return plan.problems.length ? 1 : 0
+    }
+    const result = applyUserMigration(plan)
+    console.log(result.text)
+    return plan.problems.length ? 1 : 0
+  }
   if (command === "migrate") {
     const project = resolve(flag(args, "project") ?? process.env.INIT_CWD ?? process.cwd())
     const plan = planMigration(project)

@@ -30,6 +30,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { canonicalJson } from "./spec.ts"
+import { userStateDir } from "@omacode/core/paths"
 
 // The territories a licence is checked against. The list is short on purpose: D3 names the three that matter to this
 // project (the EU, the UK, South Korea) and the two a licence usually speaks about in this field. "world" means the
@@ -430,11 +431,10 @@ export function resolveModel(query: ModelQuery, registry: ModelRegistry = MODEL_
 // ---------------------------------------------------------------------------------------------------------------------
 // Registration: the one write.
 
-// Where the user's own records live: the same per-user state directory the journal uses. Spelled here rather than
-// imported from `@omacode/core` because this package must not depend on the orchestrator that depends on it, and the
-// path is a contract neither package owns alone — a move changes both, and that is a smaller cost than a cycle.
+// Where the user's own records live: the same per-user state directory the journal uses (@omacode/core, which depends
+// on nothing, so this package still does not depend on the orchestrator).
 export function modelsDir(dir?: string): string {
-  return dir ?? join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "micromanager")
+  return dir ?? userStateDir()
 }
 
 export function modelsPath(dir?: string): string {

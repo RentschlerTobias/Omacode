@@ -15,6 +15,7 @@ import type { DigestState } from "./digest.ts"
 import { DEFAULT_POLICY, epochDue, type EpochVerdict, type PolicyOptions, type Prices } from "./policy.ts"
 import { DEFAULT_RULES, findReplacements, type Replacement, type RuleOptions } from "./rules.ts"
 import type { Summarizer } from "./summary.ts"
+import { userStateDir } from "@omacode/core/paths"
 
 export interface ApplyInput {
   readonly prices?: Prices
@@ -51,7 +52,7 @@ export interface ManagerOptions {
 }
 
 export function contextDir(): string {
-  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "micromanager", "context")
+  return join(userStateDir(), "context")
 }
 
 // Puts the given replacements into the messages, in place (the hook's messages are what the provider gets).

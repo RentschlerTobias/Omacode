@@ -47,7 +47,6 @@ export const ALLOW: ReadonlyArray<LiteralPair> = [
   ["packages/full/src/plugin.ts", L],
   ["packages/tui/src/switcher.ts", L],
   // Tests: fixtures and expectations that name a directory, most of them a project from before the move.
-  ["test/backlog.test.ts", L],
   ["test/decide.test.ts", L],
   ["test/decide.test.ts", O],
   ["test/helpers.test.ts", O],

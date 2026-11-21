@@ -2,7 +2,7 @@
 // learn from later (phase 2 of the trials plan: a small local model that picks tier, n and families, trained on
 // success minus cost, with tasks compared inside their class). Until then it answers one question for src/trials.ts:
 // does this class of task mostly fail on a single worker?
-// ${XDG_STATE_HOME:-~/.local/state}/micromanager/outcomes.jsonl
+// <userStateDir>/outcomes.jsonl (${XDG_STATE_HOME:-~/.local/state}/omacode, core/paths.ts)
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { createHash } from "node:crypto"

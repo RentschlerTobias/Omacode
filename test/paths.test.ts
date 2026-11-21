@@ -53,14 +53,18 @@ test("statePath joins under whichever state directory the project uses", () => {
   }
 })
 
-test("userStateDir follows XDG_STATE_HOME and falls back to ~/.local/state/micromanager", () => {
+test("userStateDir follows XDG_STATE_HOME, and keeps the old name while only that exists", () => {
   const before = process.env.XDG_STATE_HOME
   try {
     const base = mkdtempSync(join(tmpdir(), "mm-user-state-"))
     process.env.XDG_STATE_HOME = base
+    assert.equal(userStateDir(), join(base, "omacode"))
+    mkdirSync(join(base, "micromanager"))
     assert.equal(userStateDir(), join(base, "micromanager"))
+    mkdirSync(join(base, "omacode"))
+    assert.equal(userStateDir(), join(base, "omacode"), "once the current one exists it wins")
     delete process.env.XDG_STATE_HOME
-    assert.equal(userStateDir(), join(homedir(), ".local", "state", "micromanager"))
+    assert.ok(userStateDir().startsWith(join(homedir(), ".local", "state")))
   } finally {
     if (before === undefined) delete process.env.XDG_STATE_HOME
     else process.env.XDG_STATE_HOME = before

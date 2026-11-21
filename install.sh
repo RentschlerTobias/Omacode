@@ -104,7 +104,7 @@ UNIT_EOF
   systemctl --user enable --now micromanager-embedding.service
   echo "micromanager-embedding.service runs Qwen3-Embedding-${size} on :8093"
   if [[ "$size" != "4B" ]]; then
-    echo "set \"memory\": { \"embedding\": { \"url\": \"http://127.0.0.1:8093\", \"model\": \"qwen3-embedding-${size,,}\" } } in micromanager.jsonc, so the vectors are made again with this model"
+    echo "set \"memory\": { \"embedding\": { \"url\": \"http://127.0.0.1:8093\", \"model\": \"qwen3-embedding-${size,,}\" } } in ~/.config/opencode/omacode.jsonc (or micromanager.jsonc, if that is the file you have), so the vectors are made again with this model"
   fi
   exit 0
 fi

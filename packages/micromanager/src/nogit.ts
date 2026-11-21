@@ -7,7 +7,7 @@
 // project wants git, a config folder or notes may not. What the first commit must leave out is decided here, by rules
 // that do not guess: secrets, dependency and build folders, and files too large for a repository.
 
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 
 import { inStateDir, STATE_DIRS } from "@omacode/core/paths"
@@ -139,6 +139,15 @@ export function copyForPlan(project: string, dest: string): PlanCopy {
           continue
         }
         walk(path, target, relPath)
+        // A directory that holds the state directory (.opencode) and nothing else the copy takes is not left behind
+        // empty: the state directory was all it had for the plan.
+        if (STATE_DIRS.some((dir) => dir.startsWith(`${relPath}/`))) {
+          try {
+            if (readdirSync(target).length === 0) rmdirSync(target)
+          } catch {
+            // left as it is
+          }
+        }
         continue
       }
       // A FIFO or a device is not something a project is made of: copying it would block or copy the machine.

@@ -425,7 +425,7 @@ async function loadedPlugin(t: { after(fn: () => void): void }, sessions: Record
     else process.env.XDG_STATE_HOME = before
   })
   await plugin.setup(ctx as never)
-  const journal = () => readJournal(`${process.env.XDG_STATE_HOME}/micromanager/decisions.jsonl`)
+  const journal = () => readJournal(`${process.env.XDG_STATE_HOME}/omacode/decisions.jsonl`)
   const evaluate = take("perm:evaluate")!
   const run = async (sessionID: string, agent: string, action: string) => {
     const e = { sessionID, agent, action, resources: ["x"], effect: "allow", message: undefined as string | undefined }

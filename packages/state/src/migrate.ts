@@ -10,7 +10,10 @@ import { execFileSync } from "node:child_process"
 import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs"
 import { dirname, join } from "node:path"
 
-import { LEGACY_PROJECT_STATES, PROJECT_STATE, splitState } from "@omacode/core/paths"
+import {
+  CONFIG_FILE, LEGACY_CONFIG_FILES, LEGACY_PICKS_FILES, LEGACY_PROJECT_STATES, LEGACY_USER_DIRS, PICKS_FILE, PROJECT_STATE, splitState,
+  USER_DIR, userConfigDir, userDataBase, userStateBase,
+} from "@omacode/core/paths"
 import { excludeFromGit, gitCommonDir } from "@omacode/core/project"
 
 import type { Job } from "./state.ts"
@@ -90,4 +93,58 @@ export function applyMigration(plan: MigrationPlan): MigrationResult {
   const repaired = repairWorktrees(plan.project, plan.worktrees)
   excludeFromGit(plan.project)
   return { moved: true, jobs, repaired, text: `moved ${plan.from}/ to ${plan.to}/: ${jobs} job${jobs === 1 ? "" : "s"}, ${plan.worktrees.length} worktree${plan.worktrees.length === 1 ? "" : "s"} relinked` }
+}
+
+// The user's own directories and settings files: ~/.local/state/micromanager, ~/.local/share/micromanager (the memory),
+// micromanager.jsonc and micromanager-models.json beside OpenCode's config, each to its current name (core/paths.ts).
+export interface UserMove {
+  readonly what: string
+  readonly from: string
+  readonly to: string
+}
+
+export interface UserMigrationPlan {
+  readonly moves: readonly UserMove[]
+  readonly problems: readonly string[]
+  readonly warnings: readonly string[]
+}
+
+function oldOne(base: string, legacy: readonly string[]): string | undefined {
+  const found = legacy.find((name) => existsSync(join(base, name)))
+  return found ? join(base, found) : undefined
+}
+
+export function planUserMigration(): UserMigrationPlan {
+  const moves: UserMove[] = []
+  const problems: string[] = []
+  const items: { what: string; base: string; name: string; legacy: readonly string[] }[] = [
+    { what: "state (journal, vault, context, held-out cases)", base: userStateBase(), name: USER_DIR, legacy: LEGACY_USER_DIRS },
+    { what: "memory", base: userDataBase(), name: USER_DIR, legacy: LEGACY_USER_DIRS },
+    { what: "settings", base: userConfigDir(), name: CONFIG_FILE, legacy: LEGACY_CONFIG_FILES },
+    { what: "model picks", base: userConfigDir(), name: PICKS_FILE, legacy: LEGACY_PICKS_FILES },
+  ]
+  for (const item of items) {
+    const from = oldOne(item.base, item.legacy)
+    if (!from) continue
+    const to = join(item.base, item.name)
+    if (existsSync(to)) problems.push(`${item.what}: both ${from} and ${to} exist; move or delete one by hand, nothing is merged`)
+    else moves.push({ what: item.what, from, to })
+  }
+  const warnings: string[] = []
+  try {
+    execFileSync("pgrep", ["-x", "opencode"], { stdio: "ignore", timeout: 3000 })
+    warnings.push("OpenCode is running: quit it first, so nothing writes to the old places while they move")
+  } catch {
+    // not running, or no pgrep: nothing to say
+  }
+  return { moves, problems, warnings }
+}
+
+export function applyUserMigration(plan: UserMigrationPlan): { moved: number; text: string } {
+  if (plan.problems.length) return { moved: 0, text: `nothing moved: ${plan.problems.join("; ")}` }
+  for (const move of plan.moves) {
+    mkdirSync(dirname(move.to), { recursive: true })
+    renameSync(move.from, move.to)
+  }
+  return { moved: plan.moves.length, text: plan.moves.length ? plan.moves.map((m) => `moved ${m.what}: ${m.from} → ${m.to}`).join("\n") : "nothing to move" }
 }

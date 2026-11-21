@@ -1,6 +1,6 @@
 // What was decided, one JSON line per entry, so the user can see every answer given on their behalf, the eval
 // harness can replay them and a local Jev can be trained on them:
-// ${XDG_STATE_HOME:-~/.local/state}/micromanager/decisions.jsonl
+// <userStateDir>/decisions.jsonl (${XDG_STATE_HOME:-~/.local/state}/omacode, core/paths.ts)
 //
 // Entry kinds: "permission" (src/decide.ts), "routing" (the subagent hook), "decision" (a Jev node through
 // src/backends.ts, with the state object, the questions, the answers and — for a payload that left the machine — the
