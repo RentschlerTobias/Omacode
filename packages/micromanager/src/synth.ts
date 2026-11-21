@@ -253,13 +253,18 @@ export function trainingRows(cases: readonly Case[]): Record<string, unknown>[] 
 // whose injection label the pass contradicts is dropped like a synthetic one.
 export const DEEPSET = { dataset: "deepset/prompt-injections", licence: "Apache-2.0", splits: ["train", "test"] } as const
 
-export async function publicCases(ask: Ask, fetchImpl: typeof fetch = fetch, seen: ReadonlySet<string> = new Set(), log: (line: string) => void = () => {}): Promise<{ cases: Case[]; stats: SynthStats }> {
+export async function publicCases(ask: Ask, fetchImpl: typeof fetch = fetch, seen: ReadonlySet<string> = new Set(), log: (line: string) => void = () => {}, concurrency = 4): Promise<{ cases: Case[]; stats: SynthStats }> {
   const stats: SynthStats = { generated: 0, kept: 0, disagreed: 0, duplicates: 0, failedCalls: 0 }
   const rows: { text: string; injection: boolean }[] = []
   for (const split of DEEPSET.splits) {
     for (let offset = 0; ; offset += 100) {
       const url = `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(DEEPSET.dataset)}&config=default&split=${split}&offset=${offset}&length=100`
-      const r = await fetchImpl(url)
+      // The datasets server answers a 502 now and then; three tries with a pause before giving up.
+      let r = await fetchImpl(url)
+      for (let tries = 1; !r.ok && r.status >= 500 && tries < 3; tries++) {
+        await new Promise((done) => setTimeout(done, 2000 * tries))
+        r = await fetchImpl(url)
+      }
       if (!r.ok) throw new Error(`${DEEPSET.dataset} ${split}: HTTP ${r.status}`)
       const page = (await r.json()) as { rows?: { row?: { text?: unknown; label?: unknown } }[] }
       const got = (page.rows ?? []).flatMap((x) => (typeof x.row?.text === "string" ? [{ text: x.row.text.trim(), injection: x.row.label === 1 }] : []))
@@ -271,9 +276,11 @@ export async function publicCases(ask: Ask, fetchImpl: typeof fetch = fetch, see
   log(`${DEEPSET.dataset}: ${rows.length} rows`)
   const known = new Set(seen)
   const cases: Case[] = []
-  for (let i = 0; i < rows.length; i += 25) {
-    const batch = rows.slice(i, i + 25)
-    const labels = await askArray(ask, labelPrompt(batch.map((b) => b.text)), (a) => a.length >= batch.length / 2)
+  const batches: (typeof rows)[] = []
+  for (let i = 0; i < rows.length; i += 25) batches.push(rows.slice(i, i + 25))
+  const labelled = await pool(batches.map((batch) => () => askArray(ask, labelPrompt(batch.map((b) => b.text)), (a) => a.length >= batch.length / 2)), concurrency)
+  batches.forEach((batch, b) => {
+    const labels = labelled[b]!
     if (labels.length === 0) stats.failedCalls++
     batch.forEach((row, j) => {
       const l = labels.find((x) => (x as { i?: unknown })?.i === j) as Record<string, unknown> | undefined
@@ -290,7 +297,7 @@ export async function publicCases(ask: Ask, fetchImpl: typeof fetch = fetch, see
       const lang = /[äöüß]|\b(und|der|die|das|nicht|ich|du)\b/i.test(row.text) ? "de" : "en"
       cases.push({ text: row.text, lang, labels: { injection: row.injection, harmful: l.harmful as boolean, sensitive: l.sensitive as boolean }, source: `public:${DEEPSET.dataset}`, split: splitOf(row.text) })
     })
-  }
+  })
   stats.kept = cases.length
   return { cases, stats }
 }
