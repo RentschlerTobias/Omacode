@@ -11,6 +11,9 @@
 //               node src/cli.ts migrate --user [--apply]   (the same for the user's state, memory and settings files)
 //               node src/cli.ts synth-guards [--model provider/model] [--per 25] [--public] [--topics g/id,…] [--langs de,en]
 //                                                                [--relabel] [--rows] [--out decider/data/guards.jsonl]
+//               node src/cli.ts synth-entities [--model provider/model] [--per 20] [--contexts a,b] [--langs de,en]
+//                                                                [--out decider/data/entities.jsonl]
+//                                                                (P6-T3a: made-up names and addresses with their spans)
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -35,7 +38,7 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
-import { normal, opencodeAsk, publicCases, relabel, synthesize, TOPICS, trainingRows, type Case as GuardCase } from "./synth.ts"
+import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
   const i = args.indexOf(`--${name}`)
@@ -76,6 +79,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   }
   if (command === "memory-adopt") return await memoryAdopt(args)
   if (command === "synth-guards") return await synthGuards(args)
+  if (command === "synth-entities") return await synthEntities(args)
   if (command === "migrate" && args.includes("--user")) {
     const plan = planUserMigration()
     const apply = args.includes("--apply")
@@ -289,5 +293,28 @@ async function synthGuards(args: readonly string[]): Promise<number> {
   writeFileSync(out, all.map((c) => JSON.stringify(c)).join("\n") + "\n")
   if (args.includes("--rows")) writeFileSync(out.replace(/\.jsonl$/, ".rows.jsonl"), trainingRows(all).map((r) => JSON.stringify(r)).join("\n") + "\n")
   console.log(`${stats.kept} new cases (${stats.generated} written, ${stats.disagreed} dropped by the labelling pass, ${stats.duplicates} duplicates, ${stats.failedCalls} failed calls); ${all.length} in ${out}`)
+  return 0
+}
+
+// synth-entities (P6-T3a): adds made-up texts with names and addresses to the entity training set, never removing one,
+// and writes the GLiNER2 rows beside it (entities.rows.jsonl).
+async function synthEntities(args: readonly string[]): Promise<number> {
+  const out = resolve(flag(args, "out") ?? "decider/data/entities.jsonl")
+  const model = flag(args, "model") ?? "opencode-go/deepseek-v4.1-flash"
+  const have: EntityCase[] = existsSync(out) ? readFileSync(out, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as EntityCase) : []
+  mkdirSync(dir(out), { recursive: true })
+  const { cases, stats } = await synthesizeEntities(opencodeAsk(model, dir(out)), model, {
+    per: Number(flag(args, "per") ?? 20),
+    seen: new Set(have.map((c) => normal(c.text))),
+    concurrency: Number(flag(args, "concurrency") ?? 4),
+    log: (line) => console.error(line),
+    // --contexts contract,data and --langs de: fill in batches whose check went unanswered before.
+    ...(flag(args, "contexts") ? { contexts: ENTITY_CONTEXTS.filter((c) => flag(args, "contexts")!.split(",").includes(c.id)) } : {}),
+    ...(flag(args, "langs") ? { langs: flag(args, "langs")!.split(",") as ("de" | "en")[] } : {}),
+  })
+  const all = [...have, ...cases]
+  writeFileSync(out, all.map((c) => JSON.stringify(c)).join("\n") + "\n")
+  writeFileSync(out.replace(/\.jsonl$/, ".rows.jsonl"), entityRows(all).map((r) => JSON.stringify(r)).join("\n") + "\n")
+  console.log(`${stats.kept} new cases (${stats.generated} written, ${stats.disagreed} dropped by the checks, ${stats.duplicates} duplicates, ${stats.failedCalls} unchecked batches); ${all.length} in ${out}`)
   return 0
 }

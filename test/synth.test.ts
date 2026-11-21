@@ -3,7 +3,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 
-import { jsonArray, publicCases, relabel, splitOf, synthesize, TOPICS, trainingRows, type Ask, type Case } from "../packages/micromanager/src/synth.ts"
+import { ENTITY_CONTEXTS, entityRows, jsonArray, publicCases, relabel, synthesizeEntities, splitOf, synthesize, TOPICS, trainingRows, type Ask, type Case } from "../packages/micromanager/src/synth.ts"
 
 // Writes three texts per generate call and labels each by what it says about itself.
 const fakeAsk: Ask = async (prompt) => {
@@ -91,4 +91,25 @@ test("a relabel pass keeps each case's intended answer, takes new labels for the
   assert.deepEqual(r.cases.map((c) => [c.text, c.labels.sensitive]), [["a", false], ["c", false]])
   assert.equal(r.dropped, 1)
   assert.equal(r.changed, 1)
+})
+
+test("an entity case is kept only when its spans are in the text and a second pass lists the same ones", async () => {
+  const ask: Ask = async (prompt) => {
+    if (prompt.startsWith("You write training data for a detector")) {
+      return JSON.stringify([
+        { text: "Rechnung an Erika Mustermann, Hauptstraße 12, 10115 Berlin", "person name": ["Erika Mustermann"], "street address": ["Hauptstraße 12, 10115 Berlin"] },
+        { text: "Grüße von Jonas und Lea", "person name": ["Jonas"], "street address": [] }, // Lea was forgotten
+        { text: "Paket für Tom Weber", "person name": ["Thomas Weber"], "street address": [] }, // not verbatim
+      ])
+    }
+    return JSON.stringify([
+      { i: 0, "person name": ["Erika Mustermann"], "street address": ["Hauptstraße 12, 10115 Berlin"] },
+      { i: 1, "person name": ["Jonas", "Lea"], "street address": [] },
+      { i: 2, "person name": ["Tom Weber"], "street address": [] },
+    ])
+  }
+  const { cases, stats } = await synthesizeEntities(ask, "m", { contexts: ENTITY_CONTEXTS.filter((c) => c.id === "invoice"), langs: ["de"] })
+  assert.equal(stats.disagreed, 2)
+  assert.deepEqual(cases.map((c) => c.entities), [{ "person name": ["Erika Mustermann"], "street address": ["Hauptstraße 12, 10115 Berlin"] }])
+  assert.deepEqual(entityRows(cases)[0]!.output, { entities: cases[0]!.entities })
 })

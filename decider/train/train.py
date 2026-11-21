@@ -1,6 +1,6 @@
-"""Fine-tune the decider's successor on the guards' training set (container plan P6-T3), on the GPU.
+"""Fine-tune the decider's successor on the guards' and the entities' training sets (container plan P6-T3), on the GPU.
 
-    uv run python train.py --rows ../data/guards.rows.jsonl --out runs/<name> [--epochs 4] [--eval-only]
+    uv run python train.py --rows ../data/guards.rows.jsonl ../data/entities.rows.jsonl --out runs/<name> [--epochs 4]
 
 runs/ is ignored by git; keep it on a real disk, a checkpoint is about 600 MB.
 
@@ -10,6 +10,11 @@ split. The model is evaluated before and after training on the held-out rows the
 (decider/server.py GlinerClassifier.probabilities: the guard as the task, yes and no with their descriptions, the
 instruction), so the numbers say what the service will do. A guard says yes at P(yes) >= 0.5, the floor the plugin
 uses (catalog.ts GUARD_FLOOR).
+
+Entity rows (`npm run synth-entities`) train the spans the redaction swaps for aliases, "person name" and "street
+address" (guard/src/redact.ts DEFAULT_LABELS). They are scored the way the server finds them (extract_entities_long at
+the threshold the plugin sends, 0.5): precision and recall per label, a found span matching a true one when one
+contains the other.
 """
 
 from __future__ import annotations
@@ -24,9 +29,20 @@ FLOOR = 0.5
 BASE = "hivetrace/gliner-guard-uniencoder"
 
 
-def load(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+ENTITY_THRESHOLD = 0.5
+
+
+def load(paths: list[Path] | Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows = [json.loads(line) for path in ([paths] if isinstance(paths, Path) else paths) for line in path.read_text().splitlines() if line.strip()]
     return [r for r in rows if r.get("split") == "train"], [r for r in rows if r.get("split") == "heldout"]
+
+
+def guard_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if "classifications" in r["output"]]
+
+
+def entity_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if "entities" in r["output"]]
 
 
 def examples(rows: list[dict[str, Any]]) -> list[Any]:
@@ -34,6 +50,9 @@ def examples(rows: list[dict[str, Any]]) -> list[Any]:
 
     out = []
     for r in rows:
+        if "entities" in r["output"]:
+            out.append(InputExample(text=r["input"], entities={k: list(v) for k, v in r["output"]["entities"].items()}))
+            continue
         classes = [
             Classification(task=c["task"], labels=list(c["labels"]), true_label=c["true_label"], prompt=c["prompt"], label_descriptions=dict(c["label_descriptions"]))
             for c in r["output"]["classifications"]
@@ -79,6 +98,50 @@ def evaluate(extractor: Any, rows: list[dict[str, Any]], device: str) -> dict[st
     return out
 
 
+def _norm(x: str) -> str:
+    return " ".join(x.lower().split()).rstrip(".,;")
+
+
+def _matches(a: str, b: str) -> bool:
+    return _norm(a) in _norm(b) or _norm(b) in _norm(a)
+
+
+def evaluate_entities(extractor: Any, rows: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Precision and recall per label over the held-out entity rows, and the time per text."""
+    labels = sorted({label for r in rows for label in r["output"]["entities"]})
+    counts = {label: {"tp": 0, "fp": 0, "fn": 0} for label in labels}
+    started = time.perf_counter()
+    for r in rows:
+        found = extractor.extract_entities_long(r["input"], labels, threshold=ENTITY_THRESHOLD, include_confidence=True, include_spans=True)
+        got = found.get("entities", {}) if isinstance(found, dict) else {}
+        for label in labels:
+            gold = list(r["output"]["entities"].get(label, []))
+            pred = [s.get("text", "") if isinstance(s, dict) else str(s) for s in got.get(label, []) or []]
+            hit = [any(_matches(p, g) for g in gold) for p in pred]
+            counts[label]["tp"] += sum(any(_matches(p, g) for p in pred) for g in gold)
+            counts[label]["fn"] += sum(not any(_matches(p, g) for p in pred) for g in gold)
+            counts[label]["fp"] += sum(not h for h in hit)
+    out: dict[str, dict[str, float]] = {}
+    for label, k in counts.items():
+        out[label] = {
+            "precision": k["tp"] / (k["tp"] + k["fp"]) if k["tp"] + k["fp"] else 1.0,
+            "recall": k["tp"] / (k["tp"] + k["fn"]) if k["tp"] + k["fn"] else 1.0,
+            "spans": k["tp"] + k["fn"],
+            "wrong": k["fp"],
+        }
+    out["_"] = {"ms_per_text": 1000 * (time.perf_counter() - started) / max(len(rows), 1)}
+    return out
+
+
+def show_entities(title: str, metrics: dict[str, dict[str, float]]) -> None:
+    print(f"\n{title}")
+    for label, m in metrics.items():
+        if label == "_":
+            print(f"  {m['ms_per_text']:.1f} ms per text")
+        else:
+            print(f"  {label:15s} precision {m['precision']:.2f} ({int(m['wrong'])} wrong)   recall {m['recall']:.2f} ({int(m['spans'])})")
+
+
 def show(title: str, metrics: dict[str, dict[str, float]]) -> None:
     print(f"\n{title}")
     for task, m in metrics.items():
@@ -90,7 +153,7 @@ def show(title: str, metrics: dict[str, dict[str, float]]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--rows", type=Path, required=True)
+    parser.add_argument("--rows", type=Path, nargs="+", required=True)
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--model", default=BASE)
     parser.add_argument("--epochs", type=int, default=4)
@@ -114,11 +177,14 @@ def main() -> None:
     print(f"{len(train_rows)} training rows, {len(held)} held out, on {device}")
     extractor = AutoExtractor.from_pretrained(args.model)
     extractor.to(device)
-    before = evaluate(extractor, held, device)
+    before = evaluate(extractor, guard_rows(held), device)
     show(f"before ({args.model})", before)
-    report: dict[str, Any] = {"model": args.model, "rows": str(args.rows), "train": len(train_rows), "heldout": len(held), "device": device, "before": before}
+    report: dict[str, Any] = {"model": args.model, "rows": [str(p) for p in args.rows], "train": len(train_rows), "heldout": len(held), "device": device, "before": before}
+    if entity_rows(held):
+        report["entities_before"] = evaluate_entities(extractor, entity_rows(held))
+        show_entities("entities before", report["entities_before"])
     if args.bench:
-        bench = bench_rows(args.bench, held)
+        bench = bench_rows(args.bench, guard_rows(held))
         scored = evaluate(extractor, bench, device)
         show(f"bench ({len(bench)} hand-written cases)", scored)
         report["bench"] = scored
@@ -140,8 +206,11 @@ def main() -> None:
         trainer = ExtractorTrainer(extractor, config, train_data=examples(train_rows), eval_data=examples(held))
         trainer.train()
         extractor.eval()
-        after = evaluate(extractor, held, device)
+        after = evaluate(extractor, guard_rows(held), device)
         show("after", after)
+        if entity_rows(held):
+            report["entities_after"] = evaluate_entities(extractor, entity_rows(held))
+            show_entities("entities after", report["entities_after"])
         best = args.out / "final"
         extractor.save_pretrained(str(best))
         report.update({"after": after, "epochs": args.epochs, "saved": str(best)})
