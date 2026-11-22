@@ -19,6 +19,8 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 //   micromanager and every worker of the job at once; /auto, /parallel and /stop do the same (src/control.ts).
 // - In the sidebar, below the checklist, and /pools: the models each worker role may run on, picked in a popup like
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
+// - /services: the decider and the embedding service of omacode-services, each on, auto or off, and the idle time
+//   after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
 //
@@ -35,6 +37,7 @@ import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJo
 import { listJobs } from "@omacode/state/store";
 import { agentRows, agentSummary, taskSessions } from "./switcher.ts";
 import { seedFromJournal } from "./usage.ts";
+import { IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceMode } from "@omacode/core/service-control";
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "@omacode/context/status";
 const POLL_MS = 2_000;
 const PANEL = "micromanager.agents";
@@ -1292,6 +1295,65 @@ function Agents(props) {
   })();
 }
 
+// The services popup: step 1 a service (or the idle time), step 2 its mode. Every pick is saved at once and the popup
+// opens again on step 1, so its lines show the new modes; esc ends.
+async function pickServices(context) {
+  let current;
+  for (;;) {
+    const view = servicesView();
+    if (!view.running) return context.ui.toast.show({
+      message: "omacode-services is not running: npm run services -- install",
+      variant: "warning"
+    });
+    const options = [...view.services.map(s => ({
+      title: s.name,
+      value: `service:${s.name}`,
+      description: serviceLine(s)
+    })), {
+      title: "idle time",
+      value: "idle",
+      description: `services in auto stop after ${view.idleMinutes ?? 10} min without a request`
+    }];
+    const chosen = await context.ui.dialog.select({
+      title: "Omacode services · ↵ change · esc done",
+      placeholder: "service",
+      current,
+      options
+    });
+    if (!chosen) return;
+    current = chosen;
+    if (chosen === "idle") {
+      const minutes = await context.ui.dialog.select({
+        title: "Idle time before a service in auto stops",
+        current: String(view.idleMinutes ?? 10),
+        options: IDLE_CHOICES.map(m => ({
+          title: `${m} min`,
+          value: String(m)
+        }))
+      });
+      if (minutes) setIdleMinutes(Number(minutes));
+      continue;
+    }
+    const service = view.services.find(s => `service:${s.name}` === chosen);
+    if (!service) continue;
+    const mode = await context.ui.dialog.select({
+      title: `${service.name} · now ${serviceLine(service)}`,
+      current: service.mode,
+      options: MODES.map(m => ({
+        title: m,
+        value: m,
+        description: MODE_HELP[m]
+      }))
+    });
+    if (!mode || mode === service.mode) continue;
+    setServiceMode(service.name, mode);
+    context.ui.toast.show({
+      message: `${service.name}: ${mode}`,
+      variant: mode === "off" ? "warning" : "success"
+    });
+  }
+}
+
 // A command on the job of the session on screen: its newest job with tasks.
 function onJob(context, run) {
   const sessionID = context.ui.router.current()?.sessionID;
@@ -1394,6 +1456,15 @@ export default Plugin.define({
               name: "pools"
             },
             run: () => pickModels(context)
+          }, {
+            id: "omacode.services",
+            title: "Omacode: services on/auto/off",
+            group: "Omacode",
+            palette: true,
+            slash: {
+              name: "services"
+            },
+            run: () => pickServices(context)
           }, {
             id: "micromanager.auto",
             title: "Micromanager: auto-continue on/off",

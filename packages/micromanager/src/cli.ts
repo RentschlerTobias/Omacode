@@ -15,7 +15,7 @@
 //                                                                [--out decider/data/entities.jsonl]
 //                                                                (P6-T3a: made-up names and addresses with their spans)
 //                                                                (P6-T2: synthetic and public training cases for the guards)
-//               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | remove [--purge]
+//               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -40,6 +40,8 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
+import { servicesView, setIdleMinutes, setServiceMode } from "@omacode/core/service-control"
+import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
@@ -90,6 +92,27 @@ export async function main(argv: readonly string[]): Promise<number> {
       console.log(servicesStatus())
       return 0
     }
+    if (verb === "mode") {
+      const [, name, mode] = args
+      const known = servicesView().services.map((v) => v.name)
+      if (!name || !known.includes(name) || !SERVICE_MODES.includes(mode as Mode)) {
+        console.error(`usage: services mode <${known.join("|") || "decider|embedding"}> <${SERVICE_MODES.join("|")}>`)
+        return 1
+      }
+      setServiceMode(name, mode as Mode)
+      console.log(`${name}: ${mode} (the supervisor applies it within a second)`)
+      return 0
+    }
+    if (verb === "idle") {
+      const minutes = Number(args[1])
+      if (!Number.isFinite(minutes) || minutes <= 0) {
+        console.error("usage: services idle <minutes>")
+        return 1
+      }
+      setIdleMinutes(minutes)
+      console.log(`services in auto stop after ${minutes} min without a request`)
+      return 0
+    }
     if (verb === "remove") {
       console.log(await removeServices(exec, { purge: args.includes("--purge") }))
       return 0
@@ -104,7 +127,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (!r.ok) console.error(r.text)
       return r.ok ? 0 : 1
     }
-    console.error("usage: services install [--embedding 0.6b|4b|8b] [--replace] | status | remove [--purge]")
+    console.error("usage: services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | idle <minutes> | remove [--purge]")
     return 1
   }
   if (command === "migrate" && args.includes("--user")) {

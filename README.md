@@ -395,6 +395,14 @@ one). The picks go to `~/.config/opencode/omacode-models.json`, which the server
 they hold from the next task on without a restart; they win over `models` in `omacode.jsonc`, and the journal's
 `routing` record says `picked: true`. The micromanager itself runs on the session's model: change that with `/model`.
 
+**Switching the local services.** With `omacode-services` installed (`npm run services -- install`), `/services` in
+the TUI lists the decider and the embedding service with their mode and state; pick one to set it **on** (started and
+kept running), **auto** (started on demand, stopped after the idle time) or **off** (stopped: decisions fall back to
+the rules, memory search to keywords). The same popup sets the idle time. From a shell:
+`npm run services -- mode <decider|embedding> <on|auto|off>`, `npm run services -- idle <minutes>`,
+`npm run services -- status`. Both write the supervisor's control file in `$XDG_RUNTIME_DIR/omacode`, which it applies
+within a second.
+
 Permission requests go to the decision client first and to you when it is not sure (`src/decide.ts`). Some phases of the
 design
 are still to come: see docs/plan.md.

@@ -264,9 +264,10 @@ GPL source archive of a tagged release (P1-T7). What the builds taught:
   whether redaction is required. GWDG is `institutional`, never `local`.
 - [ ] **P3-T5** GWDG SAIA provider template (base URL `https://chat-ai.academiccloud.de/v1`, models from `/models`,
   concurrency cap, no paid models by default).
-- [ ] **P3-T6** TUI switches `/decider` and `/embedding` (slash and palette, like `/auto` and `/parallel`) cycle
-  on → auto → off by writing the supervisor's control file (P1-T2a). The sidebar shows one status line per service
-  (`decider: auto · idle`, `embedding: off`); clicking it switches too.
+- [x] **P3-T6** TUI switches: one `/services` popup (slash and palette) instead of `/decider` and `/embedding` —
+  pick a service, then on / auto / off, plus the idle time — writing the supervisor's control file (P1-T2a) through
+  `@omacode/core/service-control`; `services mode|idle` in the CLI does the same (2026-11-22). Still open: a status
+  line per service in the sidebar (`decider: auto · idle`, `embedding: off`) that switches on click.
 - [ ] **P3-T7** What off means, said where it is switched:
   - **Embedding off:** memory search runs on keywords only (BM25), and says so; missing vectors are filled in when
     the service is back. No warning beyond the status line.
