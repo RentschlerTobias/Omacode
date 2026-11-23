@@ -20,7 +20,8 @@
     "memory-adopt": "node packages/micromanager/src/cli.ts memory-adopt",
     "migrate": "node packages/micromanager/src/cli.ts migrate",
     "services": "node packages/micromanager/src/cli.ts services",
-    "tools": "node packages/micromanager/src/cli.ts tools"
+    "tools": "node packages/micromanager/src/cli.ts tools",
+    "models": "node packages/micromanager/src/cli.ts models"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

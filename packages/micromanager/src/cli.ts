@@ -17,13 +17,15 @@
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
+//               node src/cli.ts models status | register <file> --license <SPDX|LicenseRef-…> --territory <EU,…> [--use <text>] [--name <name>]
+//                                                                (the image models ComfyUI can load, against the registry)
 //               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | register comfyui [--gpu <id>] [--workspace <dir>] | ask
 //                                                                (A6-T6/T7: the optional creative tools, pinned, into the home)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
 import { dirname as dir, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
 
@@ -46,7 +48,9 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
-import { registerComfy, unitPath } from "./services.ts"
+import { readConfig as readServicesConfig, registerComfy, unitPath } from "./services.ts"
+import { hashFile, modelRoots } from "./comfy-gate.ts"
+import { MODEL_REGISTRY, readModelRegistry, registerModel, registryWith, resolveModel, TERRITORIES, type Territory } from "@omacode/artifact/models"
 import { comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
@@ -91,6 +95,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "synth-guards") return await synthGuards(args)
   if (command === "synth-entities") return await synthEntities(args)
   if (command === "tools") return await tools(args)
+  if (command === "models") return await models(args)
   if (command === "services") {
     const [verb] = args
     if (verb === "status") {
@@ -546,4 +551,66 @@ function registerComfyTool(gpu?: Gpu, workspace = comfyWorkspace(home())): boole
     console.log(`ComfyUI installed; start it with:\n  ${comfyLaunch(env)}\n(or install omacode-services, npm run services -- install, and run this again to have it started on demand)`)
   }
   return true
+}
+
+// `models status | register`: the model files ComfyUI can load (its model folders and extra_model_paths.yaml), each
+// hashed (cached, as the ComfyUI gate does) and checked against the registry; `register` records one with the licence
+// the user states. Nothing here guesses a licence.
+async function models(args: string[]): Promise<number> {
+  const [verb, target] = args
+  const workspace = readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(home())
+  const files = new Map<string, string>()
+  for (const root of modelRoots(workspace)) {
+    const walk = (dir: string, depth: number) => {
+      let names: string[] = []
+      try {
+        names = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const n of names) {
+        const p = resolve(dir, n)
+        let st
+        try {
+          st = statSync(p)
+        } catch {
+          continue
+        }
+        if (st.isDirectory() && depth < 2) walk(p, depth + 1)
+        else if (st.isFile() && /\.(safetensors|gguf|ckpt|pt|pth|sft)$/i.test(n) && st.size > 1_000_000) files.set(realpathSync(p), n)
+      }
+    }
+    walk(root, 0)
+  }
+  const registry = registryWith(readModelRegistry().entries, MODEL_REGISTRY)
+  if (verb === "status") {
+    for (const [file, name] of [...files].sort((a, b) => a[1].localeCompare(b[1]))) {
+      const hash = await hashFile(file)
+      const v = resolveModel({ declared: name, hash }, registry)
+      const what = v.status === "allowed" ? `${v.spdx} (${v.territories.join(", ")})` : v.status === "blocked" ? `BLOCKED: ${v.reason}` : v.status === "territory" ? `${v.spdx}: not for ${v.territory}` : "not registered"
+      console.log(`${v.status.padEnd(9)} ${name.padEnd(44)} ${hash.slice(0, 12)}  ${what}`)
+    }
+    return 0
+  }
+  if (verb === "register") {
+    const license = flag(args, "license")
+    const territory = (flag(args, "territory") ?? "").split(",").map((t) => t.trim()).filter(Boolean)
+    const match = [...files].filter(([file, name]) => name === target || file === resolve(target ?? ""))
+    if (!target || !license || !territory.length || match.length !== 1) {
+      console.error(`usage: models register <file name> --license <SPDX or LicenseRef-…> --territory <${TERRITORIES.join("|")}>[,…] [--use <text>] [--name <name>]${target && match.length !== 1 ? `\n${match.length ? "more than one file is" : "no model file is"} named ${target}; models status lists them` : ""}`)
+      return 1
+    }
+    const [file, name] = match[0]!
+    const hash = await hashFile(file)
+    try {
+      const { path, entry } = registerModel({ hash, name: flag(args, "name") ?? name, license, territory: territory as Territory[], ...(flag(args, "use") ? { use: flag(args, "use")! } : {}) })
+      console.log(`registered ${entry.name} (${hash.slice(0, 12)}…) as ${entry.spdx} for ${entry.territories.join(", ")} in ${path}`)
+      return 0
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+      return 1
+    }
+  }
+  console.error("usage: models status | register <file name> --license <…> --territory <…> [--use <text>] [--name <name>]")
+  return 1
 }
