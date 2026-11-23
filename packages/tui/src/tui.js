@@ -19,7 +19,7 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 //   micromanager and every worker of the job at once; /auto, /parallel and /stop do the same (src/control.ts).
 // - In the sidebar, below the checklist, and /pools: the models each worker role may run on, picked in a popup like
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
-// - /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
+// - In the sidebar, SERVICES (folded, below MODELS), and /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
 //   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
@@ -1295,90 +1295,196 @@ function Agents(props) {
   })();
 }
 
-// The services popup: step 1 a service (or the idle time), step 2 its mode or, when it has a choice, its device. Every pick is saved at once and the popup
-// opens again on step 1, so its lines show the new modes; esc ends.
-async function pickServices(context) {
-  let current;
+// The services popup: step 1 a service (or the idle time), step 2 its mode or its device. Every pick is saved at once
+// and the popup opens again on step 1, so its lines show the new modes; esc ends. From the sidebar, a click on a
+// service opens step 2 for it directly, and esc there ends.
+async function pickServices(context, only) {
+  let current = only ? `service:${only}` : undefined;
   for (;;) {
     const view = servicesView();
     if (!view.running) return context.ui.toast.show({
       message: "omacode-services is not running: npm run services -- install",
       variant: "warning"
     });
-    const options = [...view.services.map(s => ({
-      title: s.name,
-      value: `service:${s.name}`,
-      description: serviceLine(s)
-    })), {
-      title: "idle time",
-      value: "idle",
-      description: `services in auto stop after ${view.idleMinutes ?? 10} min without a request`
-    }];
-    const chosen = await context.ui.dialog.select({
-      title: "Omacode services · ↵ change · esc done",
-      placeholder: "service",
-      current,
-      options
-    });
-    if (!chosen) return;
-    current = chosen;
-    if (chosen === "idle") {
-      const minutes = await context.ui.dialog.select({
-        title: "Idle time before a service in auto stops",
-        current: String(view.idleMinutes ?? 10),
-        options: IDLE_CHOICES.map(m => ({
-          title: `${m} min`,
-          value: String(m)
-        }))
+    let chosen = current;
+    if (!only) {
+      const options = [...view.services.map(s => ({
+        title: s.name,
+        value: `service:${s.name}`,
+        description: serviceLine(s)
+      })), {
+        title: "idle time",
+        value: "idle",
+        description: `services in auto stop after ${view.idleMinutes ?? 10} min without a request`
+      }];
+      chosen = await context.ui.dialog.select({
+        title: "Omacode services · ↵ change · esc done",
+        placeholder: "service",
+        current,
+        options
       });
-      if (minutes) setIdleMinutes(Number(minutes));
+      if (!chosen) return;
+      current = chosen;
+    }
+    if (chosen === "idle") {
+      await pickIdle(context, view.idleMinutes);
       continue;
     }
     const service = view.services.find(s => `service:${s.name}` === chosen);
-    if (!service) continue;
-    const devices = service.devices ?? [];
-    const picked = await context.ui.dialog.select({
-      title: `${service.name} · now ${serviceLine(service)}`,
-      current: service.mode,
-      options: [...MODES.map(m => ({
-        title: m,
-        value: m,
-        description: MODE_HELP[m],
-        category: "mode"
-      })),
-      // One device is shown as well, with its note, so the popup says why there is nothing to pick.
-      ...devices.map(d => ({
-        title: d.id === service.device ? `● ${d.name}` : d.name,
-        value: `device:${d.id}`,
-        description: d.note ?? d.id,
-        category: "runs on"
-      }))]
+    if (!service) return;
+    await pickService(context, service);
+    if (only) return;
+  }
+}
+async function pickIdle(context, now = 10) {
+  const minutes = await context.ui.dialog.select({
+    title: "Idle time before a service in auto stops",
+    current: String(now),
+    options: IDLE_CHOICES.map(m => ({
+      title: `${m} min`,
+      value: String(m)
+    }))
+  });
+  if (minutes) setIdleMinutes(Number(minutes));
+}
+async function pickService(context, service) {
+  const devices = service.devices ?? [];
+  const picked = await context.ui.dialog.select({
+    title: `${service.name} · now ${serviceLine(service)}`,
+    current: service.mode,
+    options: [...MODES.map(m => ({
+      title: m,
+      value: m,
+      description: MODE_HELP[m],
+      category: "mode"
+    })),
+    // One device is shown as well, with its note, so the popup says why there is nothing to pick.
+    ...devices.map(d => ({
+      title: d.id === service.device ? `● ${d.name}` : d.name,
+      value: `device:${d.id}`,
+      description: d.note ?? d.id,
+      category: "runs on"
+    }))]
+  });
+  if (!picked) return;
+  if (picked.startsWith("device:")) {
+    const id = picked.slice("device:".length);
+    const note = devices.find(d => d.id === id)?.note;
+    if (devices.length === 1) return context.ui.toast.show({
+      message: `${service.name}: ${note ?? `runs on ${deviceName(service, id)} only`}`
     });
-    if (!picked) continue;
-    if (picked.startsWith("device:")) {
-      const id = picked.slice("device:".length);
-      const note = devices.find(d => d.id === id)?.note;
-      if (devices.length === 1) {
-        context.ui.toast.show({
-          message: `${service.name}: ${note ?? `runs on ${deviceName(service, id)} only`}`
-        });
-        continue;
-      }
-      if (id === service.device) continue;
-      setServiceDevice(service.name, id);
-      context.ui.toast.show({
-        message: `${service.name}: moving to ${deviceName(service, id)}`,
-        variant: "success"
-      });
-      continue;
-    }
-    if (picked === service.mode) continue;
-    setServiceMode(service.name, picked);
-    context.ui.toast.show({
-      message: `${service.name}: ${picked}`,
-      variant: picked === "off" ? "warning" : "success"
+    if (id === service.device) return;
+    setServiceDevice(service.name, id);
+    return context.ui.toast.show({
+      message: `${service.name}: moving to ${deviceName(service, id)}`,
+      variant: "success"
     });
   }
+  if (picked === service.mode) return;
+  setServiceMode(service.name, picked);
+  context.ui.toast.show({
+    message: `${service.name}: ${picked}`,
+    variant: picked === "off" ? "warning" : "success"
+  });
+}
+
+// The sidebar's SERVICES section, below MODELS: folded, one line per service with its mode, state and device; a click
+// on a line opens its popup, on the idle line the idle time. Read from the supervisor's status file every poll.
+const STATE_MARK = {
+  running: "●",
+  starting: "◐",
+  preparing: "◐",
+  stopped: "○",
+  failed: "✖"
+};
+function Services(props) {
+  const context = props.context;
+  const colors = palette(context);
+  const [open, setOpen] = createSignal(false);
+  const [view, setView] = createSignal(servicesView());
+  const timer = setInterval(() => setView(servicesView()), POLL_MS);
+  onCleanup(() => clearInterval(timer));
+  const short = s => [s.mode, s.mode === "off" ? undefined : s.state, s.device && s.devices && s.devices.length > 1 ? s.device : undefined].filter(Boolean).join(" · ");
+  const line = (name, text, mark, color, onClick) => (() => {
+    var _el$117 = _$createElement("box"),
+      _el$118 = _$createElement("text"),
+      _el$119 = _$createElement("text"),
+      _el$120 = _$createElement("box"),
+      _el$121 = _$createElement("text");
+    _$insertNode(_el$117, _el$118);
+    _$insertNode(_el$117, _el$119);
+    _$insertNode(_el$117, _el$120);
+    _$insertNode(_el$117, _el$121);
+    _$setProp(_el$117, "flexDirection", "row");
+    _$setProp(_el$117, "onMouseUp", onClick);
+    _$insert(_el$118, () => name.padEnd(13));
+    _$insert(_el$119, () => cut(text, 20));
+    _$setProp(_el$120, "flexGrow", 1);
+    _$setProp(_el$121, "fg", color);
+    _$insert(_el$121, mark);
+    _$effect(_p$ => {
+      var _v$32 = colors.base,
+        _v$33 = colors.muted;
+      _v$32 !== _p$.e && (_p$.e = _$setProp(_el$118, "fg", _v$32, _p$.e));
+      _v$33 !== _p$.t && (_p$.t = _$setProp(_el$119, "fg", _v$33, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$117;
+  })();
+  return (() => {
+    var _el$122 = _$createElement("box"),
+      _el$123 = _$createElement("box"),
+      _el$124 = _$createElement("text"),
+      _el$126 = _$createElement("box"),
+      _el$127 = _$createElement("text");
+    _$insertNode(_el$122, _el$123);
+    _$setProp(_el$122, "paddingTop", 1);
+    _$insertNode(_el$123, _el$124);
+    _$insertNode(_el$123, _el$126);
+    _$insertNode(_el$123, _el$127);
+    _$setProp(_el$123, "flexDirection", "row");
+    _$setProp(_el$123, "onMouseUp", () => setOpen(!open()));
+    _$insertNode(_el$124, _$createTextNode(`SERVICES`));
+    _$setProp(_el$126, "flexGrow", 1);
+    _$insert(_el$127, () => open() ? "/services ▾" : "/services ▸");
+    _$insert(_el$122, _$createComponent(Show, {
+      get when() {
+        return open();
+      },
+      get children() {
+        return _$createComponent(Show, {
+          get when() {
+            return view().running;
+          },
+          get fallback() {
+            return line("not running", "npm run services", "", colors.muted, () => void pickServices(context));
+          },
+          get children() {
+            return [_$createComponent(For, {
+              get each() {
+                return view().services;
+              },
+              children: s => line(s.name, short(s), s.mode === "off" ? "○" : STATE_MARK[s.state] ?? "", s.state === "failed" ? colors.mark.failed : s.state === "running" ? colors.mark.running : colors.muted, () => void pickServices(context, s.name))
+            }), _$memo(() => line("idle", `${view().idleMinutes ?? 10} min`, "", colors.muted, () => void pickIdle(context, view().idleMinutes)))];
+          }
+        });
+      }
+    }), null);
+    _$effect(_p$ => {
+      var _v$34 = colors.base,
+        _v$35 = colors.muted;
+      _v$34 !== _p$.e && (_p$.e = _$setProp(_el$124, "fg", _v$34, _p$.e));
+      _v$35 !== _p$.t && (_p$.t = _$setProp(_el$127, "fg", _v$35, _p$.t));
+      return _p$;
+    }, {
+      e: undefined,
+      t: undefined
+    });
+    return _el$122;
+  })();
 }
 
 // A command on the job of the session on screen: its newest job with tasks.
@@ -1425,23 +1531,26 @@ export default Plugin.define({
     context.ui.slot({
       prepend: "sidebar.content",
       render: input => (() => {
-        var _el$117 = _$createElement("box");
-        _$insert(_el$117, _$createComponent(Checklist, {
+        var _el$128 = _$createElement("box");
+        _$insert(_el$128, _$createComponent(Checklist, {
           context: context,
           get sessionID() {
             return input.sessionID;
           }
         }), null);
-        _$insert(_el$117, _$createComponent(ContextSection, {
+        _$insert(_el$128, _$createComponent(ContextSection, {
           context: context,
           get sessionID() {
             return input.sessionID;
           }
         }), null);
-        _$insert(_el$117, _$createComponent(Pools, {
+        _$insert(_el$128, _$createComponent(Pools, {
           context: context
         }), null);
-        return _el$117;
+        _$insert(_el$128, _$createComponent(Services, {
+          context: context
+        }), null);
+        return _el$128;
       })()
     });
     context.ui.slot({

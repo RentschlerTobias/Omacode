@@ -10,7 +10,7 @@
 //   micromanager and every worker of the job at once; /auto, /parallel and /stop do the same (src/control.ts).
 // - In the sidebar, below the checklist, and /pools: the models each worker role may run on, picked in a popup like
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
-// - /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
+// - In the sidebar, SERVICES (folded, below MODELS), and /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
 //   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
@@ -30,7 +30,7 @@ import { listJobs } from "@omacode/state/store"
 import { agentRows, agentSummary, taskSessions, type AgentRow, type Live, type SessionFacts, type Tag, type TaskSessionRow } from "./switcher.ts"
 import type { Job } from "@omacode/state"
 import { seedFromJournal } from "./usage.ts"
-import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "@omacode/core/service-control"
+import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode, type ServiceView } from "@omacode/core/service-control"
 import type { Mode as ServiceMode } from "@omacode/core/supervisor"
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus, type ContextStatus, type MemoryStats } from "@omacode/context/status"
 
@@ -608,58 +608,106 @@ function Agents(props: { context: Context; panel: { sessionID: string; focused?:
   )
 }
 
-// The services popup: step 1 a service (or the idle time), step 2 its mode or, when it has a choice, its device. Every pick is saved at once and the popup
-// opens again on step 1, so its lines show the new modes; esc ends.
-async function pickServices(context: Context): Promise<void> {
-  let current: string | undefined
+// The services popup: step 1 a service (or the idle time), step 2 its mode or its device. Every pick is saved at once
+// and the popup opens again on step 1, so its lines show the new modes; esc ends. From the sidebar, a click on a
+// service opens step 2 for it directly, and esc there ends.
+async function pickServices(context: Context, only?: string): Promise<void> {
+  let current: string | undefined = only ? `service:${only}` : undefined
   for (;;) {
     const view = servicesView()
     if (!view.running) return context.ui.toast.show({ message: "omacode-services is not running: npm run services -- install", variant: "warning" })
-    const options = [
-      ...view.services.map((s) => ({ title: s.name, value: `service:${s.name}`, description: serviceLine(s) })),
-      { title: "idle time", value: "idle", description: `services in auto stop after ${view.idleMinutes ?? 10} min without a request` },
-    ]
-    const chosen = await context.ui.dialog.select({ title: "Omacode services · ↵ change · esc done", placeholder: "service", current, options })
-    if (!chosen) return
-    current = chosen
+    let chosen = current
+    if (!only) {
+      const options = [
+        ...view.services.map((s) => ({ title: s.name, value: `service:${s.name}`, description: serviceLine(s) })),
+        { title: "idle time", value: "idle", description: `services in auto stop after ${view.idleMinutes ?? 10} min without a request` },
+      ]
+      chosen = await context.ui.dialog.select({ title: "Omacode services · ↵ change · esc done", placeholder: "service", current, options })
+      if (!chosen) return
+      current = chosen
+    }
     if (chosen === "idle") {
-      const minutes = await context.ui.dialog.select({
-        title: "Idle time before a service in auto stops",
-        current: String(view.idleMinutes ?? 10),
-        options: IDLE_CHOICES.map((m) => ({ title: `${m} min`, value: String(m) })),
-      })
-      if (minutes) setIdleMinutes(Number(minutes))
+      await pickIdle(context, view.idleMinutes)
       continue
     }
     const service = view.services.find((s) => `service:${s.name}` === chosen)
-    if (!service) continue
-    const devices = service.devices ?? []
-    const picked = await context.ui.dialog.select({
-      title: `${service.name} · now ${serviceLine(service)}`,
-      current: service.mode,
-      options: [
-        ...MODES.map((m) => ({ title: m, value: m, description: MODE_HELP[m], category: "mode" })),
-        // One device is shown as well, with its note, so the popup says why there is nothing to pick.
-        ...devices.map((d) => ({ title: d.id === service.device ? `● ${d.name}` : d.name, value: `device:${d.id}`, description: d.note ?? d.id, category: "runs on" })),
-      ],
-    })
-    if (!picked) continue
-    if (picked.startsWith("device:")) {
-      const id = picked.slice("device:".length)
-      const note = devices.find((d) => d.id === id)?.note
-      if (devices.length === 1) {
-        context.ui.toast.show({ message: `${service.name}: ${note ?? `runs on ${deviceName(service, id)} only`}` })
-        continue
-      }
-      if (id === service.device) continue
-      setServiceDevice(service.name, id)
-      context.ui.toast.show({ message: `${service.name}: moving to ${deviceName(service, id)}`, variant: "success" })
-      continue
-    }
-    if (picked === service.mode) continue
-    setServiceMode(service.name, picked as ServiceMode)
-    context.ui.toast.show({ message: `${service.name}: ${picked}`, variant: picked === "off" ? "warning" : "success" })
+    if (!service) return
+    await pickService(context, service)
+    if (only) return
   }
+}
+
+async function pickIdle(context: Context, now = 10): Promise<void> {
+  const minutes = await context.ui.dialog.select({
+    title: "Idle time before a service in auto stops",
+    current: String(now),
+    options: IDLE_CHOICES.map((m) => ({ title: `${m} min`, value: String(m) })),
+  })
+  if (minutes) setIdleMinutes(Number(minutes))
+}
+
+async function pickService(context: Context, service: ServiceView): Promise<void> {
+  const devices = service.devices ?? []
+  const picked = await context.ui.dialog.select({
+    title: `${service.name} · now ${serviceLine(service)}`,
+    current: service.mode,
+    options: [
+      ...MODES.map((m) => ({ title: m, value: m, description: MODE_HELP[m], category: "mode" })),
+      // One device is shown as well, with its note, so the popup says why there is nothing to pick.
+      ...devices.map((d) => ({ title: d.id === service.device ? `● ${d.name}` : d.name, value: `device:${d.id}`, description: d.note ?? d.id, category: "runs on" })),
+    ],
+  })
+  if (!picked) return
+  if (picked.startsWith("device:")) {
+    const id = picked.slice("device:".length)
+    const note = devices.find((d) => d.id === id)?.note
+    if (devices.length === 1) return context.ui.toast.show({ message: `${service.name}: ${note ?? `runs on ${deviceName(service, id)} only`}` })
+    if (id === service.device) return
+    setServiceDevice(service.name, id)
+    return context.ui.toast.show({ message: `${service.name}: moving to ${deviceName(service, id)}`, variant: "success" })
+  }
+  if (picked === service.mode) return
+  setServiceMode(service.name, picked as ServiceMode)
+  context.ui.toast.show({ message: `${service.name}: ${picked}`, variant: picked === "off" ? "warning" : "success" })
+}
+
+// The sidebar's SERVICES section, below MODELS: folded, one line per service with its mode, state and device; a click
+// on a line opens its popup, on the idle line the idle time. Read from the supervisor's status file every poll.
+const STATE_MARK: Record<string, string> = { running: "●", starting: "◐", preparing: "◐", stopped: "○", failed: "✖" }
+
+function Services(props: { context: Context }) {
+  const context = props.context
+  const colors = palette(context)
+  const [open, setOpen] = createSignal(false)
+  const [view, setView] = createSignal(servicesView())
+  const timer = setInterval(() => setView(servicesView()), POLL_MS)
+  onCleanup(() => clearInterval(timer))
+  const short = (s: ServiceView) => [s.mode, s.mode === "off" ? undefined : s.state, s.device && s.devices && s.devices.length > 1 ? s.device : undefined].filter(Boolean).join(" · ")
+  const line = (name: string, text: string, mark: string, color: Color, onClick: () => void) => (
+    <box flexDirection="row" onMouseUp={onClick}>
+      <text fg={colors.base}>{name.padEnd(13)}</text>
+      <text fg={colors.muted}>{cut(text, 20)}</text>
+      <box flexGrow={1} />
+      <text fg={color}>{mark}</text>
+    </box>
+  )
+  return (
+    <box paddingTop={1}>
+      <box flexDirection="row" onMouseUp={() => setOpen(!open())}>
+        <text fg={colors.base}>SERVICES</text>
+        <box flexGrow={1} />
+        <text fg={colors.muted}>{open() ? "/services ▾" : "/services ▸"}</text>
+      </box>
+      <Show when={open()}>
+        <Show when={view().running} fallback={line("not running", "npm run services", "", colors.muted, () => void pickServices(context))}>
+          <For each={view().services}>
+            {(s) => line(s.name, short(s), s.mode === "off" ? "○" : (STATE_MARK[s.state] ?? ""), s.state === "failed" ? colors.mark.failed : s.state === "running" ? colors.mark.running : colors.muted, () => void pickServices(context, s.name))}
+          </For>
+          {line("idle", `${view().idleMinutes ?? 10} min`, "", colors.muted, () => void pickIdle(context, view().idleMinutes))}
+        </Show>
+      </Show>
+    </box>
+  )
 }
 
 // A command on the job of the session on screen: its newest job with tasks.
@@ -693,6 +741,7 @@ export default Plugin.define({
           <Checklist context={context} sessionID={input.sessionID} />
           <ContextSection context={context} sessionID={input.sessionID} />
           <Pools context={context} />
+          <Services context={context} />
         </box>
       ),
     })

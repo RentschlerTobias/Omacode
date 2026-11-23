@@ -396,7 +396,7 @@ they hold from the next task on without a restart; they win over `models` in `om
 `routing` record says `picked: true`. The micromanager itself runs on the session's model: change that with `/model`.
 
 **Switching the local services.** With `omacode-services` installed (`npm run services -- install`), `/services` in
-the TUI lists the decider and the embedding service with their mode and state; pick one to set it **on** (started and
+the TUI, or the sidebar's SERVICES section below MODELS (click to unfold, click a line to change it), lists the decider and the embedding service with their mode and state; pick one to set it **on** (started and
 kept running), **auto** (started on demand, stopped after the idle time) or **off** (stopped: decisions fall back to
 the rules, memory search to keywords). For the embedding service the same step offers where it runs: the CPU or any
 GPU llama.cpp lists (`--list-devices`), such as a discrete and an integrated one; a running service restarts on the new
