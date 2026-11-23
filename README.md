@@ -90,6 +90,22 @@ request only (it holds GB of GPU memory), stopped after the idle time, reachable
 browser talks to it directly), and switched in `/services` like the others, on its GPU or the CPU. For a ComfyUI
 already there: `npm run tools -- register comfyui [--gpu <id>] [--workspace <dir>]`.
 
+**ComfyUI from the agents (comfy-mcp).** Comfy-Org's MCP server lets any agent run workflows on that ComfyUI. Set it
+up once: `uv tool install comfy-mcp==0.10.0` (AGPL-3.0, a separate process), `comfy set-default <the ComfyUI workspace>`
+so comfy-cli targets the one omacode-services runs, and in `~/.config/opencode/opencode.json` under `mcp.servers`:
+`"comfy": { "type": "local", "command": ["comfy-mcp"] }`. The plugin then watches its tools in every session
+(`packages/micromanager/src/comfy-gate.ts`):
+
+- Paid partner models, Comfy Cloud sign-in, downloads, node installs and starting or stopping ComfyUI are denied with
+  the reason (omacode-services does the starting and stopping). OpenCode's plan agent may not generate.
+- Among the micromanager's workers only the designer may use `comfy_*`.
+- Before a run, every model file the workflow names is found in ComfyUI's model folders (including
+  `extra_model_paths.yaml`), hashed (cached in `~/.local/state/omacode/model-hashes.json`) and checked against the model
+  registry. All known and permitted for the territory: it runs. Otherwise you are asked, and the chat says which model
+  lacks what; approving runs it and records those models as approved by you, licence unverified, so they are not asked
+  about again. A blocked model is asked about too, with the reason, and never recorded.
+- Every run goes into the journal (`comfy.run`) with its models, hashes, licences and who allowed it.
+
 The worker skills need no step in either case: the plugin registers them itself (see "Skills" under "Use").
 
 Restart the OpenCode server afterwards: plugins load when it starts, so restart the server your TUI attaches to,

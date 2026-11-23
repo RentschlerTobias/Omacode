@@ -89,6 +89,9 @@ import { seedFromJournal, Usage } from "./usage.ts"
 import { CHECKPOINT_STEPS, MAX_STEPS, Watchdog, type Signal } from "./watchdog.ts"
 import { configFileName } from "@omacode/core/paths"
 import { notifyDesktop } from "./desktop.ts"
+import { checkRun, COMFY_PREFIX, DENIED, questionLines, registerApproved, RUN_TOOLS, spends, type RunCheck } from "./comfy-gate.ts"
+import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
+import { readConfig as readServicesConfig } from "./services.ts"
 
 // What the permission hook "evaluate" gets (opencode 2.0.18): the planned effect can be changed in place.
 interface Evaluation {
@@ -98,6 +101,8 @@ interface Evaluation {
   resources: string[]
   effect: "allow" | "ask" | "deny"
   message?: string
+  // The tool's input, for a tool call (opencode 2.2.5): what the ComfyUI gate reads a workflow from.
+  metadata?: { input?: Record<string, unknown> }
 }
 
 // The micromanager reads only to orient itself (README, file list); past this many reads per session it is refused
@@ -1855,7 +1860,48 @@ const plugin = {
     // Every question of the micromanager and its sub-agents goes to Jev first: it answers itself when sure enough,
     // else the user is asked as usual.
     const micromanagerReads = new Map<string, number>()
+    // The ComfyUI MCP server's runs, between the permission question and the result: what was checked, and whether the
+    // user was asked (src/comfy-gate.ts). Keyed by session, tool and input, the one identity both hooks see.
+    const comfyRuns = new Map<string, { check: RunCheck; asked: boolean }>()
+    const comfyKey = (sessionID: string, tool: string, input: unknown) => `${sessionID}|${tool}|${JSON.stringify(input ?? {})}`
     await ctx.permission.hook("evaluate", async (evaluation) => {
+      // ComfyUI through comfy-mcp, in every session and for every agent (src/comfy-gate.ts).
+      if (evaluation.action.startsWith(COMFY_PREFIX)) {
+        if (evaluation.effect === "deny") return
+        const denied = DENIED[evaluation.action] ?? (evaluation.agent === "plan" ? "the plan agent does not generate; switch to build, or ask the user to" : undefined)
+        if (denied) {
+          evaluation.effect = "deny"
+          evaluation.message = `${evaluation.action}: ${denied}.`
+          record({ kind: "comfy.denied", sessionID: evaluation.sessionID, agent: evaluation.agent, tool: evaluation.action, reason: denied })
+          return
+        }
+        if (!RUN_TOOLS.has(evaluation.action)) return
+        const input = evaluation.metadata?.input ?? {}
+        if (spends(input)) {
+          evaluation.effect = "deny"
+          evaluation.message = `${evaluation.action}: confirm_spend is off here; paid partner nodes are not run. Use a local workflow.`
+          return
+        }
+        const workspace = readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(toolsHome())
+        const check = await checkRun(evaluation.action, input, { workspace })
+        const asked = !check.clear
+        comfyRuns.set(comfyKey(evaluation.sessionID, evaluation.action, input), { check, asked })
+        if (!asked) {
+          evaluation.effect = "allow"
+          return
+        }
+        // Not a refusal: the user decides, told what is missing. OpenCode's question shows only the tool's name, so the
+        // reasons go into the conversation just above it. An approval registers the unknown models (comfy-gate).
+        evaluation.effect = "ask"
+        evaluation.message = `ComfyUI: ${questionLines(check).join("; ")}.`
+        const note = [
+          `[omacode] ${evaluation.agent} wants to run a ComfyUI workflow whose models are not cleared:`,
+          ...questionLines(check).map((line) => `- ${line}`),
+          "Allowing the next permission runs it and records these models as approved by you, licence unverified, so they are not asked about again; rejecting stops it.",
+        ].join("\n")
+        await say({ sessionID: evaluation.sessionID, text: note, resume: false }).catch(() => undefined)
+        return
+      }
       // A sandboxed shell is judged by what the worker wrote, not by its wrapper (see SHARED.unwrapped).
       if (evaluation.action === "shell" && SHARED.unwrapped?.size) evaluation.resources = evaluation.resources.map((r) => SHARED.unwrapped!.get(r) ?? r)
       // The backstop, before every other rule, because it is the one that must hold when the delegation hook above did
@@ -2603,6 +2649,27 @@ const plugin = {
 
     await ctx.tool.hook("execute.after", async (call) => {
       if (!call.sessionID) return
+      // A ComfyUI run that was checked: journal its models and who allowed it; a run the user approved registers them.
+      if (RUN_TOOLS.has(call.tool)) {
+        const key = comfyKey(call.sessionID, call.tool, call.input)
+        const run = comfyRuns.get(key)
+        comfyRuns.delete(key)
+        if (run) {
+          const ran = call.error === undefined
+          const registered = ran && run.asked ? registerApproved(run.check) : []
+          record({
+            kind: "comfy.run",
+            sessionID: call.sessionID,
+            agent: call.agent,
+            tool: call.tool,
+            ran,
+            ...(ran ? { allowedBy: run.asked ? "user" : "registry" } : run.asked ? { rejected: true } : {}),
+            models: run.check.models.map((m) => ({ name: m.name, hash: m.hash, status: m.verdict.status, ...(m.verdict.status === "allowed" ? { licence: m.verdict.spdx } : {}) })),
+            ...(run.check.unread ? { unread: run.check.unread } : {}),
+            ...(registered.length ? { registered } : {}),
+          })
+        }
+      }
       // The plugin's own tools and worker reports can carry placeholders the model wrote into a job (a task title,
       // a plan, a note). The user reads tool results, so put the values back there too; secrets stay hidden.
       if (vault) rewriteResult(call.result, visible)

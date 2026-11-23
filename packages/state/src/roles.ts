@@ -55,6 +55,10 @@ export const WRITER_ROLES: ReadonlySet<string> = new Set(["code", "test", "visua
 // Writers may store what they found out (memory_set, memory_replace: roadmap A4), through the same search and decider
 // check every write takes (context/capture.ts); readers report LEARNED lines, which take that way too. Nobody but the
 // plugin writes the journal.
+// The ComfyUI MCP server (comfy-mcp, its tools named comfy_<tool>) is the designer's: the role that makes pictures.
+// Every other worker is denied it; the plugin's gate checks the designer's runs against the model registry
+// (micromanager/src/comfy-gate.ts).
+const noComfy = (id: RoleId) => (id === "visual" ? [] : [rule("comfy_*", "deny")])
 const noMemory = (id: RoleId) => [...(WRITER_ROLES.has(id) ? [] : ["memory_set", "memory_replace"]), "memory_oversized", "journal_write"].map((t) => rule(t, "deny"))
 const WEB_TOOLS = ["webfetch", "websearch"] as const
 
@@ -158,7 +162,7 @@ const role = (
   system: string,
   rules: readonly Rule[],
   models: readonly string[],
-): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory(id), ...noQuestion], models })
+): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory(id), ...noQuestion, ...noComfy(id)], models })
 
 export const ROLES: readonly Role[] = [
   role(
