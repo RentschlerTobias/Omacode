@@ -63,7 +63,8 @@ const noComfy = (id: RoleId) => (id === "visual" ? [] : [rule("comfy_*", "deny")
 const noMemory = (id: RoleId) => [...(WRITER_ROLES.has(id) ? [] : ["memory_set", "memory_replace"]), "memory_oversized", "journal_write"].map((t) => rule(t, "deny"))
 const WEB_TOOLS = ["webfetch", "websearch"] as const
 
-const noWrite = WRITE_TOOLS.map((tool) => rule(tool, "deny"))
+// make_artifact writes the artifact's files into its directory, so a role that may not write may not build one either.
+const noWrite = [...WRITE_TOOLS, "make_artifact"].map((tool) => rule(tool, "deny"))
 const noWeb = WEB_TOOLS.map((tool) => rule(tool, "deny"))
 const noShell = [rule("shell", "deny")]
 const askShell = [rule("shell", "ask")]

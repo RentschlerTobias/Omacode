@@ -90,6 +90,14 @@ request only (it holds GB of GPU memory), stopped after the idle time, reachable
 browser talks to it directly), and switched in `/services` like the others, on its GPU or the CPU. For a ComfyUI
 already there: `npm run tools -- register comfyui [--gpu <id>] [--workspace <dir>]`.
 
+**Building artifacts from a session (`make_artifact`).** Every agent that may write has a plugin tool that builds a
+deck, video, site or image set from the spec file it wrote (`deck.json`, `video.json`, `site.json`, `images.json`; the
+skills of the same names describe them). The spec's directory is the artifact's directory; the adapter's programs run
+through the host runner, kept inside it; the answer is the checks' report (passed, failed with the reason, skipped with
+the reason) and the files. `present: yes` starts a deck's presenter after every check passed and opens it in your
+browser, or gives the address when there is no desktop. Specs inside the plugin's state directory are refused.
+Journal: `artifact.build`.
+
 **ComfyUI from the agents (comfy-mcp).** Comfy-Org's MCP server lets any agent run workflows on that ComfyUI. Set it
 up once: `uv tool install comfy-mcp==0.10.0` (AGPL-3.0, a separate process), `comfy set-default <the ComfyUI workspace>`
 so comfy-cli targets the one omacode-services runs, and in `~/.config/opencode/opencode.json` under `mcp.servers`:

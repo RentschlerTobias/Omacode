@@ -44,6 +44,7 @@
     "./qa": "./src/qa.ts",
     "./comfyui": "./src/comfyui.ts",
     "./models": "./src/models.ts",
+    "./build": "./src/build.ts",
     "./image-qa": "./src/image-qa.ts",
     "./cloud-image": "./src/cloud-image.ts",
     "./adapters/deck": "./src/adapters/deck.ts",

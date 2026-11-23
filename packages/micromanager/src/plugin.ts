@@ -87,7 +87,7 @@ import { DEEP, idleAttempt, parseReview, reviewPrompt, trialSize, type Assessmen
 import { Accountant, chargeTask, limitsOf, overBudget, overNote, sessionUsage, wrapUpNote } from "./budget.ts"
 import { seedFromJournal, Usage } from "./usage.ts"
 import { CHECKPOINT_STEPS, MAX_STEPS, Watchdog, type Signal } from "./watchdog.ts"
-import { configFileName } from "@omacode/core/paths"
+import { configFileName, STATE_DIRS } from "@omacode/core/paths"
 import { notifyDesktop } from "./desktop.ts"
 import { checkRun, CLOUD_IMAGE_TOOL, COMFY_PREFIX, comfyAvailable, comfyMcpConfigured, DENIED, isRejection, PREFER_COMFY, questionLines, registerApproved, RUN_TOOLS, spends, type RunCheck } from "./comfy-gate.ts"
 import { servicesView } from "@omacode/core/service-control"
@@ -96,6 +96,9 @@ import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
+import { buildArtifact, formatBuild, SPEC_FILES } from "@omacode/artifact/build"
+import { hasDesktop } from "./desktop.ts"
+import { execFile as execFileCb } from "node:child_process"
 
 // What the permission hook "evaluate" gets (opencode 2.0.18): the planned effect can be changed in place.
 interface Evaluation {
@@ -2775,6 +2778,51 @@ const plugin = {
     // The newest planned job of a session, for the planning session's turns; a rolling job takes no planning answers.
     const sessionJob = (sessionID: string) => listSwept().find((j) => j.facilitator === sessionID && !j.rolling)
     const JOB_ID = /^job-\d{8}-\d{6}-[0-9a-f]{1,4}$/
+    // make_artifact (C2-T7): an agent builds a deck, video, site or image set from the spec file it wrote, through the
+    // artifact package's adapters on the host runner, and gets the checks' report; a passing deck can be presented and
+    // opened in the browser. The spec must lie inside the session's own directory, never in the plugin's state.
+    const presenters = new Map<string, () => void>()
+    const sessionDir = async (sessionID?: string): Promise<string> => {
+      const worker = sessionID ? native.workerBySession(sessionID) : undefined
+      if (worker) return worker.dir
+      return (sessionID ? (await childOf(sessionID))?.directory : undefined) ?? project ?? process.cwd()
+    }
+    await ctx.tool.transform((draft) => {
+      const read = draft.get("read")
+      const str = read?.input?.fields?.path
+      if (!read?.input?.mapFields || !str) return
+      draft.add({
+        id: "make_artifact",
+        name: "make_artifact",
+        description: `Build an artifact from the spec file you wrote and run its checks: a deck (${SPEC_FILES.deck}), a video (${SPEC_FILES.video}), a site (${SPEC_FILES.site}) or an image set (${SPEC_FILES.images}). The spec's directory is the artifact's directory: every path in the spec is relative to it, and the files are written there. Read the matching skill first (deck, video, web, image) for the spec's fields. spec: the spec file's path, relative to your working directory. present: "yes" to open a deck whose checks all passed in the user's browser. Fix the spec or its content when a check fails, never the check.`,
+        input: read.input.mapFields(() => ({ spec: str, present: str })),
+        execute: async (args: Record<string, unknown>, tctx: { sessionID?: string; agent?: string }) => {
+          try {
+            const base = await sessionDir(tctx?.sessionID)
+            const specPath = resolve(base, String(args?.spec ?? "").trim())
+            if (!String(args?.spec ?? "").trim() || !insidePath(realish(specPath), realish(base))) return { content: `make_artifact: the spec must be a file inside ${base}` }
+            if (STATE_DIRS.some((d) => insidePath(realish(specPath), realish(join(base, d))))) return { content: "make_artifact: not inside the plugin's state directory; put the artifact in the project" }
+            const present = /^(yes|true|1)$/i.test(String(args?.present ?? "").trim())
+            const report = await buildArtifact(specPath, { present, images: { comfy: { startingWaitMs: 5 * 60_000 } } })
+            record({ kind: "artifact.build", sessionID: tctx?.sessionID, agent: tctx?.agent, spec: specPath, artifact: report.kind, ok: report.ok, failed: report.failed, ...(report.coverage ? { failedChecks: report.coverage.failed.map((f) => f.id), skippedChecks: report.coverage.skipped.map((f) => f.id) } : {}) })
+            let text = formatBuild(report)
+            if (report.presented) {
+              presenters.get(report.jobDir)?.()
+              presenters.set(report.jobDir, report.presented.stop)
+              if (hasDesktop()) {
+                execFileCb(process.platform === "darwin" ? "open" : "xdg-open", [report.presented.url], () => undefined)
+                text += "\nOpened in the user's browser."
+              } else {
+                text += "\nNo desktop here: give the user the address."
+              }
+            }
+            return { content: text }
+          } catch (err) {
+            return { content: `make_artifact failed: ${err instanceof Error ? err.message : String(err)}` }
+          }
+        },
+      })
+    })
     // image_models (src/image-models.ts): for every agent, the image models ready on this ComfyUI in the user's order.
     await ctx.tool.transform((draft) => {
       const read = draft.get("read")
