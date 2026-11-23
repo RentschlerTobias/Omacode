@@ -69,6 +69,21 @@ npm install                    # the sandbox runtime
 ./install.sh --remove
 ```
 
+**Optional creative tools.** In a terminal, `./install.sh` then asks about each tool the artifact adapters use,
+says whether it is already there, and installs it into your home at a pinned version if you say yes:
+
+| Tool | For | Installed as |
+|---|---|---|
+| HyperFrames 0.9.54 | decks and videos | `npm install --prefix ~/.local/share/hyperframes`, linked into `~/.local/bin` |
+| Manim 0.22.1 | math animations (LaTeX is not installed) | `uv tool install manim` |
+| ComfyUI 0.44.2 | images | comfy-cli 1.25.0 into `~/ComfyUI`, no model downloaded |
+
+For ComfyUI it lists where it could run: an NVIDIA GPU, an AMD GPU ROCm can reach (`/dev/kfd`), an integrated
+Radeon (a ROCm preview; after the install it checks whether PyTorch sees it, also as its discrete family through
+`HSA_OVERRIDE_GFX_VERSION`), or the CPU, and prints the line that starts it. `./install.sh --with
+hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]` installs without asking, `--yes` or `--no-tools` installs no
+tool, `./install.sh --tools` asks again later. The same from npm: `npm run tools -- status | gpus | install <names>`.
+
 The worker skills need no step in either case: the plugin registers them itself (see "Skills" under "Use").
 
 Restart the OpenCode server afterwards: plugins load when it starts, so restart the server your TUI attaches to,

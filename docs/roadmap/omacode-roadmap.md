@@ -769,6 +769,10 @@ licenses.
 - [ ] **A6-T5 — Decider.** CPU/RAM/uv check; install the local decider + model; user service. Words this honestly:
   the installed model answers **the guards** reliably; the other nodes only improve once A2b's training data exists.
   Near-mandatory in Minimal/Coding; "ask me everything" is an explicit opt-out with the consequence stated.
+- *2026-11-23, by the user's request:* install.sh asks about HyperFrames, Manim and ComfyUI and installs each at a
+  pin into the home (`packages/micromanager/src/creative-tools.ts`, `npm run tools`); ComfyUI on the NVIDIA, AMD or
+  integrated Radeon GPU found, or the CPU, with a PyTorch check after the install. Still open in T6/T7: `hyperframes
+  doctor`, Blender detection, model recommendations and territory for ComfyUI.
 - [ ] **A6-T6 — Video/motion tooling.** Detect Node/ffmpeg/Chromium; **call `hyperframes doctor`**; detect Manim/LaTeX
   (skip with "no math animations"); detect Blender. **Do not install `artifactd`** — it does not exist until B6.
 - [ ] **A6-T7 — Images.** ComfyUI local/remote/API/skip; model recommendations; license/territory; no automatic

@@ -11,6 +11,12 @@
 #   ./install.sh --embedding [0.6b|4b|8b]   download Qwen3-Embedding (Q8, default 4b) and run it as the user service
 #                           micromanager-embedding.service (llama.cpp on the CPU, port 8093) for the memory's search
 #   ./install.sh --embedding-remove         stop and remove that service (the model file stays)
+#   After the plugin it asks, in a terminal, about the optional creative tools: HyperFrames (decks, video), Manim (math
+#   animations), ComfyUI (images; on the NVIDIA, AMD or integrated Radeon GPU found, or the CPU). Each is installed at a
+#   pinned version into your home (packages/micromanager/src/creative-tools.ts).
+#   ./install.sh --with hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]   install those without asking
+#   ./install.sh --yes | --no-tools          ask nothing, install no optional tool
+#   ./install.sh --tools                     only the question round, for a plugin already installed
 # OpenCode loads plugins when it starts: restart the hub/server afterwards.
 set -euo pipefail
 
@@ -52,6 +58,33 @@ cli_plugin() {
     console.log(`${mode === "add" ? "added" : "removed"} ${entry} ${mode === "add" ? "to" : "from"} the plugins of ${file}`)
   ' "$CLI" "$TUI" "$1"
 }
+
+# The optional tools: --with, --gpu, --yes and --no-tools may follow the plain install.
+WITH=""; GPU=""; ASK=1
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+  case "${args[$i]}" in
+    --with) WITH="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+    --with=*) WITH="${args[$i]#--with=}" ;;
+    --gpu) GPU="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+    --gpu=*) GPU="${args[$i]#--gpu=}" ;;
+    --yes|-y|--no-tools) ASK=0 ;;
+  esac
+done
+tools() {
+  if [[ -n "$WITH" ]]; then
+    node "$REPO/packages/micromanager/src/cli.ts" tools install "$WITH" ${GPU:+--gpu "$GPU"}
+  elif [[ "$ASK" == 1 && -t 0 && -t 1 ]]; then
+    node "$REPO/packages/micromanager/src/cli.ts" tools ask
+  else
+    echo "optional tools: none asked about (./install.sh --tools asks, --with <names> installs)"
+  fi
+}
+if [[ "${1:-}" == "--tools" ]]; then
+  ASK=1
+  tools
+  exit $?
+fi
 
 # --skills: no-op since 2026-10-26, kept so an old command still works. The plugin registers skills/<name> through
 # ctx.skill at setup (src/skills.ts), so a checkout and a package install both need no links; a restart is enough.
@@ -131,3 +164,4 @@ echo "linked $LINK -> $REPO/packages/micromanager/src/plugin.ts (restart the Ope
 write_tui
 cli_plugin add
 echo "the TUI shows job progress from its next start (the sidebar toggles with <leader>b, or set \"session\": {\"sidebar\": \"auto\"} in cli.json; /tasks opens a task)"
+tools || echo "an optional tool did not install; the plugin is installed, try again with ./install.sh --tools"

@@ -17,6 +17,8 @@
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
+//               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | ask
+//                                                                (A6-T6/T7: the optional creative tools, pinned, into the home)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
@@ -44,6 +46,7 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
+import { comfyLaunch, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -86,6 +89,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "memory-adopt") return await memoryAdopt(args)
   if (command === "synth-guards") return await synthGuards(args)
   if (command === "synth-entities") return await synthEntities(args)
+  if (command === "tools") return await tools(args)
   if (command === "services") {
     const [verb] = args
     if (verb === "status") {
@@ -385,4 +389,110 @@ async function synthEntities(args: readonly string[]): Promise<number> {
   writeFileSync(out.replace(/\.jsonl$/, ".rows.jsonl"), entityRows(all).map((r) => JSON.stringify(r)).join("\n") + "\n")
   console.log(`${stats.kept} new cases (${stats.generated} written, ${stats.disagreed} dropped by the checks, ${stats.duplicates} duplicates, ${stats.failedCalls} unchecked batches); ${all.length} in ${out}`)
   return 0
+}
+
+// `tools status | gpus | install <tool>[,<tool>…] [--gpu <id>] | ask`: the optional creative tools (creative-tools.ts).
+// ask is install.sh's question round: each tool with what it is for and whether it is there, then y/N; ComfyUI also
+// asks for the device among the ones found.
+async function tools(args: string[]): Promise<number> {
+  const [verb, list] = args
+  if (verb === "status") {
+    for (const t of await detectTools(exec)) console.log(`${TOOL_INFO[t.name].title.padEnd(12)} ${t.found ? `found ${t.version ?? ""}${t.where ? ` in ${t.where}` : ""}` : "not found"}`)
+    return 0
+  }
+  if (verb === "gpus") {
+    for (const g of await toolGpus(exec)) console.log(`${g.id.padEnd(9)} ${g.name}${g.note ? ` (${g.note})` : ""}`)
+    return 0
+  }
+  if (verb === "install") {
+    const names = (list ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+    const bad = names.filter((n) => !(TOOL_NAMES as readonly string[]).includes(n))
+    if (!names.length || bad.length) {
+      console.error(`usage: tools install <${TOOL_NAMES.join("|")}>[,…] [--gpu nvidia|amd|amd-igpu|cpu]${bad.length ? `\nunknown: ${bad.join(", ")}` : ""}`)
+      return 1
+    }
+    const found = await toolGpus(exec)
+    const wanted = flag(args, "gpu")
+    const gpu = wanted ? found.find((g) => g.id === wanted) : found[0]
+    if (wanted && !gpu) {
+      console.error(`no ${wanted} here; found: ${found.map((g) => g.id).join(", ")}`)
+      return 1
+    }
+    let failed = 0
+    for (const name of names as ToolName[]) failed += (await installTool(name, gpu)) ? 0 : 1
+    return failed ? 1 : 0
+  }
+  if (verb === "ask") {
+    if (!process.stdin.isTTY) {
+      console.log("no terminal: no optional tools asked about (install.sh --with hyperframes,manim,comfyui installs them)")
+      return 0
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    try {
+      const yes = async (q: string) => /^(y|yes|j|ja)$/i.test((await rl.question(`${q} [y/N] `)).trim())
+      console.log("\nOptional tools (each is installed into your home at a pinned version; all can be added later with npm run tools -- install <name>):")
+      const there = await detectTools(exec)
+      const picked: { name: ToolName; gpu?: Gpu }[] = []
+      for (const t of there) {
+        const info = TOOL_INFO[t.name]
+        console.log(`\n${info.title}: ${info.what}. ${info.size}.`)
+        if (t.found) {
+          console.log(`  found ${t.version ?? ""}${t.where ? ` in ${t.where}` : ""}`)
+          continue
+        }
+        if (!(await yes(`  install ${info.title}?`))) continue
+        if (t.name !== "comfyui") {
+          picked.push({ name: t.name })
+          continue
+        }
+        const devices = await toolGpus(exec)
+        devices.forEach((g, i) => console.log(`  ${i + 1}) ${g.name}${g.note ? ` — ${g.note}` : ""}`))
+        const answer = (await rl.question(`  run ComfyUI on [1-${devices.length}, default 1]: `)).trim()
+        const gpu = devices[Math.max(0, Math.min(devices.length - 1, (Number(answer) || 1) - 1))]!
+        picked.push({ name: "comfyui", gpu })
+      }
+      rl.close()
+      let failed = 0
+      for (const p of picked) failed += (await installTool(p.name, p.gpu)) ? 0 : 1
+      return failed ? 1 : 0
+    } finally {
+      rl.close()
+    }
+  }
+  console.error(`usage: tools status | gpus | install <${TOOL_NAMES.join("|")}>[,…] [--gpu <id>] | ask`)
+  return 1
+}
+
+// Runs a tool's steps with their output on the terminal; false at the first one that fails.
+async function installTool(name: ToolName, gpu?: Gpu): Promise<boolean> {
+  const step = (s: Step, quiet = false) => {
+    if (!quiet) console.log(`→ ${s.say}`)
+    return spawnSync(s.cmd, [...s.args], { cwd: s.cwd, env: { ...process.env, ...s.env }, stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit", encoding: "utf8" })
+  }
+  for (const s of installSteps(name, undefined, name === "comfyui" ? gpu : undefined)) {
+    const r = step(s)
+    if (r.status !== 0) {
+      console.error(`${TOOL_INFO[name].title}: "${s.say}" failed${r.error ? ` (${r.error.message})` : ""}`)
+      return false
+    }
+  }
+  if (name !== "comfyui") {
+    console.log(`${TOOL_INFO[name].title} installed`)
+    return true
+  }
+  let env: Readonly<Record<string, string>> = {}
+  const checks = gpu ? torchChecks(gpu) : []
+  for (const [i, c] of checks.entries()) {
+    console.log(`→ ${c.say}`)
+    const r = step(c, true)
+    const seen = r.status === 0 && r.stdout.startsWith("gpu")
+    console.log(`  ${seen ? `yes: ${r.stdout.slice(4).trim()}` : "no"}`)
+    if (seen) {
+      env = c.env ?? {}
+      break
+    }
+    if (i === checks.length - 1) console.log(`  ComfyUI is installed but will run on the CPU: its PyTorch does not see ${gpu!.name}`)
+  }
+  console.log(`ComfyUI installed; start it with:\n  ${comfyLaunch(env)}`)
+  return true
 }
