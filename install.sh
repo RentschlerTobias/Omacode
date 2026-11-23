@@ -3,8 +3,8 @@
 # without a checkout use OpenCode's own installer, which needs nothing from this script:
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
-#   ./install.sh            link packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts, and write the TUI
-#                           package ~/.config/opencode/micromanager-tui/ (job progress in the TUI, packages/tui/src/tui.js) into
+#   ./install.sh            link packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts, and write the TUI
+#                           package ~/.config/opencode/omacode-tui/ (job progress in the TUI, packages/tui/src/tui.js) into
 #                           the "plugins" of ~/.config/opencode/cli.json
 #   ./install.sh --remove   remove both
 #   ./install.sh --skills   no-op: the plugin registers skills/<name> into OpenCode itself, a restart is enough
@@ -23,7 +23,7 @@ set -euo pipefail
 # pwd -P instead of readlink -f: BSD readlink has no -f, and this script is run on macOS too.
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
 PLUGINS="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/plugins"
-LINK="$PLUGINS/micromanager.ts"
+LINK="$PLUGINS/omacode.ts"
 
 CLI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/cli.json"
 # The TUI package: opencode 2.0.18 wants a package directory exporting "./tui", and a relative import out of that
@@ -31,12 +31,14 @@ CLI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/cli.json"
 # so the package is written here and imports the code by its absolute path. Its entry must be named tui.tsx: the same
 # package with index.tsx was silently not loaded (live check, 2026-10-19). A package install (`plugin add`) needs none
 # of this: package.json exports "./tui" itself.
-TUI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/micromanager-tui"
+TUI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/omacode-tui"
+# The names before the rename to omacode (2026-11-23): replaced by the ones above on the next install.
+OLD_TUI="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/micromanager-tui"
 
 write_tui() {
   mkdir -p "$TUI"
-  printf '%s\n' '{ "name": "micromanager-tui", "version": "0.1.0", "type": "module", "exports": { "./tui": "./tui.tsx" } }' >"$TUI/package.json"
-  printf '%s\n' "// Written by $REPO/install.sh: the micromanager's TUI plugin lives in the repository." \
+  printf '%s\n' '{ "name": "omacode-tui", "version": "0.1.0", "type": "module", "exports": { "./tui": "./tui.tsx" } }' >"$TUI/package.json"
+  printf '%s\n' "// Written by $REPO/install.sh: omacode's TUI plugin lives in the repository." \
     "export { default } from \"$REPO/packages/tui/src/tui.js\"" >"$TUI/tui.tsx"
 }
 
@@ -56,7 +58,7 @@ cli_plugin() {
     fs.mkdirSync(require("node:path").dirname(file), { recursive: true })
     fs.writeFileSync(file, JSON.stringify(config, null, 2) + "\n")
     console.log(`${mode === "add" ? "added" : "removed"} ${entry} ${mode === "add" ? "to" : "from"} the plugins of ${file}`)
-  ' "$CLI" "$TUI" "$1"
+  ' "$CLI" "${2:-$TUI}" "$1"
 }
 
 # The optional tools: --with, --gpu, --yes and --no-tools may follow the plain install.
@@ -144,16 +146,25 @@ fi
 
 if [[ "${1:-}" == "--remove" ]]; then
   [[ -L "$LINK" ]] && rm "$LINK" && echo "removed $LINK" || echo "not installed"
+  [[ -L "$PLUGINS/micromanager.ts" ]] && rm "$PLUGINS/micromanager.ts" && echo "removed $PLUGINS/micromanager.ts"
   cli_plugin remove
   rm -rf "$TUI"
+  if [[ -d "$OLD_TUI" ]]; then cli_plugin remove "$OLD_TUI"; rm -rf "$OLD_TUI"; fi
   exit 0
 fi
 
 mkdir -p "$PLUGINS"
-# The link's name before 2026-10-19: two links to the same plugin would load it twice.
-OLD_LINK="$PLUGINS/jev-micromanager.ts"
-if [[ -L "$OLD_LINK" && "$(realpath "$OLD_LINK")" == "$(realpath "$REPO/packages/micromanager/src/plugin.ts")" ]]; then
-  rm "$OLD_LINK" && echo "removed the old link $OLD_LINK"
+# The link's names before: jev-micromanager.ts (until 2026-10-19), micromanager.ts (until 2026-11-23). Two links to the
+# same plugin would load it twice.
+for OLD_LINK in "$PLUGINS/jev-micromanager.ts" "$PLUGINS/micromanager.ts"; do
+  if [[ -L "$OLD_LINK" && "$(realpath "$OLD_LINK")" == "$(realpath "$REPO/packages/micromanager/src/plugin.ts")" ]]; then
+    rm "$OLD_LINK" && echo "removed the old link $OLD_LINK"
+  fi
+done
+# The TUI package's name before: written by this script, so it is ours to remove.
+if [[ -f "$OLD_TUI/tui.tsx" ]] && grep -q "install.sh" "$OLD_TUI/tui.tsx"; then
+  cli_plugin remove "$OLD_TUI"
+  rm -rf "$OLD_TUI" && echo "removed the old TUI package $OLD_TUI"
 fi
 if [[ -e "$LINK" && ! -L "$LINK" ]]; then
   echo "$LINK exists and is not our link; not touching it" >&2

@@ -64,7 +64,7 @@ From a checkout, for development (the symlink means the running server reads you
 git clone git@github.com:RentschlerTobias/Micromanager.git micromanager
 cd micromanager
 npm install                    # the sandbox runtime
-./install.sh                   # links packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/micromanager.ts
+./install.sh                   # links packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts
 ./install.sh --embedding 4b    # optional: the memory's embedding service (0.6b, 4b or 8b), see "Context and memory"
 ./install.sh --remove
 ```
