@@ -10,7 +10,7 @@ import { after, test } from "node:test"
 import { tempDir } from "./harness.ts"
 
 import { LEGACY_PROJECT_STATES, PROJECT_STATE, stateDir } from "../packages/core/src/paths.ts"
-import { applyMigration, planMigration } from "../packages/state/src/migrate.ts"
+import { applyMigration, planMigration, rehome } from "../packages/state/src/migrate.ts"
 import { loadJob, saveJob } from "../packages/state/src/store.ts"
 import { changedFiles, prepareIntegration, prepareTaskWorktree, validateIntegration } from "../packages/micromanager/src/integration.ts"
 import type { Job } from "../packages/micromanager/src/state.ts"
@@ -139,5 +139,47 @@ test("the user's directories and settings keep their old names until migrate --u
       if (value === undefined) delete process.env[key]
       else process.env[key] = value
     }
+  }
+})
+
+test("a moved data directory: its Python environments, the services' config, the unit and the command links follow", () => {
+  const base = tempDir("mm-rehome-")
+  try {
+    const from = join(base, "share", "micromanager")
+    const to = join(base, "share", "omacode")
+    const venv = join(from, "services", "decider", ".venv")
+    mkdirSync(join(venv, "bin"), { recursive: true })
+    mkdirSync(join(venv, "lib", "python3.12", "site-packages"), { recursive: true })
+    writeFileSync(join(venv, "pyvenv.cfg"), "home = /usr/bin\n")
+    writeFileSync(join(venv, "bin", "decider"), `#!${venv}/bin/python\nimport decider\n`, { mode: 0o755 })
+    writeFileSync(join(venv, "bin", "python"), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0, 0, ...Buffer.from(from)]))
+    writeFileSync(join(venv, "lib", "python3.12", "site-packages", "_editable_impl_decider.pth"), `${from}/services/decider\n`)
+    writeFileSync(join(from, "services", "config.json"), JSON.stringify({ decider: { bin: `${venv}/bin/decider` }, other: `${from}-not-this` }))
+    const models = join(from, "tools", "comfyui", "models", "fake")
+    mkdirSync(models, { recursive: true })
+    writeFileSync(join(models, "pyvenv.cfg"), `x = ${from}\n`)
+    const unit = join(base, "omacode-services.service")
+    writeFileSync(unit, `Environment=OMACODE_SERVICES_HOME=${from}/services\n`)
+    const bin = join(base, "bin")
+    mkdirSync(bin)
+    execFileSync("ln", ["-s", `${from}/tools/hyperframes/node_modules/.bin/hyperframes`, join(bin, "hyperframes")])
+    execFileSync("ln", ["-s", "/usr/bin/true", join(bin, "other")])
+
+    renameSync(from, to)
+    const fixed = rehome(from, to, { files: [unit], binDir: bin })
+    const nv = join(to, "services", "decider", ".venv")
+    assert.equal(readFileSync(join(nv, "bin", "decider"), "utf8").split("\n")[0], `#!${nv}/bin/python`)
+    assert.ok(readFileSync(join(nv, "bin", "python")).includes(Buffer.from(from)), "a binary is left alone")
+    assert.equal(readFileSync(join(nv, "lib", "python3.12", "site-packages", "_editable_impl_decider.pth"), "utf8"), `${to}/services/decider\n`)
+    const config = JSON.parse(readFileSync(join(to, "services", "config.json"), "utf8"))
+    assert.equal(config.decider.bin, `${nv}/bin/decider`)
+    assert.equal(config.other, `${from}-not-this`, "only the whole path, not a longer name that starts with it")
+    assert.match(readFileSync(join(to, "tools", "comfyui", "models", "fake", "pyvenv.cfg"), "utf8"), /micromanager/, "models are data: not searched")
+    assert.equal(readFileSync(unit, "utf8"), `Environment=OMACODE_SERVICES_HOME=${to}/services\n`)
+    assert.equal(execFileSync("readlink", [join(bin, "hyperframes")], { encoding: "utf8" }).trim(), `${to}/tools/hyperframes/node_modules/.bin/hyperframes`)
+    assert.equal(execFileSync("readlink", [join(bin, "other")], { encoding: "utf8" }).trim(), "/usr/bin/true")
+    assert.equal(fixed.length, 5, "the script, the .pth, the config, the unit, the link")
+  } finally {
+    rmSync(base, { recursive: true, force: true })
   }
 })

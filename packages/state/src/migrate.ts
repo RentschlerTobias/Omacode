@@ -7,7 +7,7 @@
 // same way as after a renamed project folder (store.ts relocateJob, repairWorktrees).
 
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, renameSync } from "node:fs"
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 import {
@@ -119,7 +119,7 @@ export function planUserMigration(): UserMigrationPlan {
   const problems: string[] = []
   const items: { what: string; base: string; name: string; legacy: readonly string[] }[] = [
     { what: "state (journal, vault, context, held-out cases)", base: userStateBase(), name: USER_DIR, legacy: LEGACY_USER_DIRS },
-    { what: "memory", base: userDataBase(), name: USER_DIR, legacy: LEGACY_USER_DIRS },
+    { what: "data (memory, services, tools)", base: userDataBase(), name: USER_DIR, legacy: LEGACY_USER_DIRS },
     { what: "settings", base: userConfigDir(), name: CONFIG_FILE, legacy: LEGACY_CONFIG_FILES },
     { what: "model picks", base: userConfigDir(), name: PICKS_FILE, legacy: LEGACY_PICKS_FILES },
   ]
@@ -140,11 +140,108 @@ export function planUserMigration(): UserMigrationPlan {
   return { moves, problems, warnings }
 }
 
-export function applyUserMigration(plan: UserMigrationPlan): { moved: number; text: string } {
+// What else names a moved directory by its absolute path: the unit files of omacode-services and the directory of
+// the user's command links (~/.local/bin/hyperframes points into the data directory's tools/).
+export interface Outside {
+  readonly files?: readonly string[]
+  readonly binDir?: string
+}
+
+export function applyUserMigration(plan: UserMigrationPlan, outside: Outside = {}): { moved: number; text: string } {
   if (plan.problems.length) return { moved: 0, text: `nothing moved: ${plan.problems.join("; ")}` }
+  const lines: string[] = []
   for (const move of plan.moves) {
     mkdirSync(dirname(move.to), { recursive: true })
     renameSync(move.from, move.to)
+    lines.push(`moved ${move.what}: ${move.from} → ${move.to}`)
+    for (const fixed of rehome(move.from, move.to, outside)) lines.push(`  rewrote ${fixed}`)
   }
-  return { moved: plan.moves.length, text: plan.moves.length ? plan.moves.map((m) => `moved ${m.what}: ${m.from} → ${m.to}`).join("\n") : "nothing to move" }
+  return { moved: plan.moves.length, text: lines.length ? lines.join("\n") : "nothing to move" }
+}
+
+// After a directory moved: every file that names it by its old absolute path, rewritten to the new one. Inside it,
+// the Python environments of the services and the tools (pyvenv.cfg, the scripts in bin/ with their #! line, the .pth
+// files of an editable install) and the services' config.json; outside it, the given files and the links in binDir.
+// Only text files are touched, and only the old path as a whole path (followed by /, a quote, white space or the end).
+export function rehome(from: string, to: string, outside: Outside = {}): string[] {
+  const old = new RegExp(`${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=[/"'\\s]|$)`, "g")
+  const fixed: string[] = []
+  const rewrite = (file: string) => {
+    try {
+      const st = lstatSync(file)
+      if (!st.isFile() || st.size > 4 * 1024 * 1024 || binary(file)) return
+      const text = readFileSync(file, "utf8")
+      const next = text.replace(old, to)
+      if (next === text) return
+      writeFileSync(file, next, { mode: st.mode })
+      fixed.push(file)
+    } catch {
+      // unreadable or gone: nothing to rewrite
+    }
+  }
+  for (const venv of venvs(to)) {
+    rewrite(join(venv, "pyvenv.cfg"))
+    for (const f of list(join(venv, "bin"))) rewrite(join(venv, "bin", f))
+    for (const py of list(join(venv, "lib")).filter((d) => d.startsWith("python"))) {
+      const site = join(venv, "lib", py, "site-packages")
+      for (const f of list(site).filter((x) => x.endsWith(".pth"))) rewrite(join(site, f))
+    }
+  }
+  rewrite(join(to, "services", "config.json"))
+  for (const f of outside.files ?? []) rewrite(f)
+  if (outside.binDir) {
+    for (const name of list(outside.binDir)) {
+      const link = join(outside.binDir, name)
+      try {
+        if (!lstatSync(link).isSymbolicLink()) continue
+        const target = readlinkSync(link)
+        if (target !== from && !target.startsWith(`${from}/`)) continue
+        unlinkSync(link)
+        symlinkSync(to + target.slice(from.length), link)
+        fixed.push(link)
+      } catch {
+        // a link that went away meanwhile
+      }
+    }
+  }
+  return fixed
+}
+
+const list = (dir: string): string[] => {
+  try {
+    return readdirSync(dir)
+  } catch {
+    return []
+  }
+}
+
+// A NUL in the first 4 KB: a compiled file, left alone.
+function binary(file: string): boolean {
+  const fd = openSync(file, "r")
+  try {
+    const buf = Buffer.alloc(4096)
+    const n = readSync(fd, buf, 0, buf.length, 0)
+    return buf.subarray(0, n).includes(0)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+// The Python environments under a directory: each one a directory holding pyvenv.cfg, at most four levels down, not
+// inside what holds data rather than programs (a ComfyUI's models or outputs, node_modules, git).
+const SKIP = new Set(["node_modules", ".git", "models", "output", "input", "custom_nodes", "memory", "__pycache__"])
+function venvs(root: string, depth = 0): string[] {
+  if (depth > 4) return []
+  if (existsSync(join(root, "pyvenv.cfg"))) return [root]
+  const out: string[] = []
+  for (const name of list(root)) {
+    if (SKIP.has(name)) continue
+    const dir = join(root, name)
+    try {
+      if (lstatSync(dir).isDirectory()) out.push(...venvs(dir, depth + 1))
+    } catch {
+      // gone meanwhile
+    }
+  }
+  return out
 }

@@ -46,7 +46,7 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
-import { registerComfy } from "./services.ts"
+import { registerComfy, unitPath } from "./services.ts"
 import { comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
@@ -167,8 +167,17 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (!plan.problems.length) console.log("run it again with --apply to move")
       return plan.problems.length ? 1 : 0
     }
-    const result = applyUserMigration(plan)
+    // omacode-services runs out of the data directory: stopped while it moves, its unit rewritten, started again.
+    const unit = unitPath(process.platform)
+    const active = process.platform !== "darwin" && spawnSync("systemctl", ["--user", "is-active", "--quiet", "omacode-services.service"]).status === 0
+    if (active) spawnSync("systemctl", ["--user", "stop", "omacode-services.service"], { stdio: "inherit" })
+    const result = applyUserMigration(plan, { files: [unit], binDir: resolve(process.env.HOME ?? "", ".local", "bin") })
     console.log(result.text)
+    if (active) {
+      spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "inherit" })
+      spawnSync("systemctl", ["--user", "start", "omacode-services.service"], { stdio: "inherit" })
+      console.log("omacode-services started again from the new place")
+    }
     return plan.problems.length ? 1 : 0
   }
   if (command === "migrate") {
