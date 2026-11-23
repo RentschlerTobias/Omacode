@@ -105,6 +105,11 @@ so comfy-cli targets the one omacode-services runs, and in `~/.config/opencode/o
   lacks what; approving runs it and records those models as approved by you, licence unverified, so they are not asked
   about again. A blocked model is asked about too, with the reason, and never recorded.
 - Every run goes into the journal (`comfy.run`) with its models, hashes, licences and who allowed it.
+- `image_models`, a plugin tool every agent has, lists the image models ready on this ComfyUI in your order (default
+  Z-Image-Turbo, FLUX.2-klein, Qwen-Image; change it with `"images": { "prefer": ["flux2-klein", …] }` in
+  `omacode.jsonc`), what each is good at, its licence and any limit on its use (Qwen-Image-2.1: non-commercial only,
+  so the agent asks first), the files to load and the settings. A family is listed as ready only when its diffusion
+  model, text encoder and VAE are on disk and permitted by the registry.
 - `npm run models -- status` lists every model file ComfyUI can load with its hash and its standing in the registry;
   `npm run models -- register <file> --license <SPDX or LicenseRef-…> --territory <EU,world,…> [--use <text>]`
   records one with the licence you state (it replaces an earlier entry for the same file, such as one approved

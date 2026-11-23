@@ -95,6 +95,7 @@ import { stripComments } from "@omacode/core/jsonc"
 import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
+import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
 
 // What the permission hook "evaluate" gets (opencode 2.0.18): the planned effect can be changed in place.
 interface Evaluation {
@@ -2774,6 +2775,25 @@ const plugin = {
     // The newest planned job of a session, for the planning session's turns; a rolling job takes no planning answers.
     const sessionJob = (sessionID: string) => listSwept().find((j) => j.facilitator === sessionID && !j.rolling)
     const JOB_ID = /^job-\d{8}-\d{6}-[0-9a-f]{1,4}$/
+    // image_models (src/image-models.ts): for every agent, the image models ready on this ComfyUI in the user's order.
+    await ctx.tool.transform((draft) => {
+      const read = draft.get("read")
+      const str = read?.input?.fields?.path
+      if (!read?.input?.mapFields || !str) return
+      draft.add({
+        id: IMAGE_MODELS_ID,
+        name: IMAGE_MODELS_ID,
+        description: "Before making a picture with ComfyUI: lists the image models ready on this machine in the user's order, what each is good at, its licence and any limit on its use, the files to load and the settings. purpose: what the picture is for, in a few words (optional).",
+        input: read.input.mapFields(() => ({ purpose: str })),
+        execute: async () => {
+          try {
+            return { content: await imageModels(readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(toolsHome())) }
+          } catch (err) {
+            return { content: `failed: ${err instanceof Error ? err.message : String(err)}` }
+          }
+        },
+      })
+    })
     await ctx.tool.transform((draft) => {
       try {
         installTools(draft, {

@@ -16,8 +16,8 @@
 // Every run is journalled with the models it loaded, their hashes and licences, and who allowed it.
 
 import { createHash } from "node:crypto"
-import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
-import { dirname, join } from "node:path"
+import { createReadStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import { basename, dirname, join } from "node:path"
 
 import { DEFAULT_TERRITORY, readModelRegistry, registerModel, registryWith, resolveModel, MODEL_REGISTRY, type ModelVerdict } from "@omacode/artifact/models"
 import { userStateDir } from "@omacode/core/paths"
@@ -221,7 +221,7 @@ export const spends = (input: Record<string, unknown>): boolean => input.confirm
 export const CLOUD_IMAGE_TOOL = "experimental_image_generate"
 
 export const PREFER_COMFY =
-  "ComfyUI runs locally here and comes first: use the comfy MCP tools (tools.comfy.generate_image for a prompt, or tools.comfy.run_workflow for a workflow; search the catalog for comfy if they are not listed). This cloud tool is the fallback when ComfyUI fails"
+  "ComfyUI runs locally here and comes first: call image_models to pick a model, then the comfy MCP tools (tools.comfy.run_workflow with a workflow for that model, or tools.comfy.run_template; search the catalog for comfy if they are not listed). This cloud tool is the fallback when ComfyUI fails"
 
 export interface ComfyState {
   // the comfyui service of omacode-services, as its status file says
@@ -250,4 +250,42 @@ export function comfyMcpConfigured(config: unknown): boolean {
 // A run the user turned down is not a failure to fall back from: the cloud must not undo the user's no.
 export function isRejection(error: unknown): boolean {
   return /reject|denied|not allowed|permission/i.test(String((error as { message?: unknown } | undefined)?.message ?? error ?? ""))
+}
+
+// Every model file ComfyUI can load: real path, the name a loader takes, and the kind folder it sits in
+// (diffusion_models, text_encoders, vae, …). One entry per real file, links followed.
+export interface ModelFile {
+  readonly file: string
+  readonly name: string
+  readonly kind: string
+}
+
+export function modelFiles(workspace: string): ModelFile[] {
+  const found = new Map<string, ModelFile>()
+  for (const root of modelRoots(workspace)) {
+    const walk = (dir: string, kind: string, depth: number) => {
+      let names: string[] = []
+      try {
+        names = readdirSync(dir)
+      } catch {
+        return
+      }
+      for (const n of names) {
+        const p = join(dir, n)
+        let st
+        try {
+          st = statSync(p)
+        } catch {
+          continue
+        }
+        if (st.isDirectory() && depth < 2) walk(p, depth === 0 ? n : kind, depth + 1)
+        else if (st.isFile() && MODEL_FILE.test(n) && st.size > 1_000_000) {
+          const real = realpathSync(p)
+          if (!found.has(real)) found.set(real, { file: real, name: n, kind: kind || basename(root) })
+        }
+      }
+    }
+    walk(root, "", 0)
+  }
+  return [...found.values()].sort((a, b) => a.name.localeCompare(b.name))
 }

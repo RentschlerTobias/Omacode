@@ -25,7 +25,7 @@
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname as dir, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
 
@@ -49,7 +49,7 @@ import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
 import { readConfig as readServicesConfig, registerComfy, unitPath } from "./services.ts"
-import { hashFile, modelRoots } from "./comfy-gate.ts"
+import { hashFile, modelFiles } from "./comfy-gate.ts"
 import { MODEL_REGISTRY, readModelRegistry, registerModel, registryWith, resolveModel, TERRITORIES, type Territory } from "@omacode/artifact/models"
 import { comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
@@ -559,29 +559,7 @@ function registerComfyTool(gpu?: Gpu, workspace = comfyWorkspace(home())): boole
 async function models(args: string[]): Promise<number> {
   const [verb, target] = args
   const workspace = readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(home())
-  const files = new Map<string, string>()
-  for (const root of modelRoots(workspace)) {
-    const walk = (dir: string, depth: number) => {
-      let names: string[] = []
-      try {
-        names = readdirSync(dir)
-      } catch {
-        return
-      }
-      for (const n of names) {
-        const p = resolve(dir, n)
-        let st
-        try {
-          st = statSync(p)
-        } catch {
-          continue
-        }
-        if (st.isDirectory() && depth < 2) walk(p, depth + 1)
-        else if (st.isFile() && /\.(safetensors|gguf|ckpt|pt|pth|sft)$/i.test(n) && st.size > 1_000_000) files.set(realpathSync(p), n)
-      }
-    }
-    walk(root, 0)
-  }
+  const files = new Map(modelFiles(workspace).map((f) => [f.file, f.name] as const))
   const registry = registryWith(readModelRegistry().entries, MODEL_REGISTRY)
   if (verb === "status") {
     for (const [file, name] of [...files].sort((a, b) => a[1].localeCompare(b[1]))) {

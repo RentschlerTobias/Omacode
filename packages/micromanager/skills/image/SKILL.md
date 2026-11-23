@@ -13,6 +13,15 @@ An image set is a spec first: slots with prompts, sizes and seeds, and a checkpo
 writes one ComfyUI graph per slot, queues them one at a time because the GPU is one device, and collects the files into
 the job. Your job is the prompts and the checkpoint choice, not the graph.
 
+## Pick the model with `image_models`
+
+Before the first picture, call `image_models`. It lists the models ready on this machine's ComfyUI in the user's
+order, what each is good at, its licence, the files to load and the settings it was made for. Take the first ready
+one that fits the request (a photo: Z-Image-Turbo; an illustration or an edit: FLUX.2-klein; text inside the image:
+Qwen-Image), and follow its caution: Qwen-Image-2.1 is licensed for non-commercial research and evaluation only, so
+use it only when the user has said the picture is not for commercial use, and ask otherwise. Load only the files it
+names; the ComfyUI gate checks every model a workflow loads and asks the user about anything not cleared.
+
 ## The checkpoint is decided by its hash
 
 A workflow can load any checkpoint on disk, so a name proves nothing. Before anything is generated the adapter hashes
