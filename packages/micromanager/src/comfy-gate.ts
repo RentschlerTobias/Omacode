@@ -213,3 +213,41 @@ export function registerApproved(check: RunCheck, o: { registryDir?: string; whe
 
 // A paid partner node in a local workflow: comfy-mcp unlocks it with confirm_spend.
 export const spends = (input: Record<string, unknown>): boolean => input.confirm_spend === true
+
+// ---------------------------------------------------------------------------------------------------------------------
+// OpenCode's own image tool: a cloud image model of a connected provider, no registry, possibly paid. ComfyUI comes
+// first; the cloud tool is the fallback when ComfyUI cannot run here or failed in this session.
+
+export const CLOUD_IMAGE_TOOL = "experimental_image_generate"
+
+export const PREFER_COMFY =
+  "ComfyUI runs locally here and comes first: use the comfy MCP tools (tools.comfy.generate_image for a prompt, or tools.comfy.run_workflow for a workflow; search the catalog for comfy if they are not listed). This cloud tool is the fallback when ComfyUI fails"
+
+export interface ComfyState {
+  // the comfyui service of omacode-services, as its status file says
+  readonly service?: { readonly mode: string; readonly state: string }
+  // whether opencode.json has an enabled comfy MCP server
+  readonly mcp: boolean
+}
+
+// Whether ComfyUI can take an image request in this session; when not, why (said in the journal).
+export function comfyAvailable(s: ComfyState): { readonly ok: true } | { readonly ok: false; readonly why: string } {
+  if (!s.mcp) return { ok: false, why: "no comfy MCP server is configured" }
+  if (!s.service) return { ok: false, why: "omacode-services runs no ComfyUI" }
+  if (s.service.mode === "off") return { ok: false, why: "ComfyUI is switched off in /services" }
+  if (s.service.state === "failed") return { ok: false, why: "ComfyUI failed to start" }
+  return { ok: true }
+}
+
+// An enabled `comfy` server in OpenCode's config (mcp.servers.comfy, or the older mcp.comfy).
+export function comfyMcpConfigured(config: unknown): boolean {
+  const mcp = (config as { mcp?: Record<string, unknown> } | undefined)?.mcp
+  const servers = (mcp?.servers ?? mcp) as Record<string, { disabled?: boolean; enabled?: boolean } | undefined> | undefined
+  const comfy = servers?.comfy
+  return Boolean(comfy) && comfy!.disabled !== true && comfy!.enabled !== false
+}
+
+// A run the user turned down is not a failure to fall back from: the cloud must not undo the user's no.
+export function isRejection(error: unknown): boolean {
+  return /reject|denied|not allowed|permission/i.test(String((error as { message?: unknown } | undefined)?.message ?? error ?? ""))
+}

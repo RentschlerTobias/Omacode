@@ -10,7 +10,7 @@ import { after, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
 
-import { checkRun, DEFAULT_TEMPLATE_CHECKPOINT, DENIED, findModel, hashFile, modelNames, modelRoots, namedModels, questionLines, registerApproved } from "../packages/micromanager/src/comfy-gate.ts"
+import { checkRun, comfyAvailable, comfyMcpConfigured, isRejection, DEFAULT_TEMPLATE_CHECKPOINT, DENIED, findModel, hashFile, modelNames, modelRoots, namedModels, questionLines, registerApproved } from "../packages/micromanager/src/comfy-gate.ts"
 import { ROLES } from "../packages/state/src/roles.ts"
 
 const ROOT = tempDir("mm-comfygate-")
@@ -96,5 +96,22 @@ test("the denied tools name their reason, and only the designer may use comfy_*"
   for (const role of ROLES) {
     const denied = role.rules.some((r) => r.action === "comfy_*" && r.effect === "deny")
     assert.equal(denied, role.id !== "visual", role.agent)
+    const cloud = role.rules.some((r) => r.action === "experimental_image_generate" && r.effect === "deny")
+    assert.equal(cloud, role.id !== "visual", `${role.agent}: the cloud image tool goes with comfy`)
   }
+})
+
+test("ComfyUI first: available unless it is off, failed, not run or not configured; a refusal is no failure", () => {
+  const on = { mcp: true, service: { mode: "auto", state: "stopped" } }
+  assert.deepEqual(comfyAvailable(on), { ok: true }, "stopped in auto: it starts on the request")
+  assert.match((comfyAvailable({ ...on, mcp: false }) as { why: string }).why, /no comfy MCP/)
+  assert.match((comfyAvailable({ mcp: true }) as { why: string }).why, /runs no ComfyUI/)
+  assert.match((comfyAvailable({ mcp: true, service: { mode: "off", state: "stopped" } }) as { why: string }).why, /switched off/)
+  assert.match((comfyAvailable({ mcp: true, service: { mode: "auto", state: "failed" } }) as { why: string }).why, /failed/)
+  assert.equal(comfyMcpConfigured({ mcp: { servers: { comfy: { type: "local", command: ["comfy-mcp"] } } } }), true)
+  assert.equal(comfyMcpConfigured({ mcp: { servers: { comfy: { type: "local", command: ["x"], disabled: true } } } }), false)
+  assert.equal(comfyMcpConfigured({ mcp: { comfy: { enabled: false } } }), false)
+  assert.equal(comfyMcpConfigured(undefined), false)
+  assert.equal(isRejection(new Error("The user rejected permission to use this specific tool call.")), true)
+  assert.equal(isRejection(new Error("comfy run failed: CUDA out of memory")), false)
 })

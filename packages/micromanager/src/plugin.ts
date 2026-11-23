@@ -89,7 +89,10 @@ import { seedFromJournal, Usage } from "./usage.ts"
 import { CHECKPOINT_STEPS, MAX_STEPS, Watchdog, type Signal } from "./watchdog.ts"
 import { configFileName } from "@omacode/core/paths"
 import { notifyDesktop } from "./desktop.ts"
-import { checkRun, COMFY_PREFIX, DENIED, questionLines, registerApproved, RUN_TOOLS, spends, type RunCheck } from "./comfy-gate.ts"
+import { checkRun, CLOUD_IMAGE_TOOL, COMFY_PREFIX, comfyAvailable, comfyMcpConfigured, DENIED, isRejection, PREFER_COMFY, questionLines, registerApproved, RUN_TOOLS, spends, type RunCheck } from "./comfy-gate.ts"
+import { servicesView } from "@omacode/core/service-control"
+import { stripComments } from "@omacode/core/jsonc"
+import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 
@@ -1864,7 +1867,33 @@ const plugin = {
     // user was asked (src/comfy-gate.ts). Keyed by session, tool and input, the one identity both hooks see.
     const comfyRuns = new Map<string, { check: RunCheck; asked: boolean }>()
     const comfyKey = (sessionID: string, tool: string, input: unknown) => `${sessionID}|${tool}|${JSON.stringify(input ?? {})}`
+    // Sessions whose ComfyUI run failed for a technical reason: from then on OpenCode's cloud image tool may stand in.
+    const comfyFailed = new Map<string, string>()
+    const comfyState = () => {
+      let config: unknown
+      try {
+        config = JSON.parse(stripComments(readFileSync(join(userConfigDir(), "opencode.json"), "utf8")))
+      } catch {
+        config = undefined
+      }
+      const service = servicesView().services.find((v) => v.name === "comfyui")
+      return { mcp: comfyMcpConfigured(config), ...(service ? { service: { mode: service.mode, state: service.state } } : {}) }
+    }
     await ctx.permission.hook("evaluate", async (evaluation) => {
+      // OpenCode's cloud image tool: ComfyUI first; the cloud only where ComfyUI cannot run or failed in this session.
+      if (evaluation.action === CLOUD_IMAGE_TOOL) {
+        if (evaluation.effect === "deny") return
+        const failed = comfyFailed.get(evaluation.sessionID)
+        const available = comfyAvailable(comfyState())
+        if (!failed && available.ok) {
+          evaluation.effect = "deny"
+          evaluation.message = `${PREFER_COMFY}; it has not failed in this session.`
+          record({ kind: "image.cloud", sessionID: evaluation.sessionID, agent: evaluation.agent, verdict: "deny", reason: "ComfyUI is available" })
+          return
+        }
+        record({ kind: "image.cloud", sessionID: evaluation.sessionID, agent: evaluation.agent, verdict: evaluation.effect, reason: failed ? `ComfyUI failed: ${failed}` : available.ok ? "" : available.why })
+        return
+      }
       // ComfyUI through comfy-mcp, in every session and for every agent (src/comfy-gate.ts).
       if (evaluation.action.startsWith(COMFY_PREFIX)) {
         if (evaluation.effect === "deny") return
@@ -2656,6 +2685,8 @@ const plugin = {
         comfyRuns.delete(key)
         if (run) {
           const ran = call.error === undefined
+          // A technical failure lets the cloud image tool stand in for the rest of the session; a refusal does not.
+          if (!ran && !isRejection(call.error)) comfyFailed.set(call.sessionID, String((call.error as { message?: unknown })?.message ?? call.error).slice(0, 200))
           const registered = ran && run.asked ? registerApproved(run.check) : []
           record({
             kind: "comfy.run",

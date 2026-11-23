@@ -105,6 +105,11 @@ so comfy-cli targets the one omacode-services runs, and in `~/.config/opencode/o
   lacks what; approving runs it and records those models as approved by you, licence unverified, so they are not asked
   about again. A blocked model is asked about too, with the reason, and never recorded.
 - Every run goes into the journal (`comfy.run`) with its models, hashes, licences and who allowed it.
+- OpenCode's own `experimental_image_generate` (a cloud image model of a connected provider: no registry, possibly
+  paid) is the fallback, not the first choice. While ComfyUI is available (the comfy MCP server configured, ComfyUI in
+  omacode-services and not switched off or failed) it is refused with a pointer to the comfy tools; after a ComfyUI run
+  failed for a technical reason in the session, or when ComfyUI is not available, it runs. A run you turned down at
+  the licence question does not count as a failure. Workers other than the designer get neither. Journal: `image.cloud`.
 
 The worker skills need no step in either case: the plugin registers them itself (see "Skills" under "Use").
 
