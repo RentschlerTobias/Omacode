@@ -17,7 +17,7 @@
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
-//               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | ask
+//               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | register comfyui [--gpu <id>] | ask
 //                                                                (A6-T6/T7: the optional creative tools, pinned, into the home)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -46,7 +46,8 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
-import { comfyLaunch, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
+import { registerComfy } from "./services.ts"
+import { comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -422,6 +423,24 @@ async function tools(args: string[]): Promise<number> {
     for (const name of names as ToolName[]) failed += (await installTool(name, gpu)) ? 0 : 1
     return failed ? 1 : 0
   }
+  if (verb === "register") {
+    if (list !== "comfyui") {
+      console.error("usage: tools register comfyui [--gpu <id>]")
+      return 1
+    }
+    if (!(await detectTools(exec)).find((t) => t.name === "comfyui")?.found) {
+      console.error(`no ComfyUI in ${comfyWorkspace(home())}`)
+      return 1
+    }
+    const found = await toolGpus(exec)
+    const wanted = flag(args, "gpu")
+    const gpu = wanted ? found.find((g) => g.id === wanted) : found[0]
+    if (!gpu) {
+      console.error(`no ${wanted} here; found: ${found.map((g) => g.id).join(", ")}`)
+      return 1
+    }
+    return registerComfyTool(gpu) ? 0 : 1
+  }
   if (verb === "ask") {
     if (!process.stdin.isTTY) {
       console.log("no terminal: no optional tools asked about (install.sh --with hyperframes,manim,comfyui installs them)")
@@ -480,19 +499,34 @@ async function installTool(name: ToolName, gpu?: Gpu): Promise<boolean> {
     console.log(`${TOOL_INFO[name].title} installed`)
     return true
   }
+  return registerComfyTool(gpu)
+}
+
+// After a ComfyUI install, or for one already there: check that its PyTorch sees the GPU, and add it to
+// omacode-services on that GPU (or the CPU, when it does not).
+function registerComfyTool(gpu?: Gpu): boolean {
+  const step = (s: Step) => spawnSync(s.cmd, [...s.args], { cwd: s.cwd, env: { ...process.env, ...s.env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" })
   let env: Readonly<Record<string, string>> = {}
+  let seenGpu = false
   const checks = gpu ? torchChecks(gpu) : []
   for (const [i, c] of checks.entries()) {
     console.log(`→ ${c.say}`)
-    const r = step(c, true)
+    const r = step(c)
     const seen = r.status === 0 && r.stdout.startsWith("gpu")
     console.log(`  ${seen ? `yes: ${r.stdout.slice(4).trim()}` : "no"}`)
     if (seen) {
       env = c.env ?? {}
+      seenGpu = true
       break
     }
     if (i === checks.length - 1) console.log(`  ComfyUI is installed but will run on the CPU: its PyTorch does not see ${gpu!.name}`)
   }
-  console.log(`ComfyUI installed; start it with:\n  ${comfyLaunch(env)}`)
+  const comfy = { python: comfyPython(), workspace: comfyWorkspace(home()), ...(gpu && gpu.id !== "cpu" && seenGpu ? { gpu: { id: gpu.id, name: gpu.name, ...(Object.keys(env).length ? { env } : {}) } } : {}) }
+  if (registerComfy(comfy)) {
+    const restarted = spawnSync("systemctl", ["--user", "try-restart", "omacode-services.service"], { stdio: "ignore" })
+    console.log(`ComfyUI installed and added to omacode-services on :8188, started by its first request${restarted.status === 0 ? "" : " (restart omacode-services to load it)"}; /services switches it`)
+  } else {
+    console.log(`ComfyUI installed; start it with:\n  ${comfyLaunch(env)}\n(or install omacode-services, npm run services -- install, and run this again to have it started on demand)`)
+  }
   return true
 }

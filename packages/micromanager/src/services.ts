@@ -22,7 +22,7 @@ import { runDir } from "@omacode/core/services"
 import type { Exec } from "./worktree/git.ts"
 
 export const UNIT = "omacode-services"
-export const PORTS = { decider: 8781, embedding: 8093 } as const
+export const PORTS = { decider: 8781, embedding: 8093, comfyui: 8188 } as const
 export const EMBEDDING_SIZES = { "0.6b": "0.6B", "4b": "4B", "8b": "8B" } as const
 export type EmbeddingSize = keyof typeof EMBEDDING_SIZES
 // The services this replaces: what install.sh and decider/decider.service set up before A6.
@@ -30,11 +30,20 @@ export const OLD_UNITS = ["decider", "micromanager-embedding"] as const
 // The decider before the tuned one, for a plugin that ships no checkpoint.
 export const BASE_DECIDER_MODEL = "fastino/GLiNER2.5-multi-Decide"
 
+export interface ComfyConfig {
+  readonly python: string
+  readonly workspace: string
+  readonly gpu?: { readonly id: string; readonly name: string; readonly env?: Readonly<Record<string, string>> }
+}
+
 export interface ServicesConfig {
   readonly decider: { readonly bin: string; readonly model: string }
   // device: where llama.cpp runs the model, "cpu" (the default) or a device it lists, such as "Vulkan0"; the TUI's
   // /services picks another one at run time through the supervisor's control file.
   readonly embedding: { readonly server: readonly string[]; readonly gguf: string; readonly url: string; readonly model: string; readonly device?: string }
+  // ComfyUI, when `omacode tools install comfyui` put one into the home (creative-tools.ts): its Python and workspace,
+  // and the GPU it was installed for with the environment PyTorch needed to see it.
+  readonly comfyui?: ComfyConfig
   readonly modes?: Readonly<Record<string, "on" | "auto" | "off">>
   readonly idleMinutes?: number
 }
@@ -45,6 +54,24 @@ export function servicesHome(): string {
   return join(userDataDir(), "services")
 }
 export const configPath = (home = servicesHome()): string => join(home, "config.json")
+
+export function readConfig(home = servicesHome()): ServicesConfig | undefined {
+  try {
+    return JSON.parse(readFileSync(configPath(home), "utf8")) as ServicesConfig
+  } catch {
+    return undefined
+  }
+}
+
+// Adds ComfyUI to an installed services config, in auto (started by its first request). Without omacode-services
+// installed there is nothing to add it to, and the caller says so.
+export function registerComfy(comfy: ComfyConfig, home = servicesHome()): boolean {
+  const config = readConfig(home)
+  if (!config) return false
+  const next: ServicesConfig = { ...config, comfyui: comfy, modes: { ...(config.modes ?? {}), comfyui: config.modes?.comfyui ?? "auto" } }
+  writeFileSync(configPath(home), JSON.stringify(next, null, 2) + "\n", { mode: 0o600 })
+  return true
+}
 
 // The plugin's own decider/ directory: beside packages/ in a checkout and in the installed package alike.
 export function deciderSource(): string {
@@ -214,10 +241,13 @@ export async function install(run: Exec, o: InstallOptions = {}): Promise<{ ok: 
   if (!server) say("no llama.cpp server found (llama-server on PATH, or LLAMA_SERVER): memory search runs on keywords until one is installed")
   say(`embedding: Qwen3-Embedding-${EMBEDDING_SIZES[size]}${gguf.present ? ` from ${gguf.path}` : ", downloaded on its first start"}`)
 
+  // A ComfyUI registered before stays: it was installed on its own (`omacode tools install comfyui`).
+  const before = readConfig(home)
   const config: ServicesConfig = {
+    ...(before?.comfyui ? { comfyui: before.comfyui } : {}),
     decider: { bin: join(decider, ".venv", "bin", "decider"), model },
     embedding: { server: server ?? [], gguf: gguf.path, url: embeddingUrl(size), model: `qwen3-embedding-${size}` },
-    modes: { decider: "auto", embedding: server ? "auto" : "off" },
+    modes: { decider: "auto", embedding: server ? "auto" : "off", ...(before?.comfyui ? { comfyui: before.modes?.comfyui ?? "auto" } : {}) },
     idleMinutes: 10,
   }
   writeFileSync(configPath(home), JSON.stringify(config, null, 2) + "\n", { mode: 0o600 })

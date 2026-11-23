@@ -16,7 +16,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { createHash, timingSafeEqual } from "node:crypto"
 import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from "node:http"
-import { createServer as netServer } from "node:net"
+import { connect, createServer as netServer, type Socket } from "node:net"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -33,6 +33,11 @@ export interface ServiceSpec {
   devices?(): Promise<readonly Device[]>
   readonly defaultDevice?: string
   readonly health?: string // the backend's health path, "/health" by default
+  // Started by its first request only, also in "auto": a service that holds GB of GPU memory (ComfyUI) does not start
+  // with the supervisor or when it is switched to auto.
+  readonly lazy?: boolean
+  // No token at the front: a service a browser talks to directly (ComfyUI's own page), on the loopback only.
+  readonly open?: boolean
   readonly startTimeoutMs?: number
 }
 
@@ -157,6 +162,7 @@ export class Supervisor {
     const sup = new Supervisor(o)
     for (const spec of o.services) {
       const front = createServer((req, res) => void sup.#handle(spec.name, req, res))
+      front.on("upgrade", (req, socket, head) => void sup.#upgrade(spec.name, req, socket as Socket, head))
       await new Promise<void>((done, fail) => {
         front.once("error", fail)
         front.listen(o.ports?.[spec.name] ?? 0, "127.0.0.1", () => done())
@@ -257,7 +263,7 @@ export class Supervisor {
         // Running on the old device: stop it and start it again on the new one.
         s.lastUsed = Date.now()
         void this.#restart(s)
-      } else if (first || changed) {
+      } else if ((first || changed) && (mode === "on" || !s.spec.lazy)) {
         // "auto" starts at once as well, so the first decision of a session does not wait for a model to load.
         s.lastUsed = Date.now()
         void this.#ensure(s).catch(() => undefined)
@@ -283,7 +289,7 @@ export class Supervisor {
       res.end(JSON.stringify(body))
     }
     const open = req.method === "GET" && req.url === "/health"
-    if (!open && this.#o.token && !sameToken(req.headers.authorization, this.#o.token)) return reply(401, { error: "missing or wrong token" })
+    if (!open && !s.spec.open && this.#o.token && !sameToken(req.headers.authorization, this.#o.token)) return reply(401, { error: "missing or wrong token" })
     if (open) return reply(200, { status: s.state, mode: s.mode, ...(s.detail ? { detail: s.detail } : {}) })
     if (s.mode === "off") return reply(503, { error: `${name} is switched off` })
     s.lastUsed = Date.now()
@@ -312,6 +318,42 @@ export class Supervisor {
       else res.destroy()
     })
     req.pipe(upstream)
+  }
+
+  // A WebSocket (ComfyUI's /ws): once the backend runs, the upgrade request goes through as raw bytes both ways. While
+  // it starts, the socket is closed with 503 and the client retries, as it does for plain requests.
+  async #upgrade(name: string, req: IncomingMessage, socket: Socket, head: Buffer): Promise<void> {
+    const s = this.#services.get(name)!
+    const refuse = (status: string): void => void socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+    if (!s.spec.open && this.#o.token && !sameToken(req.headers.authorization, this.#o.token)) return refuse("401 Unauthorized")
+    if (s.mode === "off") return refuse("503 Service Unavailable")
+    s.lastUsed = Date.now()
+    if (s.state !== "running" || !s.port) {
+      void this.#ensure(s).catch(() => undefined)
+      return refuse("503 Service Unavailable")
+    }
+    s.active++
+    const upstream = connect(s.port, "127.0.0.1", () => {
+      const lines = [`${req.method} ${req.url} HTTP/${req.httpVersion}`]
+      for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`)
+      upstream.write(lines.join("\r\n") + "\r\n\r\n")
+      if (head.length) upstream.write(head)
+      upstream.pipe(socket)
+      socket.pipe(upstream)
+    })
+    let closed = false
+    const done = () => {
+      if (closed) return
+      closed = true
+      s.active = Math.max(0, s.active - 1)
+      s.lastUsed = Date.now()
+      upstream.destroy()
+      socket.destroy()
+    }
+    upstream.on("error", done)
+    upstream.on("close", done)
+    socket.on("error", done)
+    socket.on("close", done)
   }
 
   // Starts the backend unless it runs or is starting; resolves when it answers its health check.

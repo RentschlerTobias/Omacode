@@ -10,7 +10,7 @@ import { join } from "node:path"
 import { runDir } from "@omacode/core/services"
 import { fetchOnce, Supervisor, type Device, type ServiceSpec } from "@omacode/core/supervisor"
 
-import { configPath, PORTS, servicesHome, type ServicesConfig } from "./services.ts"
+import { configPath, PORTS, servicesHome, type ComfyConfig, type ServicesConfig } from "./services.ts"
 
 export const CPU: Device = { id: "cpu", name: "CPU" }
 
@@ -66,7 +66,29 @@ export function hostServices(config: ServicesConfig, token: string): ServiceSpec
       }),
     })
   }
+  if (config.comfyui) specs.push(comfyService(config.comfyui))
   return specs
+}
+
+// ComfyUI behind the supervisor: started by its first request (it holds GB of GPU memory), with no token at the front,
+// because its own page in a browser and the image client talk to it directly; on the GPU it was installed for, or on
+// the CPU (`--cpu`), picked in /services like the embedding service's device.
+export function comfyService(c: ComfyConfig): ServiceSpec {
+  const gpu = c.gpu && c.gpu.id !== CPU.id ? c.gpu : undefined
+  return {
+    name: "comfyui",
+    lazy: true,
+    open: true,
+    health: "/system_stats",
+    startTimeoutMs: 5 * 60_000,
+    devices: async () => (gpu ? [{ id: gpu.id, name: gpu.name }, CPU] : [CPU]),
+    defaultDevice: gpu?.id ?? CPU.id,
+    command: (port, device) => ({
+      cmd: c.python,
+      args: [join(c.workspace, "main.py"), "--listen", "127.0.0.1", "--port", String(port), ...(gpu && device !== CPU.id ? [] : ["--cpu"])],
+      ...(gpu?.env && device !== CPU.id ? { env: gpu.env } : {}),
+    }),
+  }
 }
 
 function token(dir: string): string {
@@ -93,7 +115,7 @@ if (import.meta.main) {
     defaults: config.modes ?? {},
     ...(config.idleMinutes ? { idleMs: config.idleMinutes * 60_000 } : {}),
     // OMACODE_DECIDER_PORT / OMACODE_EMBEDDING_PORT: other ports, for a test beside services already running.
-    ports: { decider: Number(process.env.OMACODE_DECIDER_PORT) || PORTS.decider, embedding: Number(process.env.OMACODE_EMBEDDING_PORT) || PORTS.embedding },
+    ports: { decider: Number(process.env.OMACODE_DECIDER_PORT) || PORTS.decider, embedding: Number(process.env.OMACODE_EMBEDDING_PORT) || PORTS.embedding, comfyui: Number(process.env.OMACODE_COMFYUI_PORT) || PORTS.comfyui },
     facts: { embeddingModel: config.embedding.model },
     // Beside config.json, on disk: the TUI's picks (mode, device, idle time) outlive a reboot.
     controlPath: join(home, "control.json"),

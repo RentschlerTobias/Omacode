@@ -83,6 +83,10 @@ Radeon (a ROCm preview; after the install it checks whether PyTorch sees it, als
 `HSA_OVERRIDE_GFX_VERSION`), or the CPU, and prints the line that starts it. `./install.sh --with
 hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]` installs without asking, `--yes` or `--no-tools` installs no
 tool, `./install.sh --tools` asks again later. The same from npm: `npm run tools -- status | gpus | install <names>`.
+With omacode-services installed, ComfyUI joins it as a third service on its usual port 8188: started by its first
+request only (it holds GB of GPU memory), stopped after the idle time, reachable without the token (its own page in a
+browser talks to it directly), and switched in `/services` like the others, on its GPU or the CPU. For a ComfyUI
+already in `~/ComfyUI`: `npm run tools -- register comfyui [--gpu <id>]`.
 
 The worker skills need no step in either case: the plugin registers them itself (see "Skills" under "Use").
 

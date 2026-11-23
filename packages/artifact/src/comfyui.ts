@@ -22,6 +22,14 @@
 
 import { randomUUID } from "node:crypto"
 
+// omacode-services' "starting" answer (@omacode/core/services isStarting and retryAfterMs, restated here: this file
+// imports nothing but node:).
+const isStarting = (response: Response): boolean => response.status === 503 && response.headers.get("x-omacode-starting") === "1"
+const retryAfterMs = (response: Response): number => {
+  const seconds = Number(response.headers.get("retry-after"))
+  return Math.min(5000, Math.max(500, Number.isFinite(seconds) ? seconds * 1000 : 1000))
+}
+
 export const COMFYUI_DEFAULT_URL = "http://127.0.0.1:8188"
 
 // One picture ComfyUI knows by name: what `/view` downloads and what `/upload/image` answers with.
@@ -85,6 +93,9 @@ export interface ComfyOptions {
   // host has one. This is a capability the caller can narrow for a machine or a test, not a dependency.
   readonly webSocket?: WsConstructor | false
   readonly fetch?: typeof fetch
+  // How long a "starting" answer (503 with x-omacode-starting) from omacode-services is waited out: it starts ComfyUI
+  // on the first request, which takes up to a minute or two on an integrated GPU. 0 treats it as down.
+  readonly startingWaitMs?: number
 }
 
 // The small part of the WebSocket interface this client uses. Written out rather than imported from a DOM lib, so the
@@ -175,6 +186,7 @@ export class ComfyClient {
   readonly #pollMs: number
   readonly #watchTimeoutMs: number
   readonly #fetch: typeof fetch
+  readonly #startingWaitMs: number
   readonly #socket: WsConstructor | undefined
   readonly #clientId: string
 
@@ -184,6 +196,7 @@ export class ComfyClient {
     this.#pollMs = options.pollMs ?? DEFAULT_POLL_MS
     this.#watchTimeoutMs = options.watchTimeoutMs ?? DEFAULT_WATCH_TIMEOUT_MS
     this.#fetch = options.fetch ?? fetch
+    this.#startingWaitMs = options.startingWaitMs ?? 5 * 60_000
     this.#socket = webSocketConstructor(options.webSocket)
     this.#clientId = randomUUID()
     this.watchTransport = this.#socket === undefined ? "poll" : "ws"
@@ -436,14 +449,21 @@ export class ComfyClient {
   async #request(path: string, init: RequestInit): Promise<ComfyAnswer<Response>> {
     if (this.refusal !== undefined) return refusal(this.refusal)
     let response: Response
-    try {
-      response = await this.#fetch(`${this.#root}${path}`, {
-        ...init,
-        redirect: "error",
-        signal: AbortSignal.timeout(this.#timeoutMs),
-      })
-    } catch (error) {
-      return refusal(`${init.method ?? "GET"} ${path} could not reach the server: ${reason(error)}`)
+    const started = Date.now()
+    for (;;) {
+      try {
+        response = await this.#fetch(`${this.#root}${path}`, {
+          ...init,
+          redirect: "error",
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        })
+      } catch (error) {
+        return refusal(`${init.method ?? "GET"} ${path} could not reach the server: ${reason(error)}`)
+      }
+      // omacode-services starts ComfyUI on its first request and answers "starting" meanwhile: ask again.
+      if (!isStarting(response) || Date.now() - started + retryAfterMs(response) > this.#startingWaitMs) break
+      await response.body?.cancel().catch(() => undefined)
+      await new Promise((done) => setTimeout(done, retryAfterMs(response)))
     }
     if (!response.ok) {
       let said = ""
