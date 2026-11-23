@@ -19,8 +19,8 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 //   micromanager and every worker of the job at once; /auto, /parallel and /stop do the same (src/control.ts).
 // - In the sidebar, below the checklist, and /pools: the models each worker role may run on, picked in a popup like
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
-// - /services: the decider and the embedding service of omacode-services, each on, auto or off, and the idle time
-//   after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
+// - /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
+//   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
 //
@@ -37,7 +37,7 @@ import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJo
 import { listJobs } from "@omacode/state/store";
 import { agentRows, agentSummary, taskSessions } from "./switcher.ts";
 import { seedFromJournal } from "./usage.ts";
-import { IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceMode } from "@omacode/core/service-control";
+import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "@omacode/core/service-control";
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "@omacode/context/status";
 const POLL_MS = 2_000;
 const PANEL = "micromanager.agents";
@@ -1295,7 +1295,7 @@ function Agents(props) {
   })();
 }
 
-// The services popup: step 1 a service (or the idle time), step 2 its mode. Every pick is saved at once and the popup
+// The services popup: step 1 a service (or the idle time), step 2 its mode or, when it has a choice, its device. Every pick is saved at once and the popup
 // opens again on step 1, so its lines show the new modes; esc ends.
 async function pickServices(context) {
   let current;
@@ -1336,20 +1336,38 @@ async function pickServices(context) {
     }
     const service = view.services.find(s => `service:${s.name}` === chosen);
     if (!service) continue;
-    const mode = await context.ui.dialog.select({
+    const devices = service.devices ?? [];
+    const picked = await context.ui.dialog.select({
       title: `${service.name} · now ${serviceLine(service)}`,
       current: service.mode,
-      options: MODES.map(m => ({
+      options: [...MODES.map(m => ({
         title: m,
         value: m,
-        description: MODE_HELP[m]
-      }))
+        description: MODE_HELP[m],
+        category: "mode"
+      })), ...(devices.length > 1 ? devices.map(d => ({
+        title: d.id === service.device ? `● ${d.name}` : d.name,
+        value: `device:${d.id}`,
+        description: d.id,
+        category: "runs on"
+      })) : [])]
     });
-    if (!mode || mode === service.mode) continue;
-    setServiceMode(service.name, mode);
+    if (!picked) continue;
+    if (picked.startsWith("device:")) {
+      const id = picked.slice("device:".length);
+      if (id === service.device) continue;
+      setServiceDevice(service.name, id);
+      context.ui.toast.show({
+        message: `${service.name}: moving to ${deviceName(service, id)}`,
+        variant: "success"
+      });
+      continue;
+    }
+    if (picked === service.mode) continue;
+    setServiceMode(service.name, picked);
     context.ui.toast.show({
-      message: `${service.name}: ${mode}`,
-      variant: mode === "off" ? "warning" : "success"
+      message: `${service.name}: ${picked}`,
+      variant: picked === "off" ? "warning" : "success"
     });
   }
 }

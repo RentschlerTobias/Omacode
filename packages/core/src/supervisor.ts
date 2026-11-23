@@ -25,12 +25,20 @@ export type State = "stopped" | "preparing" | "starting" | "running" | "failed"
 
 export interface ServiceSpec {
   readonly name: string
-  // The command for a backend on this loopback port.
-  command(port: number): { readonly cmd: string; readonly args: readonly string[]; readonly env?: Readonly<Record<string, string>> }
+  // The command for a backend on this loopback port, on the device picked in the control file (or the spec's default).
+  command(port: number, device?: string): { readonly cmd: string; readonly args: readonly string[]; readonly env?: Readonly<Record<string, string>> }
   // Work before the first start, such as fetching model weights; its progress goes into the status line.
   prepare?(progress: (text: string) => void): Promise<void>
+  // Where the backend can run, such as "cpu" and the GPUs llama.cpp lists; asked once at start. None: not switchable.
+  devices?(): Promise<readonly Device[]>
+  readonly defaultDevice?: string
   readonly health?: string // the backend's health path, "/health" by default
   readonly startTimeoutMs?: number
+}
+
+export interface Device {
+  readonly id: string
+  readonly name: string
 }
 
 export interface SupervisorOptions {
@@ -45,6 +53,9 @@ export interface SupervisorOptions {
   readonly facts?: Readonly<Record<string, string>>
   readonly idleMs?: number
   readonly pollMs?: number
+  // Where the control file is; <run>/control.json by default. The host's keeps it on disk, so a pick survives a
+  // reboot (the run directory is a tmpfs). status.json names it, so the clients write to the right one.
+  readonly controlPath?: string
 }
 
 interface Status {
@@ -54,6 +65,8 @@ interface Status {
   pid?: number
   lastUsed?: string
   detail?: string
+  device?: string
+  devices?: readonly Device[]
 }
 
 interface Running {
@@ -71,6 +84,8 @@ interface Running {
   lastUsed: number
   detail?: string
   restarts: number[]
+  device?: string
+  devices?: readonly Device[]
 }
 
 export const STARTING_HEADER = "x-omacode-starting"
@@ -102,20 +117,24 @@ function writeJson(path: string, value: unknown): void {
   renameSync(tmp, path)
 }
 
-// The control file: a mode per service and the idle time. Anything unreadable keeps the defaults.
-export function readControl(path: string, names: readonly string[], defaults: Readonly<Record<string, Mode>>): { modes: Record<string, Mode>; idleMs?: number } {
+// The control file: a mode per service, the idle time, and a device per service ({"devices": {"embedding": "Vulkan1"}}).
+// Anything unreadable keeps the defaults.
+export function readControl(path: string, names: readonly string[], defaults: Readonly<Record<string, Mode>>): { modes: Record<string, Mode>; idleMs?: number; devices: Record<string, string> } {
   const modes: Record<string, Mode> = {}
   for (const n of names) modes[n] = defaults[n] ?? "auto"
   let idleMs: number | undefined
+  const devices: Record<string, string> = {}
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>
     for (const n of names) if (MODES.includes(raw[n] as Mode)) modes[n] = raw[n] as Mode
     const minutes = Number(raw.idleMinutes)
     if (Number.isFinite(minutes) && minutes > 0) idleMs = minutes * 60_000
+    const picked = raw.devices && typeof raw.devices === "object" ? (raw.devices as Record<string, unknown>) : {}
+    for (const n of names) if (typeof picked[n] === "string" && picked[n]) devices[n] = picked[n] as string
   } catch {
     // no control file yet, or a half-written one: the defaults hold until the next poll
   }
-  return { modes, ...(idleMs ? { idleMs } : {}) }
+  return { modes, ...(idleMs ? { idleMs } : {}), devices }
 }
 
 export class Supervisor {
@@ -142,8 +161,17 @@ export class Supervisor {
       })
       const address = front.address()
       const url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`
-      sup.#services.set(spec.name, { spec, front, url, mode: o.defaults?.[spec.name] ?? "auto", state: "stopped", prepared: !spec.prepare, active: 0, lastUsed: Date.now(), restarts: [] })
+      sup.#services.set(spec.name, { spec, front, url, mode: o.defaults?.[spec.name] ?? "auto", state: "stopped", prepared: !spec.prepare, active: 0, lastUsed: Date.now(), restarts: [], ...(spec.defaultDevice ? { device: spec.defaultDevice } : {}) })
     }
+    // Asked before the first start, so a device picked in the control file can be checked against the list.
+    await Promise.all([...sup.#services.values()].map(async (s) => {
+      if (!s.spec.devices) return
+      try {
+        s.devices = await s.spec.devices()
+      } catch {
+        s.devices = undefined
+      }
+    }))
     writeJson(join(o.runDir, "services.json"), { ...Object.fromEntries([...sup.#services].map(([n, s]) => [n, s.url])), ...(o.facts ?? {}) })
     sup.#applyControl(true)
     sup.#timer = setInterval(() => sup.#tick(), o.pollMs ?? 1000)
@@ -165,6 +193,8 @@ export class Supervisor {
         ...(s.child?.pid ? { pid: s.child.pid } : {}),
         lastUsed: new Date(s.lastUsed).toISOString(),
         ...(s.detail ? { detail: s.detail } : {}),
+        ...(s.device ? { device: s.device } : {}),
+        ...(s.devices ? { devices: s.devices } : {}),
       }
     }
     return out
@@ -182,7 +212,7 @@ export class Supervisor {
   #writeStatus(): void {
     if (this.#closed) return
     try {
-      writeJson(join(this.#o.runDir, "status.json"), { updated: new Date().toISOString(), idleMinutes: this.#idleMs / 60_000, services: this.status() })
+      writeJson(join(this.#o.runDir, "status.json"), { updated: new Date().toISOString(), idleMinutes: this.#idleMs / 60_000, control: this.#controlPath, services: this.status() })
     } catch {
       // the run directory went away under a stopping container
     }
@@ -194,8 +224,12 @@ export class Supervisor {
     this.#writeStatus()
   }
 
+  get #controlPath(): string {
+    return this.#o.controlPath ?? join(this.#o.runDir, "control.json")
+  }
+
   #applyControl(first = false): void {
-    const path = join(this.#o.runDir, "control.json")
+    const path = this.#controlPath
     let stamp = ""
     try {
       const st = statSync(path)
@@ -211,8 +245,17 @@ export class Supervisor {
       const mode = control.modes[n]!
       const changed = mode !== s.mode
       s.mode = mode
+      // A device the backend does not list is ignored, so a typo cannot keep a service from starting.
+      const asked = control.devices[n] ?? s.spec.defaultDevice
+      const device = asked && (!s.devices || s.devices.some((d) => d.id === asked)) ? asked : s.spec.defaultDevice
+      const moved = device !== s.device
+      s.device = device
       if (mode === "off") void this.#stop(s)
-      else if (first || changed) {
+      else if (moved && !first && (s.child || s.starting)) {
+        // Running on the old device: stop it and start it again on the new one.
+        s.lastUsed = Date.now()
+        void this.#restart(s)
+      } else if (first || changed) {
         // "auto" starts at once as well, so the first decision of a session does not wait for a model to load.
         s.lastUsed = Date.now()
         void this.#ensure(s).catch(() => undefined)
@@ -280,7 +323,7 @@ export class Supervisor {
         s.prepared = true
       }
       const port = await freePort()
-      const { cmd, args, env } = s.spec.command(port)
+      const { cmd, args, env } = s.spec.command(port, s.device)
       this.#set(s, "starting")
       const log = createWriteStream(join(this.#o.runDir, `${s.spec.name}.log`), { flags: "a", mode: 0o600 })
       const child = spawn(cmd, [...args], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] })
@@ -328,6 +371,12 @@ export class Supervisor {
         s.starting = undefined
       })
     return s.starting
+  }
+
+  async #restart(s: Running): Promise<void> {
+    await s.starting?.catch(() => undefined)
+    await this.#stop(s, `moving to ${s.device}`)
+    if (s.mode !== "off") await this.#ensure(s).catch(() => undefined)
   }
 
   async #stop(s: Running, detail?: string): Promise<void> {

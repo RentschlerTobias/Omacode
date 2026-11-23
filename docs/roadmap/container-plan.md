@@ -266,7 +266,8 @@ GPL source archive of a tagged release (P1-T7). What the builds taught:
   concurrency cap, no paid models by default).
 - [x] **P3-T6** TUI switches: one `/services` popup (slash and palette) instead of `/decider` and `/embedding` —
   pick a service, then on / auto / off, plus the idle time — writing the supervisor's control file (P1-T2a) through
-  `@omacode/core/service-control`; `services mode|idle` in the CLI does the same (2026-11-22). Still open: a status
+  `@omacode/core/service-control`; `services mode|idle` in the CLI does the same (2026-11-22). The embedding service's
+  device (CPU or a GPU llama.cpp lists) is picked there too, and the host keeps the control file on disk (2026-11-23). Still open: a status
   line per service in the sidebar (`decider: auto · idle`, `embedding: off`) that switches on click.
 - [ ] **P3-T7** What off means, said where it is switched:
   - **Embedding off:** memory search runs on keywords only (BM25), and says so; missing vectors are filled in when

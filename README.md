@@ -398,10 +398,14 @@ they hold from the next task on without a restart; they win over `models` in `om
 **Switching the local services.** With `omacode-services` installed (`npm run services -- install`), `/services` in
 the TUI lists the decider and the embedding service with their mode and state; pick one to set it **on** (started and
 kept running), **auto** (started on demand, stopped after the idle time) or **off** (stopped: decisions fall back to
-the rules, memory search to keywords). The same popup sets the idle time. From a shell:
-`npm run services -- mode <decider|embedding> <on|auto|off>`, `npm run services -- idle <minutes>`,
-`npm run services -- status`. Both write the supervisor's control file in `$XDG_RUNTIME_DIR/omacode`, which it applies
-within a second.
+the rules, memory search to keywords). For the embedding service the same step offers where it runs: the CPU or any
+GPU llama.cpp lists (`--list-devices`), such as a discrete and an integrated one; a running service restarts on the new
+device. Measured on an RTX 4060 laptop with a Radeon 890M, Qwen3-Embedding-4B, about 600 tokens per text: CPU 3.7 s,
+iGPU 0.6 s, dGPU 0.5 s. The decider runs on the CPU only (CPU-only PyTorch; a decision takes about 40 ms). The popup
+also sets the idle time. From a shell: `npm run services -- mode <decider|embedding> <on|auto|off>`,
+`npm run services -- device embedding <cpu|Vulkan0|…>`, `npm run services -- idle <minutes>`,
+`npm run services -- status`. Both write the supervisor's control file beside its config
+(`~/.local/share/omacode/services/control.json`, so the picks survive a reboot), which it applies within a second.
 
 Permission requests go to the decision client first and to you when it is not sure (`src/decide.ts`). Some phases of the
 design

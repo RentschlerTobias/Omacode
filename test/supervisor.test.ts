@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import test from "node:test"
 
 import { readControl, STARTING_HEADER, Supervisor, type ServiceSpec } from "../container/supervisor.ts"
@@ -107,9 +107,45 @@ test("a service that dies is reported as failed with where to look", async () =>
 test("the control file keeps the defaults for anything it does not say", () => {
   const dir = mkdtempSync(join(tmpdir(), "sup-"))
   const path = join(dir, "control.json")
-  assert.deepEqual(readControl(path, ["decider", "embedding"], { embedding: "off" }), { modes: { decider: "auto", embedding: "off" } })
+  assert.deepEqual(readControl(path, ["decider", "embedding"], { embedding: "off" }), { modes: { decider: "auto", embedding: "off" }, devices: {} })
   writeFileSync(path, JSON.stringify({ decider: "on", embedding: "sideways", idleMinutes: 2 }))
-  assert.deepEqual(readControl(path, ["decider", "embedding"], {}), { modes: { decider: "on", embedding: "auto" }, idleMs: 120_000 })
+  assert.deepEqual(readControl(path, ["decider", "embedding"], {}), { modes: { decider: "on", embedding: "auto" }, idleMs: 120_000, devices: {} })
   writeFileSync(path, "{ half")
-  assert.deepEqual(readControl(path, ["decider"], {}), { modes: { decider: "auto" } })
+  assert.deepEqual(readControl(path, ["decider"], {}), { modes: { decider: "auto" }, devices: {} })
+})
+
+test("a device picked in the control file restarts a running service there; one the service does not list is ignored", async () => {
+  const runDir = mkdtempSync(join(tmpdir(), "sup-"))
+  const started: (string | undefined)[] = []
+  const spec: ServiceSpec = {
+    name: "embedding",
+    devices: async () => [{ id: "cpu", name: "CPU" }, { id: "Vulkan1", name: "iGPU" }],
+    defaultDevice: "cpu",
+    command: (port, device) => {
+      started.push(device)
+      return { cmd: process.execPath, args: ["-e", FAKE, String(port)] }
+    },
+    startTimeoutMs: 10_000,
+  }
+  const sup = await Supervisor.start({ runDir, services: [spec], pollMs: 50, controlPath: join(runDir, "kept", "control.json") })
+  try {
+    await until(() => sup.status().embedding!.state === "running")
+    assert.deepEqual(started, ["cpu"])
+    assert.deepEqual(sup.status().embedding!.devices?.map((d) => d.id), ["cpu", "Vulkan1"])
+    const pid = sup.status().embedding!.pid
+    const control = join(runDir, "kept", "control.json")
+    assert.equal(JSON.parse(readFileSync(join(runDir, "status.json"), "utf8")).control, control, "status.json names the control file")
+    mkdirSync(dirname(control))
+    writeFileSync(control, JSON.stringify({ devices: { embedding: "Vulkan1" } }))
+    await until(() => sup.status().embedding!.state === "running" && sup.status().embedding!.pid !== pid)
+    assert.deepEqual(started, ["cpu", "Vulkan1"])
+    assert.equal(sup.status().embedding!.device, "Vulkan1")
+    assert.equal(JSON.parse(readFileSync(join(runDir, "status.json"), "utf8")).services.embedding.device, "Vulkan1")
+    writeFileSync(control, JSON.stringify({ devices: { embedding: "Vulkan7" } }))
+    await until(() => sup.status().embedding!.device === "cpu")
+    await until(() => sup.status().embedding!.state === "running" && started.length === 3)
+    assert.equal(started[2], "cpu", "an unknown device falls back to the default")
+  } finally {
+    await sup.close()
+  }
 })

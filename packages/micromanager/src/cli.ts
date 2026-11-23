@@ -15,7 +15,7 @@
 //                                                                [--out decider/data/entities.jsonl]
 //                                                                (P6-T3a: made-up names and addresses with their spans)
 //                                                                (P6-T2: synthetic and public training cases for the guards)
-//               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | idle <minutes> | remove [--purge]
+//               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -40,7 +40,7 @@ import { board } from "./board.ts"
 import { listJobs } from "./store.ts"
 import { outcomesPath, readOutcomes, routerRows } from "./outcomes.ts"
 import { cleanEnv, rulesFor, startSandbox } from "./sandbox.ts"
-import { servicesView, setIdleMinutes, setServiceMode } from "@omacode/core/service-control"
+import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "@omacode/core/service-control"
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
@@ -103,6 +103,19 @@ export async function main(argv: readonly string[]): Promise<number> {
       console.log(`${name}: ${mode} (the supervisor applies it within a second)`)
       return 0
     }
+    if (verb === "device") {
+      const [, name, device] = args
+      const service = servicesView().services.find((v) => v.name === name)
+      const ids = service?.devices?.map((d) => d.id) ?? []
+      if (!service || ids.length < 2 || !device || !ids.includes(device)) {
+        const choices = servicesView().services.filter((v) => (v.devices?.length ?? 0) > 1).map((v) => `${v.name}: ${v.devices!.map((d) => `${d.id} (${d.name})`).join(", ")}`)
+        console.error(`usage: services device <service> <device>\n${choices.join("\n") || "no service with a choice of device (is omacode-services running?)"}`)
+        return 1
+      }
+      setServiceDevice(service.name, device)
+      console.log(`${name}: moving to ${device}${service.state === "running" ? " (restarts now)" : ""}`)
+      return 0
+    }
     if (verb === "idle") {
       const minutes = Number(args[1])
       if (!Number.isFinite(minutes) || minutes <= 0) {
@@ -127,7 +140,7 @@ export async function main(argv: readonly string[]): Promise<number> {
       if (!r.ok) console.error(r.text)
       return r.ok ? 0 : 1
     }
-    console.error("usage: services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | idle <minutes> | remove [--purge]")
+    console.error("usage: services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]")
     return 1
   }
   if (command === "migrate" && args.includes("--user")) {

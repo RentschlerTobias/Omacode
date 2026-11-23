@@ -32,7 +32,9 @@ export const BASE_DECIDER_MODEL = "fastino/GLiNER2.5-multi-Decide"
 
 export interface ServicesConfig {
   readonly decider: { readonly bin: string; readonly model: string }
-  readonly embedding: { readonly server: readonly string[]; readonly gguf: string; readonly url: string; readonly model: string }
+  // device: where llama.cpp runs the model, "cpu" (the default) or a device it lists, such as "Vulkan0"; the TUI's
+  // /services picks another one at run time through the supervisor's control file.
+  readonly embedding: { readonly server: readonly string[]; readonly gguf: string; readonly url: string; readonly model: string; readonly device?: string }
   readonly modes?: Readonly<Record<string, "on" | "auto" | "off">>
   readonly idleMinutes?: number
 }
@@ -247,8 +249,8 @@ export function status(env: NodeJS.ProcessEnv = process.env): string {
   const file = join(runDir(env), "status.json")
   if (!existsSync(file)) return `${UNIT} is not running (no ${file})`
   try {
-    const s = JSON.parse(readFileSync(file, "utf8")) as { updated?: string; services?: Record<string, { mode?: string; state?: string; url?: string; detail?: string }> }
-    return Object.entries(s.services ?? {}).map(([name, v]) => `${name}: ${v.mode ?? "?"} · ${v.state ?? "?"} · ${v.url ?? ""}${v.detail ? ` · ${v.detail}` : ""}`).join("\n") + `\n(as of ${s.updated ?? "?"})`
+    const s = JSON.parse(readFileSync(file, "utf8")) as { updated?: string; services?: Record<string, { mode?: string; state?: string; url?: string; detail?: string; device?: string }> }
+    return Object.entries(s.services ?? {}).map(([name, v]) => `${name}: ${v.mode ?? "?"} · ${v.state ?? "?"}${v.device ? ` · on ${v.device}` : ""} · ${v.url ?? ""}${v.detail ? ` · ${v.detail}` : ""}`).join("\n") + `\n(as of ${s.updated ?? "?"})`
   } catch {
     return `${file} cannot be read`
   }
