@@ -107,6 +107,11 @@ export async function main(argv: readonly string[]): Promise<number> {
       const [, name, device] = args
       const service = servicesView().services.find((v) => v.name === name)
       const ids = service?.devices?.map((d) => d.id) ?? []
+      const only = service?.devices?.length === 1 ? service.devices[0] : undefined
+      if (only) {
+        console.error(`${service!.name}: ${only.note ?? `runs on ${only.name} only`}`)
+        return 1
+      }
       if (!service || ids.length < 2 || !device || !ids.includes(device)) {
         const choices = servicesView().services.filter((v) => (v.devices?.length ?? 0) > 1).map((v) => `${v.name}: ${v.devices!.map((d) => `${d.id} (${d.name})`).join(", ")}`)
         console.error(`usage: services device <service> <device>\n${choices.join("\n") || "no service with a choice of device (is omacode-services running?)"}`)

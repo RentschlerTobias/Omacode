@@ -1345,16 +1345,25 @@ async function pickServices(context) {
         value: m,
         description: MODE_HELP[m],
         category: "mode"
-      })), ...(devices.length > 1 ? devices.map(d => ({
+      })),
+      // One device is shown as well, with its note, so the popup says why there is nothing to pick.
+      ...devices.map(d => ({
         title: d.id === service.device ? `● ${d.name}` : d.name,
         value: `device:${d.id}`,
-        description: d.id,
+        description: d.note ?? d.id,
         category: "runs on"
-      })) : [])]
+      }))]
     });
     if (!picked) continue;
     if (picked.startsWith("device:")) {
       const id = picked.slice("device:".length);
+      const note = devices.find(d => d.id === id)?.note;
+      if (devices.length === 1) {
+        context.ui.toast.show({
+          message: `${service.name}: ${note ?? `runs on ${deviceName(service, id)} only`}`
+        });
+        continue;
+      }
       if (id === service.device) continue;
       setServiceDevice(service.name, id);
       context.ui.toast.show({

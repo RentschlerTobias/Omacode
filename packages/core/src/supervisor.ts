@@ -39,6 +39,8 @@ export interface ServiceSpec {
 export interface Device {
   readonly id: string
   readonly name: string
+  // Why there is no other choice, or what to know about this one; shown in the TUI.
+  readonly note?: string
 }
 
 export interface SupervisorOptions {

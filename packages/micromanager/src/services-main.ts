@@ -40,7 +40,8 @@ export function hostServices(config: ServicesConfig, token: string): ServiceSpec
     {
       name: "decider",
       // CPU-only PyTorch (decider/pyproject.toml): the GPUs stay free for llama.cpp, and a decision takes ~40 ms anyway.
-      devices: async () => [CPU],
+      // A GPU would need a second torch build beside it (CUDA, or ROCm's preview for the iGPU); not taken (2026-11-23).
+      devices: async () => [{ ...CPU, note: "CPU only: its PyTorch build has no GPU support; a decision takes about 40 ms" }],
       defaultDevice: CPU.id,
       command: (port) => ({
         cmd: config.decider.bin,
