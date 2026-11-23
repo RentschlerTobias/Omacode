@@ -23,7 +23,7 @@ let n = 0
 function machine(): Home {
   const home = join(ROOT, `m${++n}`)
   mkdirSync(home, { recursive: true })
-  return { home, env: { HOME: home }, sys: join(home, "sys"), dev: join(home, "dev") }
+  return { home, data: join(home, ".local", "share", "omacode"), env: { HOME: home }, sys: join(home, "sys"), dev: join(home, "dev") }
 }
 
 function kfdNode(h: Home, node: string, gfx: number, name = "") {
@@ -39,11 +39,15 @@ test("found or not: the version each tool prints, ComfyUI from its workspace", a
   const h = machine()
   const none = await detect(fakeRun({}), h)
   assert.deepEqual(none.map((t) => [t.name, t.found]), [["hyperframes", false], ["manim", false], ["comfyui", false]])
-  mkdirSync(join(h.home, "ComfyUI"))
-  writeFileSync(join(h.home, "ComfyUI", "comfyui_version.py"), '__version__ = "0.44.2"\n')
+  mkdirSync(join(h.home, "Apps", "ComfyUI"), { recursive: true })
+  writeFileSync(join(h.home, "Apps", "ComfyUI", "comfyui_version.py"), '__version__ = "0.38.0"\n')
   const some = await detect(fakeRun({ "hyperframes --version": { stdout: "hyperframes v0.9.54\n" }, "manim --version": { stdout: "Manim Community v0.22.1\n" } }), h)
-  assert.deepEqual(some.map((t) => t.version), ["0.9.54", "0.22.1", "0.44.2"])
-  assert.equal(some[2]!.where, join(h.home, "ComfyUI"))
+  assert.deepEqual(some.map((t) => t.version), ["0.9.54", "0.22.1", "0.38.0"])
+  assert.equal(some[2]!.where, join(h.home, "Apps", "ComfyUI"), "one installed by hand is found")
+  const ours = join(h.data, "tools", "comfyui")
+  mkdirSync(ours, { recursive: true })
+  writeFileSync(join(ours, "comfyui_version.py"), '__version__ = "0.44.2"\n')
+  assert.equal((await detect(fakeRun({}), h))[2]!.where, ours, "the tools directory first")
 })
 
 test("where ComfyUI could run: the NVIDIA GPU, an integrated Radeon ROCm can reach, always the CPU", async () => {
@@ -72,9 +76,9 @@ test("where ComfyUI could run: the NVIDIA GPU, an integrated Radeon ROCm can rea
 test("each install is pinned and stays in the home", async () => {
   const h = machine()
   const hf = installSteps("hyperframes", h)
-  assert.deepEqual(hf[0]!.args.slice(0, 3), ["install", "--prefix", join(h.home, ".local", "share", "hyperframes")])
+  assert.deepEqual(hf[0]!.args.slice(0, 3), ["install", "--prefix", join(h.data, "tools", "hyperframes")])
   assert.ok(hf[0]!.args.includes(`hyperframes@${PINS.hyperframes}`))
-  assert.deepEqual(hf[1]!.args, ["-sfn", join(h.home, ".local", "share", "hyperframes", "node_modules", ".bin", "hyperframes"), join(h.home, ".local", "bin", "hyperframes")])
+  assert.deepEqual(hf[1]!.args, ["-sfn", join(h.data, "tools", "hyperframes", "node_modules", ".bin", "hyperframes"), join(h.home, ".local", "bin", "hyperframes")])
   assert.deepEqual(installSteps("manim", h).map((s) => [s.cmd, ...s.args].join(" ")), [`uv tool install --force manim==${PINS.manim}`])
 
   kfdNode(h, "1", 110500)
@@ -83,7 +87,7 @@ test("each install is pinned and stays in the home", async () => {
   assert.deepEqual(comfy, [
     `uv tool install --force comfy-cli==${PINS.comfyCli}`,
     "comfy --skip-prompt tracking disable",
-    `comfy --skip-prompt --workspace ${join(h.home, "ComfyUI")} install --version ${PINS.comfyui} --skip-manager --amd`,
+    `comfy --skip-prompt --workspace ${join(h.data, "tools", "comfyui")} install --version ${PINS.comfyui} --skip-manager --amd`,
   ])
   assert.match(installSteps("comfyui", h).at(-1)!.args.join(" "), /--cpu$/, "no device named: the CPU")
 })
@@ -98,8 +102,12 @@ test("after a GPU install PyTorch is asked whether it sees the GPU, an integrate
   assert.equal(checks[0]!.env, undefined)
   assert.deepEqual(checks[1]!.env, { HSA_OVERRIDE_GFX_VERSION: "11.0.0" })
   assert.deepEqual(torchChecks(cpu!, h), [])
-  mkdirSync(join(h.home, "ComfyUI", ".venv", "bin"), { recursive: true })
-  writeFileSync(join(h.home, "ComfyUI", ".venv", "bin", "python"), "")
-  assert.equal(comfyPython(h), join(h.home, "ComfyUI", ".venv", "bin", "python"), "a workspace venv wins")
-  assert.equal(comfyLaunch({ HSA_OVERRIDE_GFX_VERSION: "11.0.0" }, h), `HSA_OVERRIDE_GFX_VERSION=11.0.0 comfy --workspace ${join(h.home, "ComfyUI")} launch -- --listen 127.0.0.1 --port 8188`)
+  const ws = join(h.data, "tools", "comfyui")
+  mkdirSync(join(ws, ".venv", "bin"), { recursive: true })
+  writeFileSync(join(ws, ".venv", "bin", "python"), "")
+  assert.equal(comfyPython(h), join(ws, ".venv", "bin", "python"), "a workspace venv wins")
+  mkdirSync(join(h.home, "Apps", "ComfyUI", "venv", "bin"), { recursive: true })
+  writeFileSync(join(h.home, "Apps", "ComfyUI", "venv", "bin", "python"), "")
+  assert.equal(comfyPython(h, join(h.home, "Apps", "ComfyUI")), join(h.home, "Apps", "ComfyUI", "venv", "bin", "python"), "venv/ as well")
+  assert.equal(comfyLaunch({ HSA_OVERRIDE_GFX_VERSION: "11.0.0" }, h), `HSA_OVERRIDE_GFX_VERSION=11.0.0 comfy --workspace ${ws} launch -- --listen 127.0.0.1 --port 8188`)
 })

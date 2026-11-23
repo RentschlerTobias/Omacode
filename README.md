@@ -70,15 +70,17 @@ npm install                    # the sandbox runtime
 ```
 
 **Optional creative tools.** In a terminal, `./install.sh` then asks about each tool the artifact adapters use,
-says whether it is already there, and installs it into your home at a pinned version if you say yes:
+says whether it is already there, and installs it at a pinned version if you say yes, under the data directory
+(`~/.local/share/omacode/tools/`), never as a new folder in your home:
 
 | Tool | For | Installed as |
 |---|---|---|
-| HyperFrames 0.9.54 | decks and videos | `npm install --prefix ~/.local/share/hyperframes`, linked into `~/.local/bin` |
+| HyperFrames 0.9.54 | decks and videos | npm into `tools/hyperframes`, linked into `~/.local/bin` |
 | Manim 0.22.1 | math animations (LaTeX is not installed) | `uv tool install manim` |
-| ComfyUI 0.44.2 | images | comfy-cli 1.25.0 into `~/ComfyUI`, no model downloaded |
+| ComfyUI 0.44.2 | images | comfy-cli 1.25.0 into `tools/comfyui` (or `COMFYUI_WORKSPACE`), no model downloaded |
 
-For ComfyUI it lists where it could run: an NVIDIA GPU, an AMD GPU ROCm can reach (`/dev/kfd`), an integrated
+A ComfyUI already on the machine (`~/Apps/ComfyUI`, `~/ComfyUI`) is found and offered to omacode-services instead of a
+second install. For ComfyUI it lists where it could run: an NVIDIA GPU, an AMD GPU ROCm can reach (`/dev/kfd`), an integrated
 Radeon (a ROCm preview; after the install it checks whether PyTorch sees it, also as its discrete family through
 `HSA_OVERRIDE_GFX_VERSION`), or the CPU, and prints the line that starts it. `./install.sh --with
 hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]` installs without asking, `--yes` or `--no-tools` installs no
@@ -86,7 +88,7 @@ tool, `./install.sh --tools` asks again later. The same from npm: `npm run tools
 With omacode-services installed, ComfyUI joins it as a third service on its usual port 8188: started by its first
 request only (it holds GB of GPU memory), stopped after the idle time, reachable without the token (its own page in a
 browser talks to it directly), and switched in `/services` like the others, on its GPU or the CPU. For a ComfyUI
-already in `~/ComfyUI`: `npm run tools -- register comfyui [--gpu <id>]`.
+already there: `npm run tools -- register comfyui [--gpu <id>] [--workspace <dir>]`.
 
 The worker skills need no step in either case: the plugin registers them itself (see "Skills" under "Use").
 

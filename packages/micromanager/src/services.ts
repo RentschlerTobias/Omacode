@@ -137,13 +137,13 @@ Description=Omacode local services: decider and memory embeddings, started on de
 [Service]
 Environment=OMACODE_SERVICES_HOME=${home}
 Environment=OMACODE_RUN_DIR=%t/omacode
-Environment=CUDA_VISIBLE_DEVICES=
 ExecStart=${node} ${entry}
 Restart=on-failure
 RestartSec=5
-# The decider peaked at 2.6 GB and a 4B embedding model takes about 5 GB; past this the unit is restarted instead of
-# pushing the desktop into swap.
-MemoryMax=10G
+# The decider peaked at 2.6 GB, a 4B embedding model takes about 5 GB, and ComfyUI loads an image model through system
+# RAM (on an integrated GPU it stays there); past this the unit is restarted instead of pushing the desktop into swap.
+# No CUDA_VISIBLE_DEVICES here: ROCm reads it too, and the decider hides the GPUs from itself in its own environment.
+MemoryMax=20G
 MemorySwapMax=0
 
 [Install]

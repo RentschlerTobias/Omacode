@@ -1,6 +1,6 @@
 // The optional creative tools install.sh offers after the plugin (roadmap A6-T6/T7): HyperFrames for decks and video,
 // Manim for math animations, ComfyUI for images. Each is found or not, and each can be installed at a pinned version
-// into the user's home, never system-wide:
+// under the user's omacode data directory (<data>/tools), never system-wide and never as a new folder in the home:
 //
 //   omacode tools status                       what is there, and which version
 //   omacode tools gpus                         where ComfyUI could run: NVIDIA, an AMD GPU ROCm can use, the CPU
@@ -17,6 +17,8 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+
+import { userDataDir } from "@omacode/core/paths"
 
 import type { Exec } from "./worktree/git.ts"
 
@@ -40,6 +42,8 @@ export interface Found {
 
 export interface Home {
   readonly home: string
+  // The user's omacode data directory: what this module installs goes under its tools/, never into the home itself.
+  readonly data: string
   readonly env: NodeJS.ProcessEnv
   // /sys and /dev, moved for tests
   readonly sys: string
@@ -47,11 +51,24 @@ export interface Home {
 }
 
 export function home(env: NodeJS.ProcessEnv = process.env): Home {
-  return { home: env.HOME || homedir(), env, sys: "/sys", dev: "/dev" }
+  return { home: env.HOME || homedir(), data: userDataDir(), env, sys: "/sys", dev: "/dev" }
 }
 
-export const hyperframesPrefix = (h: Home): string => join(h.home, ".local", "share", "hyperframes")
-export const comfyWorkspace = (h: Home): string => h.env.COMFYUI_WORKSPACE || join(h.home, "ComfyUI")
+export const toolsDir = (h: Home): string => join(h.data, "tools")
+export const hyperframesPrefix = (h: Home): string => join(toolsDir(h), "hyperframes")
+// Where an install puts ComfyUI: COMFYUI_WORKSPACE, else the tools directory.
+export const comfyWorkspace = (h: Home): string => h.env.COMFYUI_WORKSPACE || join(toolsDir(h), "comfyui")
+// Where a ComfyUI may already be, installed by hand or by comfy-cli's default: found, it is offered instead of a
+// second install (one is GB of PyTorch).
+export const comfyCandidates = (h: Home): string[] =>
+  [...new Set([comfyWorkspace(h), join(h.home, "Apps", "ComfyUI"), join(h.home, "ComfyUI"), join(h.home, "comfy", "ComfyUI")])]
+const comfyVersion = (dir: string): string | undefined => {
+  try {
+    return /"([^"]+)"/.exec(readFileSync(join(dir, "comfyui_version.py"), "utf8"))?.[1]
+  } catch {
+    return undefined
+  }
+}
 const localBin = (h: Home): string => join(h.home, ".local", "bin")
 
 const version = (text: string): string | undefined => /\bv?(\d+\.\d+(?:\.\d+)?(?:[-.a-z0-9]*)?)/i.exec(text)?.[1]
@@ -64,13 +81,8 @@ export async function detect(run: Exec, h: Home = home()): Promise<Found[]> {
   }
   const hf = await ask("hyperframes", ["--version"])
   const manim = await ask("manim", ["--version"])
-  const workspace = comfyWorkspace(h)
-  let comfy: string | undefined
-  try {
-    comfy = /"([^"]+)"/.exec(readFileSync(join(workspace, "comfyui_version.py"), "utf8"))?.[1]
-  } catch {
-    comfy = undefined
-  }
+  const workspace = comfyCandidates(h).find((dir) => comfyVersion(dir))
+  const comfy = workspace ? comfyVersion(workspace) : undefined
   return [
     { name: "hyperframes", found: Boolean(hf), ...(hf ? { version: hf } : {}) },
     { name: "manim", found: Boolean(manim), ...(manim ? { version: manim } : {}) },
@@ -180,9 +192,10 @@ export function installSteps(tool: ToolName, h: Home = home(), gpu?: Gpu): Step[
 
 // ComfyUI's Python: comfy-cli installs ComfyUI's requirements into the environment it runs in (its uv tool), or into
 // the workspace's own .venv when there is one.
-export function comfyPython(h: Home = home()): string {
-  const own = join(comfyWorkspace(h), ".venv", "bin", "python")
-  return existsSync(own) ? own : join(h.env.UV_TOOL_DIR || join(h.home, ".local", "share", "uv", "tools"), "comfy-cli", "bin", "python")
+export function comfyPython(h: Home = home(), workspace = comfyWorkspace(h)): string {
+  const own = [".venv", "venv"].map((v) => join(workspace, v, "bin", "python")).find((p) => existsSync(p))
+  if (own) return own
+  return join(h.env.UV_TOOL_DIR || join(h.home, ".local", "share", "uv", "tools"), "comfy-cli", "bin", "python")
 }
 
 // After a ComfyUI install on a GPU: whether its PyTorch sees the GPU, first as it is and, for an integrated Radeon,
@@ -190,9 +203,9 @@ export function comfyPython(h: Home = home()): string {
 // integrated Radeons are where this is expected to fail first.
 export const TORCH_PROBE = "import torch; print('gpu' if torch.cuda.is_available() else 'cpu', torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 
-export function torchChecks(gpu: Gpu, h: Home = home()): Step[] {
+export function torchChecks(gpu: Gpu, h: Home = home(), workspace = comfyWorkspace(h)): Step[] {
   if (gpu.id === "cpu") return []
-  const step = (env?: Readonly<Record<string, string>>): Step => ({ say: `does ComfyUI's PyTorch see ${gpu.name}${env ? ` (as ${Object.values(env).join(" ")})` : ""}?`, cmd: comfyPython(h), args: ["-c", TORCH_PROBE], ...(env ? { env } : {}) })
+  const step = (env?: Readonly<Record<string, string>>): Step => ({ say: `does ComfyUI's PyTorch see ${gpu.name}${env ? ` (as ${Object.values(env).join(" ")})` : ""}?`, cmd: comfyPython(h, workspace), args: ["-c", TORCH_PROBE], ...(env ? { env } : {}) })
   return gpu.env ? [step(), step(gpu.env)] : [step()]
 }
 

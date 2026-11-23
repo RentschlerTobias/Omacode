@@ -17,7 +17,7 @@
 //                                                                (P6-T2: synthetic and public training cases for the guards)
 //               node src/cli.ts services install [--embedding 0.6b|4b|8b] [--replace] | status | mode <service> <on|auto|off> | device <service> <cpu|Vulkan0|…> | idle <minutes> | remove [--purge]
 //                                                                (A6: the decider and the embedding service as one user service)
-//               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | register comfyui [--gpu <id>] | ask
+//               node src/cli.ts tools status | gpus | install <hyperframes|manim|comfyui>[,…] [--gpu <id>] | register comfyui [--gpu <id>] [--workspace <dir>] | ask
 //                                                                (A6-T6/T7: the optional creative tools, pinned, into the home)
 //               node src/cli.ts sandboxed --dir D -- <command…>  (one command in the writer's sandbox of D, offline;
 //                                                                the evolver's candidates run under it, src/evolver.ts)
@@ -47,7 +47,7 @@ import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
 import { registerComfy } from "./services.ts"
-import { comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
+import { comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -428,8 +428,9 @@ async function tools(args: string[]): Promise<number> {
       console.error("usage: tools register comfyui [--gpu <id>]")
       return 1
     }
-    if (!(await detectTools(exec)).find((t) => t.name === "comfyui")?.found) {
-      console.error(`no ComfyUI in ${comfyWorkspace(home())}`)
+    const where = flag(args, "workspace") ?? (await detectTools(exec)).find((t) => t.name === "comfyui")?.where
+    if (!where) {
+      console.error(`no ComfyUI found (looked in ${comfyCandidates(home()).join(", ")}); --workspace <dir> names one`)
       return 1
     }
     const found = await toolGpus(exec)
@@ -439,7 +440,7 @@ async function tools(args: string[]): Promise<number> {
       console.error(`no ${wanted} here; found: ${found.map((g) => g.id).join(", ")}`)
       return 1
     }
-    return registerComfyTool(gpu) ? 0 : 1
+    return registerComfyTool(gpu, where) ? 0 : 1
   }
   if (verb === "ask") {
     if (!process.stdin.isTTY) {
@@ -457,6 +458,13 @@ async function tools(args: string[]): Promise<number> {
         console.log(`\n${info.title}: ${info.what}. ${info.size}.`)
         if (t.found) {
           console.log(`  found ${t.version ?? ""}${t.where ? ` in ${t.where}` : ""}`)
+          // A ComfyUI already there is offered to omacode-services rather than installed twice.
+          if (t.name === "comfyui" && t.where && (await yes("  start it on demand with omacode-services?"))) {
+            const devices = await toolGpus(exec)
+            devices.forEach((g, i) => console.log(`  ${i + 1}) ${g.name}${g.note ? ` — ${g.note}` : ""}`))
+            const answer = (await rl.question(`  run it on [1-${devices.length}, default 1]: `)).trim()
+            registerComfyTool(devices[Math.max(0, Math.min(devices.length - 1, (Number(answer) || 1) - 1))]!, t.where)
+          }
           continue
         }
         if (!(await yes(`  install ${info.title}?`))) continue
@@ -504,11 +512,11 @@ async function installTool(name: ToolName, gpu?: Gpu): Promise<boolean> {
 
 // After a ComfyUI install, or for one already there: check that its PyTorch sees the GPU, and add it to
 // omacode-services on that GPU (or the CPU, when it does not).
-function registerComfyTool(gpu?: Gpu): boolean {
+function registerComfyTool(gpu?: Gpu, workspace = comfyWorkspace(home())): boolean {
   const step = (s: Step) => spawnSync(s.cmd, [...s.args], { cwd: s.cwd, env: { ...process.env, ...s.env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" })
   let env: Readonly<Record<string, string>> = {}
   let seenGpu = false
-  const checks = gpu ? torchChecks(gpu) : []
+  const checks = gpu ? torchChecks(gpu, home(), workspace) : []
   for (const [i, c] of checks.entries()) {
     console.log(`→ ${c.say}`)
     const r = step(c)
@@ -521,7 +529,7 @@ function registerComfyTool(gpu?: Gpu): boolean {
     }
     if (i === checks.length - 1) console.log(`  ComfyUI is installed but will run on the CPU: its PyTorch does not see ${gpu!.name}`)
   }
-  const comfy = { python: comfyPython(), workspace: comfyWorkspace(home()), ...(gpu && gpu.id !== "cpu" && seenGpu ? { gpu: { id: gpu.id, name: gpu.name, ...(Object.keys(env).length ? { env } : {}) } } : {}) }
+  const comfy = { python: comfyPython(home(), workspace), workspace, ...(gpu && gpu.id !== "cpu" && seenGpu ? { gpu: { id: gpu.id, name: gpu.name, ...(Object.keys(env).length ? { env } : {}) } } : {}) }
   if (registerComfy(comfy)) {
     const restarted = spawnSync("systemctl", ["--user", "try-restart", "omacode-services.service"], { stdio: "ignore" })
     console.log(`ComfyUI installed and added to omacode-services on :8188, started by its first request${restarted.status === 0 ? "" : " (restart omacode-services to load it)"}; /services switches it`)
