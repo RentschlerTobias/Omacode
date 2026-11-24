@@ -3,7 +3,7 @@
 # without a checkout use OpenCode's own installer, which needs nothing from this script:
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
-#   ./install.sh            install what omacode needs and is missing (Node 22.12+, OpenCode, git, bubblewrap: one
+#   ./install.sh            install what omacode needs and is missing (Node 22.18+, OpenCode, git, bubblewrap: one
 #                           question, then the package manager or the project's own installer), link
 #                           packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts, write the TUI
 #                           package ~/.config/opencode/omacode-tui/ into the "plugins" of ~/.config/opencode/cli.json,
@@ -108,20 +108,20 @@ ask_yes() {
   fi
 }
 
-# Node runs everything below, so it is checked here, in the shell: 22.12 or newer, offered from the package manager.
+# Node runs everything below, so it is checked here, in the shell: 22.18 or newer (the first that runs TypeScript without a flag), offered from the package manager.
 node_ok() {
-  command -v node >/dev/null && node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)'
+  command -v node >/dev/null && node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 18) ? 0 : 1)'
 }
 ensure_node() {
   node_ok && return 0
-  echo "omacode needs Node 22.12 or newer$(command -v node >/dev/null && echo ", found $(node --version)")."
+  echo "omacode needs Node 22.18 or newer$(command -v node >/dev/null && echo ", found $(node --version)")."
   local cmd=()
   if command -v pacman >/dev/null; then cmd=(sudo pacman -S --needed --noconfirm nodejs npm)
   elif command -v dnf >/dev/null; then cmd=(sudo dnf install -y nodejs)
   elif command -v brew >/dev/null; then cmd=(brew install node)
   fi
   if [[ ${#cmd[@]} -gt 0 ]] && ask_yes "Install it with: ${cmd[*]}?"; then "${cmd[@]}" || true; fi
-  node_ok || { echo "install Node 22.12 or newer (https://nodejs.org), then run ./install.sh again" >&2; exit 1; }
+  node_ok || { echo "install Node 22.18 or newer (https://nodejs.org), then run ./install.sh again" >&2; exit 1; }
 }
 
 if [[ "${1:-}" == "--tools" ]]; then

@@ -15,7 +15,7 @@ back, and a merge train waits for the checks.
 
 ## What it needs
 
-- OpenCode v2 and Node.js 22.12 or later.
+- OpenCode v2 and Node.js 22.18 or later (it runs the TypeScript sources directly).
 - On Linux, the sandbox uses `bubblewrap`, `socat` and `ripgrep`; without them the plugin still runs, unwrapped.
 - The decision client is configured under `decider` in `micromanager.jsonc`: `{ "mode": "local" }` (the default) keeps
   every decision on this machine and needs no key; `{ "mode": "cloud" }` may send one to the cloud client, after a

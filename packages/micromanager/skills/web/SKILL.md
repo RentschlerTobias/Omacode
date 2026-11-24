@@ -24,6 +24,16 @@ job is the pages and the spec, not the checks.
 
 Start static: plain HTML, CSS and a little JavaScript need no build and are checked exactly like a built site.
 
+## Videos and animations in a page
+
+A film or a Manim animation is made first with the video skill (`make_artifact` with a `video.json`), then copied into
+the site (e.g. `media/`) and embedded with `<video src="media/clip.mp4" poster="media/clip.jpg" controls
+preload="none" playsinline>` plus a sentence of fallback text. `preload="none"` with a poster keeps the page inside its
+weight budget: the browser fetches the film only when it is played. Use mp4 for a site (every browser plays it), give
+the element a width and height so the layout does not jump, and never autoplay with sound. A short muted loop
+(`muted autoplay loop playsinline`) is fine for a small decorative animation, but then its full size counts against
+the budget.
+
 ## What the site must survive
 
 - **pages** — every page in the spec exists.

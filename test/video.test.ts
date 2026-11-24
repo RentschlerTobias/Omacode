@@ -987,7 +987,10 @@ test("a scene's clip becomes a video element, a picture stays an image", async (
   await adapter.prepare(spec, ctx)
   const html = readFileSync(join(job, "index.html"), "utf8")
   // An `<img>` pointing at an mp4 is a broken image that the engine would encode into the film without complaint.
-  assert.match(html, /<video class="asset" src="clips\/a\.mp4" muted autoplay loop playsinline><\/video>/)
+  // A clip is timed media the engine owns: it starts with its scene and lasts its slot; untimed, hyperframes lint
+  // refused it and every film with a clip failed its checks (2026-11-24).
+  assert.match(html, /<video id="asset-clip" class="asset" src="clips\/a\.mp4" data-start="0" data-duration="\d+(\.\d+)?" muted playsinline><\/video>/)
+  assert.equal(/<video[^>]*\b(autoplay|loop)\b/.test(html), false, "the browser does not play the clip on its own")
   assert.match(html, /<img class="asset" src="clips\/a\.png"/)
   assert.equal(html.includes('<img class="asset" src="clips/a.mp4"'), false)
 })
@@ -1558,3 +1561,10 @@ function portClosed(port: number, ms = 15_000): Promise<boolean> {
     attempt()
   })
 }
+
+test("the video skill's example spec is a spec the parser accepts", () => {
+  const skill = readFileSync(new URL("../packages/micromanager/skills/video/SKILL.md", import.meta.url), "utf8")
+  const example = /```json\n([\s\S]*?)```/.exec(skill)?.[1]
+  assert.ok(example, "the skill has a json example")
+  assert.deepEqual(parseSpec("video", JSON.parse(example)).errors, [])
+})

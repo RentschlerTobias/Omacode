@@ -70,7 +70,7 @@ npm install                    # the sandbox runtime
 ./install.sh --remove          # remove it again; --dry-run says what would go, --purge also removes tools and services
 ```
 
-**What install.sh installs.** What omacode cannot run without: Node 22.12 or newer, OpenCode, git and (on Linux)
+**What install.sh installs.** What omacode cannot run without: Node 22.18 or newer, OpenCode, git and (on Linux)
 bubblewrap. A missing one is named with the command that installs it (pacman, apt, dnf or brew; OpenCode with its own
 installer) and installed after one question. Then it asks about the optional system packages, which need sudo and so a
 terminal: Chromium (the deck and site checks open a real browser) and ffmpeg (videos).

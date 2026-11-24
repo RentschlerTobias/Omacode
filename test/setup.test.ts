@@ -106,7 +106,7 @@ test("the package manager is found, and each need becomes one install command or
   assert.deepEqual(debian.commands.map((c) => c.cmd), ["sudo", "sh"])
   assert.deepEqual(debian.commands[0]!.args, ["apt-get", "install", "-y", "chromium"])
   assert.match(debian.commands[1]!.args.join(" "), new RegExp(`astral\\.sh/uv/${UV_PIN.replace(/\./g, "\\.")}/install\\.sh`))
-  assert.match(debian.manual.join(), /Node 22\.12/)
+  assert.match(debian.manual.join(), /Node 22\.18/)
 
   const mac = systemInstall("brew", ["git", "ffmpeg"])
   assert.deepEqual(mac.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["brew install git ffmpeg"], "brew needs no sudo")

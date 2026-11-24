@@ -73,7 +73,7 @@ export function realProbe(run: Exec, env: NodeJS.ProcessEnv = process.env): Prob
 }
 
 // The Node the plugin's packages declare (engines), and the OpenCode it is tested against.
-export const MIN_NODE = "22.12.0"
+export const MIN_NODE = "22.18.0"
 export const TESTED_OPENCODE = "2.2.5"
 const GB = 1024 ** 3
 
@@ -168,7 +168,7 @@ export function systemInstall(manager: Manager | undefined, needs: readonly Syst
     const pkg = manager ? PACKAGES[manager][need] : undefined
     if (pkg) packages.push(...pkg.split(" "))
     else if (need === "uv") commands.push({ say: `uv ${UV_PIN} with its own installer (astral.sh)`, cmd: "sh", args: ["-c", `curl -LsSf https://astral.sh/uv/${UV_PIN}/install.sh | sh`] })
-    else if (need === "node") manual.push("Node 22.12 or newer: https://nodejs.org (your package manager's is older)")
+    else if (need === "node") manual.push("Node 22.18 or newer: https://nodejs.org (your package manager's is older)")
     else manual.push(`${need}: install it with your package manager`)
   }
   if (packages.length) {

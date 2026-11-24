@@ -245,8 +245,12 @@ function styleFor(width: number, height: number): string {
         overflow-wrap: anywhere;
       }
       .scene .asset {
+        /* the scene's main picture: as large as the title above and the captions below leave room for */
+        flex: 0 1 auto;
+        min-height: 0;
+        align-self: center;
         max-width: 100%;
-        max-height: 55%;
+        max-height: 64%;
         object-fit: contain;
         border-radius: ${Math.round(height * 0.03)}px;
       }
@@ -279,13 +283,15 @@ function sceneHtml(scene: VideoScene, spec: VideoSpec, index: number, source: Sc
   if (source.title !== undefined) lines.push(`        <h2>${escapeHtml(source.title)}</h2>`)
   if (source.asset !== undefined) {
     // A scene's asset may be a picture or a clip, and the element says which: an `<img>` pointing at an mp4 renders as a
-    // broken image, and the engine would happily encode that into the film. A clip plays muted from its start, which is
-    // what a composition captures frame by frame; the scene's own start and duration still decide where it is seen.
+    // broken image, and the engine would happily encode that into the film. A clip is timed media the engine owns: it
+    // starts with its scene (`data-start` counts from the scene's own clock) and lasts the scene's slot, muted, with no
+    // autoplay or loop of the browser's own. Untimed, `hyperframes lint` refused it, so every film with a clip failed its
+    // checks (2026-11-24); the engine seeks a timed clip frame by frame, which is what the render captures.
     const file = source.asset.slice(source.asset.lastIndexOf("/") + 1).toLowerCase()
     const clip = [".mp4", ".webm", ".mov"].some((extension) => file.endsWith(extension))
     lines.push(
       clip
-        ? `        <video class="asset" src="${escapeHtml(source.asset)}" muted autoplay loop playsinline></video>`
+        ? `        <video id="asset-${source.id}" class="asset" src="${escapeHtml(source.asset)}" data-start="0" data-duration="${numberText(scene.duration)}" muted playsinline></video>`
         : `        <img class="asset" src="${escapeHtml(source.asset)}" alt="${escapeHtml(source.title ?? "")}" />`,
     )
   }
