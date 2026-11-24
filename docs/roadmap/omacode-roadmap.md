@@ -762,8 +762,10 @@ licenses.
 - [ ] **A6-T1 — Extend, don't rewrite.** `install.sh` already does one-command install, `--embedding`, a user service,
   TUI wiring and `--remove`. Extend it; `npx @omacode/setup` is the front door.
 - *Status 2026-11-24 (1.0 slice):* `packages/micromanager/src/setup.ts` + CLI `preflight | doctor | setup <profile>|ask |
-  uninstall [--purge] [--dry-run]`; install.sh runs the preflight, asks Minimal/Coding/Creator/Full (each states its
-  download first), `--profile`, `--doctor`, `--remove` via the CLI; comfy-mcp 0.10.0 is a fourth creative tool
+  uninstall [--purge] [--dry-run]`; install.sh installs what is required and missing after one question (Node in the shell; git, bubblewrap via
+  pacman/apt/dnf/brew; OpenCode with its installer), then asks each optional part on its own with its purpose and
+  download (services, Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp, Manim; uv comes along when needed);
+  `--profile`/`--with` give the answers up front; `--doctor`, `--remove` via the CLI; comfy-mcp 0.10.0 is a fourth creative tool
   (uv tool + `mcp.servers.comfy`). Doctor calls `hyperframes doctor` and counts only what decks and videos need.
   Walked in a throwaway XDG profile: install → doctor → remove. Licence manifest (T9): `licenses/components.json` →
   `npm run licenses` → `licenses/third-party.json` + `THIRD_PARTY.md` (SPDX, territory, commercial use of output,

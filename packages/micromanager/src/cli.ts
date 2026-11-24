@@ -48,7 +48,8 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
-import { failed as anyFailed, formatChecks, machineChecks, paths as setupPaths, pluginChecks, preflight, PROFILE_IDS, PROFILES, profilePlan, realProbe, toolChecks, uninstallPlan, type ProfileId } from "./setup.ts"
+import { failed as anyFailed, formatChecks, isPresent, machineChecks, OFFER_IDS, OFFERS, OPENCODE_INSTALL, packageManager, paths as setupPaths, planFor, pluginChecks, preflight, PROFILE_IDS, PROFILES, realProbe, requiredNeeds, systemInstall, toolChecks, uninstallPlan, type Command, type OfferId, type Present, type ProfileId } from "./setup.ts"
+import { findChromium } from "@omacode/artifact/chromium"
 import { userConfigPath } from "@omacode/core/paths"
 import { readConfig as readServicesConfig, registerComfy, unitPath } from "./services.ts"
 import { hashFile, modelFiles } from "./comfy-gate.ts"
@@ -631,29 +632,115 @@ async function doctorCommand(): Promise<number> {
   return bad ? 1 : 0
 }
 
-// `setup <minimal|coding|creator|full> [--gpu <id>]` installs what the profile names and is not there yet; `setup ask`
-// shows the profiles and asks which (install.sh's question when it runs in a terminal).
+// `setup required [--yes]`: what the plugin cannot run without, installed after one question (setup.ts).
+// `setup ask`: each optional part asked on its own. `setup <minimal|coding|creator|full> [--gpu <id>]`: the same
+// answers given up front. Each runs the system packages first, then the services, then the creative tools.
 async function setupCommand(args: string[]): Promise<number> {
-  let id = args[0] as ProfileId | "ask" | undefined
-  if (id === "ask") {
-    if (!process.stdin.isTTY) {
-      console.log("no terminal: the Minimal profile (./install.sh --profile coding|creator|full installs more)")
+  const probe = realProbe(exec)
+  const tty = Boolean(process.stdin.isTTY && process.stdout.isTTY)
+  const yesAll = args.includes("--yes")
+  const ask = async (question: string, byDefault: boolean): Promise<boolean> => {
+    if (!tty) return byDefault && yesAll
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    try {
+      const a = (await rl.question(`${question} ${byDefault ? "[Y/n]" : "[y/N]"} `)).trim()
+      return a === "" ? byDefault : /^(y|yes|j|ja)$/i.test(a)
+    } finally {
+      rl.close()
+    }
+  }
+  const run = (c: Command): boolean => {
+    console.log(`→ ${c.say}\n  ${[c.cmd, ...c.args].join(" ")}`)
+    return spawnSync(c.cmd, [...c.args], { stdio: "inherit" }).status === 0
+  }
+  // uv's own installer puts it in ~/.local/bin, which this process may not have on its PATH yet.
+  process.env.PATH = `${join(process.env.HOME ?? "", ".local", "bin")}:${process.env.PATH ?? ""}`
+
+  if (args[0] === "required") {
+    const checks = await preflight(probe)
+    console.log(formatChecks(checks))
+    const needs = requiredNeeds(probe)
+    const noOpencode = checks.some((c) => c.area === "opencode" && c.level === "fail")
+    if (!needs.length && !noOpencode) return anyFailed(checks) ? 1 : 0
+    const sys = systemInstall(packageManager(probe), needs)
+    const commands = [...sys.commands, ...(noOpencode ? [OPENCODE_INSTALL] : [])]
+    console.log(`\nNeeded and missing: ${[...needs, ...(noOpencode ? ["opencode"] : [])].join(", ")}`)
+    for (const c of commands) console.log(`  ${c.say}: ${[c.cmd, ...c.args].join(" ")}`)
+    for (const m of sys.manual) console.log(`  install by hand: ${m}`)
+    if (commands.length && (await ask("Install them now?", true))) {
+      for (const c of commands) if (!run(c)) console.error(`  "${c.say}" failed`)
+    } else if (commands.length) {
+      console.log("Not installed. Without git there are no micromanager jobs, without bubblewrap no sandbox for plan mode.")
+    }
+    const after = await preflight(realProbe(exec))
+    const blocking = after.filter((c) => c.level === "fail")
+    if (blocking.length) console.log(formatChecks(blocking))
+    return blocking.length ? 1 : 0
+  }
+
+  const there: Present = { services: existsSync(unitPath()), which: probe.which, chromium: Boolean(findChromium()), tools: await detectTools(exec) }
+  let chosen: OfferId[] = []
+  if (args[0] === "ask") {
+    if (!tty) {
+      console.log("no terminal: no optional part asked about (./install.sh --profile coding|creator|full, or --with <tools>)")
       return 0
     }
-    console.log("\nWhat should omacode install?")
-    PROFILE_IDS.forEach((p, i) => console.log(`  ${i + 1}) ${PROFILES[p].title}: ${PROFILES[p].what}.\n     Downloads: ${PROFILES[p].download}.`))
-    const rl = createInterface({ input: process.stdin, output: process.stdout })
-    const answer = (await rl.question(`Profile [1-${PROFILE_IDS.length}, default 1]: `)).trim()
-    rl.close()
-    id = PROFILE_IDS[Math.max(0, Math.min(PROFILE_IDS.length - 1, (Number(answer) || 1) - 1))]!
-  }
-  if (!id || !(PROFILE_IDS as readonly string[]).includes(id)) {
-    console.error(`usage: setup <${PROFILE_IDS.join("|")}> [--gpu <id>] | ask`)
+    console.log("\nOptional parts. Each is installed only if you say yes; all can be added later with ./install.sh --tools.")
+    for (const id of OFFER_IDS) {
+      const o = OFFERS[id]
+      if (isPresent(id, there)) {
+        console.log(`\n${o.title}: already there.`)
+        continue
+      }
+      if (o.after && !isPresent(o.after, there) && !chosen.includes(o.after)) continue
+      console.log(`\n${o.title}: ${o.what}. ${o.size.charAt(0).toUpperCase()}${o.size.slice(1)}.`)
+      if (await ask(`  Install ${o.title}?`, false)) chosen.push(id)
+    }
+  } else if (args[0] === "with") {
+    const names = (args[1] ?? "").split(",").map((x) => x.trim()).filter(Boolean)
+    const bad = names.filter((n) => !(OFFER_IDS as readonly string[]).includes(n))
+    if (!names.length || bad.length) {
+      console.error(`usage: setup with <${OFFER_IDS.join("|")}>[,…]${bad.length ? `\nunknown: ${bad.join(", ")}` : ""}`)
+      return 1
+    }
+    chosen = names as OfferId[]
+  } else if ((PROFILE_IDS as readonly string[]).includes(args[0] ?? "")) {
+    const profile = PROFILES[args[0] as ProfileId]
+    chosen = [...profile.offers]
+    console.log(`${profile.title}: ${chosen.length ? chosen.map((id) => OFFERS[id].title).join(", ") : "only the plugin"} (downloads ${profile.download}).`)
+  } else {
+    console.error(`usage: setup required [--yes] | ask | with <parts> | <${PROFILE_IDS.join("|")}> [--gpu <id>]`)
     return 1
   }
-  const plan = profilePlan(id, await detectTools(exec))
-  console.log(`${PROFILES[id].title}: ${PROFILES[id].what}.`)
+
+  const plan = planFor(chosen, there)
+  if (!plan.system.length && !plan.services && !plan.tools.length) {
+    console.log("nothing to install")
+    return 0
+  }
+  if (plan.system.includes("uv") && !chosen.includes("services") && chosen.length) console.log("uv is needed for that and is installed too.")
+  // ComfyUI's device: asked in a terminal, else --gpu, else the first one found.
+  let gpu: Gpu | undefined
+  if (plan.tools.includes("comfyui")) {
+    const devices = await toolGpus(exec)
+    const wanted = flag(args, "gpu")
+    gpu = wanted ? devices.find((g) => g.id === wanted) : devices[0]
+    if (args[0] === "ask" && devices.length > 1) {
+      devices.forEach((g, i) => console.log(`  ${i + 1}) ${g.name}${g.note ? ` — ${g.note}` : ""}`))
+      const rl = createInterface({ input: process.stdin, output: process.stdout })
+      const answer = (await rl.question(`  Run ComfyUI on [1-${devices.length}, default 1]: `)).trim()
+      rl.close()
+      gpu = devices[Math.max(0, Math.min(devices.length - 1, (Number(answer) || 1) - 1))]
+    }
+  }
+
   let failedSteps = 0
+  const sys = systemInstall(packageManager(probe), plan.system)
+  for (const m of sys.manual) {
+    console.log(`install by hand: ${m}`)
+    failedSteps++
+  }
+  for (const c of sys.commands) failedSteps += run(c) ? 0 : 1
   if (plan.services) {
     console.log("→ omacode-services (the decider and the embedding service)")
     const r = await installServices(exec, { log: (line) => console.log(`  ${line}`) })
@@ -662,13 +749,7 @@ async function setupCommand(args: string[]): Promise<number> {
       failedSteps++
     }
   }
-  if (plan.tools.length) {
-    const found = await toolGpus(exec)
-    const wanted = flag(args, "gpu")
-    const gpu = wanted ? found.find((g) => g.id === wanted) : found[0]
-    for (const name of plan.tools) failedSteps += (await installTool(name, name === "comfyui" ? gpu : undefined)) ? 0 : 1
-  }
-  if (!plan.services && !plan.tools.length) console.log("nothing more to install for this profile")
+  for (const name of plan.tools) failedSteps += (await installTool(name, name === "comfyui" ? gpu : undefined)) ? 0 : 1
   return failedSteps ? 1 : 0
 }
 

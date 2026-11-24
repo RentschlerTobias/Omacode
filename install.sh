@@ -3,18 +3,20 @@
 # without a checkout use OpenCode's own installer, which needs nothing from this script:
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
-#   ./install.sh            check the machine (preflight), link packages/micromanager/src/plugin.ts into
-#                           ~/.config/opencode/plugins/omacode.ts, write the TUI package ~/.config/opencode/omacode-tui/
-#                           into the "plugins" of ~/.config/opencode/cli.json, then ask which profile to install:
-#                             Minimal  the plugin and the TUI
-#                             Coding   + omacode-services (the local decider and the embedding service)
-#                             Creator  + HyperFrames, ComfyUI (no model) and comfy-mcp
-#                             Full     + Manim
-#                           each says what it downloads before anything is fetched (packages/micromanager/src/setup.ts)
-#   ./install.sh --profile minimal|coding|creator|full [--gpu nvidia|amd|amd-igpu|cpu]   that profile, without asking
-#   ./install.sh --with hyperframes,manim,comfyui,comfy-mcp [--gpu …]   those tools, without asking
-#   ./install.sh --yes | --no-tools | --skip-all   ask nothing, install only the plugin (Minimal)
-#   ./install.sh --tools    only the per-tool question round, for a plugin already installed
+#   ./install.sh            install what omacode needs and is missing (Node 22.12+, OpenCode, git, bubblewrap: one
+#                           question, then the package manager or the project's own installer), link
+#                           packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts, write the TUI
+#                           package ~/.config/opencode/omacode-tui/ into the "plugins" of ~/.config/opencode/cli.json,
+#                           then ask about each optional part on its own, with what it is for and what it downloads:
+#                           the local services, Chromium, ffmpeg, HyperFrames, ComfyUI (and its GPU), comfy-mcp, Manim.
+#                           A part that needs uv brings uv along (packages/micromanager/src/setup.ts).
+#   ./install.sh --profile minimal|coding|creator|full [--gpu nvidia|amd|amd-igpu|cpu]   the optional answers given up
+#                           front: coding = the services; creator = + Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp;
+#                           full = + Manim
+#   ./install.sh --with services,chromium,ffmpeg,hyperframes,comfyui,comfy-mcp,manim [--gpu …]   those parts, without
+#                           asking (uv comes along when one needs it)
+#   ./install.sh --yes | --no-tools | --skip-all   ask nothing: install what is needed, nothing optional
+#   ./install.sh --tools    only the optional questions, for a plugin already installed
 #   ./install.sh --doctor   the installed state, each finding with its fix
 #   ./install.sh --remove [--purge] [--dry-run]   remove the plugin, the TUI package and omacode-services, and say what
 #                           stays (tools and models unless --purge; your journal, memory and settings always)
@@ -68,7 +70,7 @@ cli_plugin() {
 CLI_TS="$REPO/packages/micromanager/src/cli.ts"
 
 # The optional parts: --profile, --with, --gpu, --yes and --no-tools may follow the plain install.
-WITH=""; GPU=""; ASK=1; PROFILE=""; PURGE=""; DRY=""
+WITH=""; GPU=""; ASK=1; YES=""; PROFILE=""; PURGE=""; DRY=""
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[$i]}" in
@@ -78,7 +80,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --gpu=*) GPU="${args[$i]#--gpu=}" ;;
     --profile) PROFILE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
     --profile=*) PROFILE="${args[$i]#--profile=}" ;;
-    --yes|-y|--no-tools|--skip-all) ASK=0 ;;
+    --yes|-y|--no-tools|--skip-all) ASK=0; YES=--yes ;;
     --purge) PURGE=--purge ;;
     --dry-run) DRY=--dry-run ;;
   esac
@@ -88,15 +90,43 @@ optional() {
   if [[ -n "$PROFILE" ]]; then
     node "$CLI_TS" setup "$PROFILE" ${GPU:+--gpu "$GPU"}
   elif [[ -n "$WITH" ]]; then
-    node "$CLI_TS" tools install "$WITH" ${GPU:+--gpu "$GPU"}
+    node "$CLI_TS" setup with "$WITH" ${GPU:+--gpu "$GPU"}
   elif [[ "$ASK" == 1 && -t 0 && -t 1 ]]; then
-    node "$CLI_TS" setup ask
+    node "$CLI_TS" setup ask ${GPU:+--gpu "$GPU"}
   else
-    echo "Minimal: only the plugin (./install.sh --profile coding|creator|full adds more)"
+    echo "no optional part installed (./install.sh --tools asks, --profile coding|creator|full installs a set)"
   fi
 }
+
+# A yes/no question in a terminal; without one, --yes answers yes and nothing else does.
+ask_yes() {
+  if [[ -t 0 && -t 1 ]]; then
+    read -r -p "$1 [Y/n] " answer
+    [[ -z "$answer" || "$answer" =~ ^([yY]|[jJ]) ]]
+  else
+    [[ -n "$YES" ]]
+  fi
+}
+
+# Node runs everything below, so it is checked here, in the shell: 22.12 or newer, offered from the package manager.
+node_ok() {
+  command -v node >/dev/null && node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 12) ? 0 : 1)'
+}
+ensure_node() {
+  node_ok && return 0
+  echo "omacode needs Node 22.12 or newer$(command -v node >/dev/null && echo ", found $(node --version)")."
+  local cmd=()
+  if command -v pacman >/dev/null; then cmd=(sudo pacman -S --needed --noconfirm nodejs npm)
+  elif command -v dnf >/dev/null; then cmd=(sudo dnf install -y nodejs)
+  elif command -v brew >/dev/null; then cmd=(brew install node)
+  fi
+  if [[ ${#cmd[@]} -gt 0 ]] && ask_yes "Install it with: ${cmd[*]}?"; then "${cmd[@]}" || true; fi
+  node_ok || { echo "install Node 22.12 or newer (https://nodejs.org), then run ./install.sh again" >&2; exit 1; }
+}
+
 if [[ "${1:-}" == "--tools" ]]; then
-  node "$CLI_TS" tools ask
+  ensure_node
+  node "$CLI_TS" setup ask ${GPU:+--gpu "$GPU"}
   exit $?
 fi
 if [[ "${1:-}" == "--doctor" ]]; then
@@ -136,8 +166,9 @@ if [[ "${1:-}" == "--remove" ]]; then
   exit $?
 fi
 
-# Before anything is written: does this machine have what omacode needs?
-node "$CLI_TS" preflight || { echo "preflight failed: fix the ✗ lines above and run ./install.sh again" >&2; exit 1; }
+# Before anything is written: what omacode needs, installed after one question when it is missing.
+ensure_node
+node "$CLI_TS" setup required $YES || { echo "omacode cannot run here yet: see the ✗ lines above, then run ./install.sh again" >&2; exit 1; }
 
 mkdir -p "$PLUGINS"
 # The link's names before: jev-micromanager.ts (until 2026-10-19), micromanager.ts (until 2026-11-23). Two links to the

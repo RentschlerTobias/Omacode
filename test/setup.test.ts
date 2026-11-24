@@ -14,11 +14,18 @@ import {
   machineChecks,
   pluginChecks,
   preflight,
+  OFFER_IDS,
+  OFFERS,
+  packageManager,
+  planFor,
   PROFILES,
-  profilePlan,
+  requiredNeeds,
+  systemInstall,
+  UV_PIN,
   toolChecks,
   uninstallPlan,
   type Paths,
+  type Present,
   type Probe,
 } from "../packages/micromanager/src/setup.ts"
 import type { Exec } from "../packages/micromanager/src/worktree/git.ts"
@@ -82,13 +89,58 @@ test("preflight: an old Node or no OpenCode blocks the install; missing tools an
   assert.equal(levelOf(small, "disk"), "warn")
 })
 
-test("profiles say what they download, and a profile does not install a tool that is already there", () => {
-  for (const p of Object.values(PROFILES)) assert.ok(p.download.length > 0, p.title)
-  assert.deepEqual(profilePlan("minimal", []), { services: false, tools: [] })
-  assert.deepEqual(profilePlan("coding", []), { services: true, tools: [] })
-  const found: Found[] = [{ name: "hyperframes", found: true, version: PINS.hyperframes }, { name: "comfyui", found: false }]
-  assert.deepEqual(profilePlan("creator", found), { services: true, tools: ["comfyui", "comfy-mcp"] })
-  assert.deepEqual(profilePlan("full", found).tools, ["comfyui", "comfy-mcp", "manim"])
+test("the package manager is found, and each need becomes one install command or a line for the user", () => {
+  const has = (...names: string[]) => ({ platform: "linux" as const, which: (n: string) => (names.includes(n) ? `/usr/bin/${n}` : undefined) })
+  assert.equal(packageManager(has("pacman")), "pacman")
+  assert.equal(packageManager(has("apt-get")), "apt")
+  assert.equal(packageManager(has("dnf")), "dnf")
+  assert.equal(packageManager(has()), undefined)
+  assert.equal(packageManager({ platform: "darwin", which: (n) => (n === "brew" ? "/opt/homebrew/bin/brew" : undefined) }), "brew")
+
+  const arch = systemInstall("pacman", ["git", "bubblewrap", "uv"])
+  assert.deepEqual(arch.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["sudo pacman -S --needed --noconfirm git bubblewrap uv"])
+  assert.deepEqual(arch.manual, [])
+
+  // apt has no uv and an old Node: uv comes from its own pinned installer, Node is the user's to install.
+  const debian = systemInstall("apt", ["chromium", "uv", "node"])
+  assert.deepEqual(debian.commands.map((c) => c.cmd), ["sudo", "sh"])
+  assert.deepEqual(debian.commands[0]!.args, ["apt-get", "install", "-y", "chromium"])
+  assert.match(debian.commands[1]!.args.join(" "), new RegExp(`astral\\.sh/uv/${UV_PIN.replace(/\./g, "\\.")}/install\\.sh`))
+  assert.match(debian.manual.join(), /Node 22\.12/)
+
+  const mac = systemInstall("brew", ["git", "ffmpeg"])
+  assert.deepEqual(mac.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["brew install git ffmpeg"], "brew needs no sudo")
+  assert.match(systemInstall(undefined, ["git"]).manual.join(), /git: install it/)
+})
+
+test("required: git everywhere, bubblewrap on Linux, and nothing once they are there", () => {
+  const none = (platform: NodeJS.Platform) => ({ platform, which: () => undefined })
+  assert.deepEqual(requiredNeeds(none("linux")), ["git", "bubblewrap"])
+  assert.deepEqual(requiredNeeds(none("darwin")), ["git"])
+  assert.deepEqual(requiredNeeds({ platform: "linux", which: (n) => `/usr/bin/${n}` }), [])
+})
+
+const present = (over: Partial<Present> = {}): Present => ({ services: false, chromium: false, tools: [], which: () => undefined, ...over })
+
+test("the answers become a plan: parts already there are dropped, comfy-mcp needs ComfyUI, uv comes along when needed", () => {
+  assert.deepEqual(planFor([], present()), { system: [], services: false, tools: [] })
+  assert.deepEqual(planFor(["chromium", "hyperframes"], present()), { system: ["chromium"], services: false, tools: ["hyperframes"] }, "HyperFrames needs npm, not uv")
+  assert.deepEqual(planFor(["services"], present()), { system: ["uv"], services: true, tools: [] })
+  assert.deepEqual(planFor(["services"], present({ which: (n) => (n === "uv" ? "/usr/bin/uv" : undefined) })).system, [], "uv already there")
+  assert.deepEqual(planFor(["comfy-mcp"], present()).tools, [], "comfy-mcp without ComfyUI is dropped")
+  assert.deepEqual(planFor(["comfyui", "comfy-mcp"], present()).tools, ["comfyui", "comfy-mcp"])
+  const withComfy = present({ tools: [{ name: "comfyui", found: true, version: "0.44.2" }], services: true, chromium: true })
+  assert.deepEqual(planFor(["services", "chromium", "comfyui", "comfy-mcp"], withComfy), { system: ["uv"], services: false, tools: ["comfy-mcp"] })
+})
+
+test("every offer says what it is for and what it downloads, and every profile is a set of offers", () => {
+  for (const id of OFFER_IDS) {
+    assert.ok(OFFERS[id].what.length > 10 && OFFERS[id].size.length > 0, id)
+  }
+  assert.deepEqual(PROFILES.minimal.offers, [])
+  assert.deepEqual(PROFILES.coding.offers, ["services"])
+  assert.ok(PROFILES.full.offers.includes("manim") && !PROFILES.creator.offers.includes("manim"))
+  for (const p of Object.values(PROFILES)) for (const o of p.offers) assert.ok((OFFER_IDS as readonly string[]).includes(o))
 })
 
 function layout(t: TestContext): Paths {

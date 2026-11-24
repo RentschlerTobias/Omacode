@@ -126,30 +126,150 @@ export async function preflight(p: Probe): Promise<Check[]> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Profiles: what install.sh offers. Each says what it installs and roughly what it downloads, before anything runs.
+// What install.sh installs. Required: what the plugin cannot run without; a missing one is installed after one
+// question. Optional: each part asked on its own, with what it is for and what it downloads; a part that needs uv
+// brings uv along. A profile is the same answers given up front.
 
+export type Manager = "pacman" | "apt" | "dnf" | "brew"
+export type SystemNeed = "git" | "bubblewrap" | "chromium" | "ffmpeg" | "uv" | "node"
+
+// The package of each need per package manager. A need a manager does not carry is installed another way (uv) or
+// named for the user to install (Node on apt, whose nodejs is older than the plugin needs).
+export const PACKAGES: Readonly<Record<Manager, Partial<Record<SystemNeed, string>>>> = {
+  pacman: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg", uv: "uv", node: "nodejs npm" },
+  apt: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg" },
+  dnf: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg-free", uv: "uv", node: "nodejs" },
+  brew: { git: "git", ffmpeg: "ffmpeg", uv: "uv", node: "node" },
+}
+
+// uv's own installer where the package manager has no uv, pinned to a release older than two weeks (2026-10-20).
+export const UV_PIN = "0.13.4"
+
+export function packageManager(p: Pick<Probe, "which" | "platform">): Manager | undefined {
+  if (p.platform === "darwin") return p.which("brew") ? "brew" : undefined
+  if (p.which("pacman")) return "pacman"
+  if (p.which("apt-get")) return "apt"
+  if (p.which("dnf")) return "dnf"
+  return undefined
+}
+
+export interface Command {
+  readonly say: string
+  readonly cmd: string
+  readonly args: readonly string[]
+}
+
+// The commands that install system needs, and what is left for the user to install by hand.
+export function systemInstall(manager: Manager | undefined, needs: readonly SystemNeed[]): { commands: Command[]; manual: string[] } {
+  const commands: Command[] = []
+  const manual: string[] = []
+  const packages: string[] = []
+  for (const need of [...new Set(needs)]) {
+    const pkg = manager ? PACKAGES[manager][need] : undefined
+    if (pkg) packages.push(...pkg.split(" "))
+    else if (need === "uv") commands.push({ say: `uv ${UV_PIN} with its own installer (astral.sh)`, cmd: "sh", args: ["-c", `curl -LsSf https://astral.sh/uv/${UV_PIN}/install.sh | sh`] })
+    else if (need === "node") manual.push("Node 22.12 or newer: https://nodejs.org (your package manager's is older)")
+    else manual.push(`${need}: install it with your package manager`)
+  }
+  if (packages.length) {
+    const sudo = (cmd: string, args: string[]): Command => ({ say: `${manager}: ${packages.join(" ")}`, cmd: "sudo", args: [cmd, ...args] })
+    if (manager === "pacman") commands.unshift(sudo("pacman", ["-S", "--needed", "--noconfirm", ...packages]))
+    else if (manager === "apt") commands.unshift(sudo("apt-get", ["install", "-y", ...packages]))
+    else if (manager === "dnf") commands.unshift(sudo("dnf", ["install", "-y", ...packages]))
+    else if (manager === "brew") commands.unshift({ say: `brew: ${packages.join(" ")}`, cmd: "brew", args: ["install", ...packages] })
+  }
+  return { commands, manual }
+}
+
+export const OPENCODE_INSTALL: Command = { say: "OpenCode with its own installer (opencode.ai)", cmd: "sh", args: ["-c", "curl -fsSL https://opencode.ai/install | bash"] }
+
+// What the plugin cannot run without (Node is checked by install.sh itself, before any of this runs).
+export function requiredNeeds(p: Pick<Probe, "which" | "platform">): SystemNeed[] {
+  const needs: SystemNeed[] = []
+  if (!p.which("git")) needs.push("git")
+  if (p.platform === "linux" && !p.which("bwrap")) needs.push("bubblewrap")
+  return needs
+}
+
+export const OFFER_IDS = ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "manim"] as const
+export type OfferId = (typeof OFFER_IDS)[number]
+
+export interface Offer {
+  readonly title: string
+  readonly what: string
+  readonly size: string
+  // a system package this is, a creative tool this is, or the services
+  readonly system?: SystemNeed
+  readonly tool?: ToolName
+  readonly needsUv?: boolean
+  // only offered when this other part is there or chosen
+  readonly after?: OfferId
+}
+
+export const OFFERS: Readonly<Record<OfferId, Offer>> = {
+  services: { title: "Local services", what: "a decider on this machine answers the guards' questions, and memory searches by meaning (omacode-services)", size: "about 2 GB now, the models on first use", needsUv: true },
+  chromium: { title: "Chromium", what: "the deck and site checks open the result in a real browser", size: "about 300 MB", system: "chromium" },
+  ffmpeg: { title: "ffmpeg", what: "videos are encoded with it", size: "about 100 MB", system: "ffmpeg" },
+  hyperframes: { title: TOOL_INFO.hyperframes.title, what: TOOL_INFO.hyperframes.what, size: TOOL_INFO.hyperframes.size, tool: "hyperframes" },
+  comfyui: { title: TOOL_INFO.comfyui.title, what: TOOL_INFO.comfyui.what, size: TOOL_INFO.comfyui.size, tool: "comfyui", needsUv: true },
+  "comfy-mcp": { title: TOOL_INFO["comfy-mcp"].title, what: TOOL_INFO["comfy-mcp"].what, size: TOOL_INFO["comfy-mcp"].size, tool: "comfy-mcp", needsUv: true, after: "comfyui" },
+  manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, tool: "manim", needsUv: true },
+}
+
+// What is already on the machine, so it is not offered again.
+export interface Present {
+  readonly services: boolean
+  readonly which: (name: string) => string | undefined
+  readonly chromium: boolean
+  readonly tools: readonly Found[]
+}
+
+export function isPresent(id: OfferId, there: Present): boolean {
+  const offer = OFFERS[id]
+  if (id === "services") return there.services
+  if (id === "chromium") return there.chromium
+  if (offer.system) return Boolean(there.which(offer.system))
+  return there.tools.some((t) => t.name === offer.tool && t.found)
+}
+
+export interface Plan {
+  readonly system: readonly SystemNeed[]
+  readonly services: boolean
+  readonly tools: readonly ToolName[]
+}
+
+// The answers turned into what to install: parts already there are dropped, a part offered only after another one is
+// dropped without it, and uv is added when a chosen part needs it and it is missing.
+export function planFor(chosen: readonly OfferId[], there: Present): Plan {
+  const wanted = OFFER_IDS.filter((id) => chosen.includes(id) && !isPresent(id, there))
+  const kept = wanted.filter((id) => {
+    const after = OFFERS[id].after
+    return !after || isPresent(after, there) || wanted.includes(after)
+  })
+  const system: SystemNeed[] = kept.map((id) => OFFERS[id].system).filter((x): x is SystemNeed => Boolean(x))
+  if (kept.some((id) => OFFERS[id].needsUv) && !there.which("uv")) system.unshift("uv")
+  return {
+    system,
+    services: kept.includes("services"),
+    tools: kept.map((id) => OFFERS[id].tool).filter((x): x is ToolName => Boolean(x)),
+  }
+}
+
+// Profiles: the same answers given up front (install.sh --profile).
 export const PROFILE_IDS = ["minimal", "coding", "creator", "full"] as const
 export type ProfileId = (typeof PROFILE_IDS)[number]
 
 export interface Profile {
   readonly title: string
-  readonly what: string
-  readonly services: boolean
-  readonly tools: readonly ToolName[]
+  readonly offers: readonly OfferId[]
   readonly download: string
 }
 
 export const PROFILES: Readonly<Record<ProfileId, Profile>> = {
-  minimal: { title: "Minimal", what: "the plugin and the TUI; every question the plugin cannot decide goes to you", services: false, tools: [], download: "nothing" },
-  coding: { title: "Coding", what: "Minimal plus the local services: the decider answers the guards' questions, the embedding service lets memory search by meaning", services: true, tools: [], download: "about 2 GB (the decider's Python environment); its model and the embedding model on first use" },
-  creator: { title: "Creator", what: "Coding plus HyperFrames (decks, videos), ComfyUI (images, no model included) and comfy-mcp", services: true, tools: ["hyperframes", "comfyui", "comfy-mcp"], download: "about 8–12 GB (PyTorch for ComfyUI is most of it)" },
-  full: { title: "Full", what: "Creator plus Manim (math animations)", services: true, tools: ["hyperframes", "comfyui", "comfy-mcp", "manim"], download: "about 8–12 GB" },
-}
-
-// What a profile still has to install on this machine: tools already found are not installed again.
-export function profilePlan(id: ProfileId, found: readonly Found[]): { services: boolean; tools: ToolName[] } {
-  const there = new Set(found.filter((f) => f.found).map((f) => f.name))
-  return { services: PROFILES[id].services, tools: PROFILES[id].tools.filter((t) => !there.has(t)) }
+  minimal: { title: "Minimal", offers: [], download: "nothing" },
+  coding: { title: "Coding", offers: ["services"], download: "about 2 GB, models on first use" },
+  creator: { title: "Creator", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp"], download: "about 8–12 GB" },
+  full: { title: "Full", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "manim"], download: "about 8–12 GB" },
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

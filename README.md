@@ -64,33 +64,35 @@ From a checkout, for development (the symlink means the running server reads you
 git clone git@github.com:RentschlerTobias/Micromanager.git micromanager
 cd micromanager
 npm install                    # the sandbox runtime
-./install.sh                   # preflight, link the plugin and the TUI, then ask for a profile
-./install.sh --profile coding  # the same without asking (minimal | coding | creator | full)
+./install.sh                   # install what is missing, link the plugin and the TUI, ask about each optional part
+./install.sh --profile coding  # the optional answers given up front (minimal | coding | creator | full)
 ./install.sh --doctor          # the installed state, each finding with its fix
 ./install.sh --remove          # remove it again; --dry-run says what would go, --purge also removes tools and services
 ```
 
-**Profiles.** Before anything is written, `./install.sh` checks the machine (Node, OpenCode, git, uv, bubblewrap,
-Chromium, ffmpeg, RAM, disk) and stops on what blocks the plugin. Then, in a terminal, it asks what to install; each
-profile says what it downloads before anything is fetched:
+**What install.sh installs.** First what omacode cannot run without: Node 22.12 or newer, OpenCode, git and (on
+Linux) bubblewrap. A missing one is named with the command that installs it (pacman, apt, dnf or brew; OpenCode with
+its own installer), and installed after one question. Then each optional part is asked on its own, with what it is
+for and what it downloads; a part already there is skipped, and a part that needs uv brings uv along:
 
-| Profile | Installs | Downloads |
+| Part | For | Downloads |
 |---|---|---|
-| Minimal | the plugin and the TUI | nothing |
-| Coding | + omacode-services: the local decider and the embedding service | about 2 GB, models on first use |
-| Creator | + HyperFrames, ComfyUI (no model) and comfy-mcp | about 8–12 GB |
-| Full | + Manim | about 8–12 GB |
+| Local services | the decider answers the guards' questions; memory searches by meaning | about 2 GB, models on first use |
+| Chromium | the deck and site checks open the result in a real browser | about 300 MB |
+| ffmpeg | encoding videos | about 100 MB |
+| HyperFrames, ComfyUI, comfy-mcp, Manim | decks and videos, images, agents running ComfyUI, math animations | see below |
 
-`--yes` (or `--skip-all`) installs only the plugin. `./install.sh --remove` removes the plugin link, the TUI package
-and omacode-services and lists what it keeps: your journal, memory, model registry and settings always; the tools and
-the services' models unless `--purge`. `./install.sh --doctor` is `node packages/micromanager/src/cli.ts doctor`.
+`--yes` installs what is needed and nothing optional; `--with <parts>` and `--profile coding|creator|full` give the
+answers up front (coding: the services; creator: + Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp; full: + Manim).
+`./install.sh --remove` removes the plugin link, the TUI package and omacode-services and lists what it keeps: your
+journal, memory, model registry and settings always; the tools and the services' models unless `--purge`.
 
 **Licences.** [THIRD_PARTY.md](THIRD_PARTY.md) lists everything omacode installs, downloads or relies on: the licence
 of each, where it may be used, and whether what you make with it may be used commercially (`npm run licenses`
 regenerates it from `licenses/components.json`). Image models you add are checked by the model registry instead.
 
-**Optional creative tools.** `./install.sh --tools` asks about each tool the artifact adapters use, says whether it is
-already there, and installs it at a pinned version if you say yes, under the data directory
+**Creative tools.** `./install.sh --tools` asks the optional questions again later. Each tool is installed at a pinned
+version under the data directory
 (`~/.local/share/omacode/tools/`), never as a new folder in your home:
 
 | Tool | For | Installed as |
