@@ -25,8 +25,8 @@
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname as dir, resolve } from "node:path"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { dirname as dir, join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
 
 import { adopt, adoptCandidates } from "@omacode/context/adopt"
@@ -48,10 +48,12 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
+import { failed as anyFailed, formatChecks, machineChecks, paths as setupPaths, pluginChecks, preflight, PROFILE_IDS, PROFILES, profilePlan, realProbe, toolChecks, uninstallPlan, type ProfileId } from "./setup.ts"
+import { userConfigPath } from "@omacode/core/paths"
 import { readConfig as readServicesConfig, registerComfy, unitPath } from "./services.ts"
 import { hashFile, modelFiles } from "./comfy-gate.ts"
 import { MODEL_REGISTRY, readModelRegistry, registerModel, registryWith, resolveModel, TERRITORIES, type Territory } from "@omacode/artifact/models"
-import { comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
+import { addComfyMcp, comfyCandidates, comfyLaunch, comfyPython, comfyWorkspace, home, detect as detectTools, gpus as toolGpus, installSteps, TOOL_INFO, TOOL_NAMES, torchChecks, type Gpu, type Step, type ToolName } from "./creative-tools.ts"
 import { ENTITY_CONTEXTS, entityRows, normal, opencodeAsk, publicCases, relabel, synthesize, synthesizeEntities, TOPICS, trainingRows, type Case as GuardCase, type EntityCase } from "./synth.ts"
 
 function flag(args: readonly string[], name: string): string | undefined {
@@ -96,6 +98,10 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === "synth-entities") return await synthEntities(args)
   if (command === "tools") return await tools(args)
   if (command === "models") return await models(args)
+  if (command === "preflight") return await preflightCommand()
+  if (command === "doctor") return await doctorCommand()
+  if (command === "setup") return await setupCommand(args)
+  if (command === "uninstall") return await uninstallCommand(args)
   if (command === "services") {
     const [verb] = args
     if (verb === "status") {
@@ -481,6 +487,10 @@ async function tools(args: string[]): Promise<number> {
           }
           continue
         }
+        if (t.name === "comfy-mcp" && !there.some((x) => x.name === "comfyui" && x.found) && !picked.some((p) => p.name === "comfyui")) {
+          console.log("  skipped: it needs ComfyUI")
+          continue
+        }
         if (!(await yes(`  install ${info.title}?`))) continue
         if (t.name !== "comfyui") {
           picked.push({ name: t.name })
@@ -516,6 +526,10 @@ async function installTool(name: ToolName, gpu?: Gpu): Promise<boolean> {
       console.error(`${TOOL_INFO[name].title}: "${s.say}" failed${r.error ? ` (${r.error.message})` : ""}`)
       return false
     }
+  }
+  if (name === "comfy-mcp") {
+    console.log(`comfy-mcp installed. ${addComfyMcp(userConfigPath("opencode.json")).say}`)
+    return true
   }
   if (name !== "comfyui") {
     console.log(`${TOOL_INFO[name].title} installed`)
@@ -591,4 +605,97 @@ async function models(args: string[]): Promise<number> {
   }
   console.error("usage: models status | register <file name> --license <…> --territory <…> [--use <text>] [--name <name>]")
   return 1
+}
+
+// `preflight`: what this machine has before an install (setup.ts). Exit 1 when something blocks the install.
+async function preflightCommand(): Promise<number> {
+  const checks = await preflight(realProbe(exec))
+  console.log(formatChecks(checks))
+  return anyFailed(checks) ? 1 : 0
+}
+
+// `doctor`: the installed state, each finding with its fix.
+async function doctorCommand(): Promise<number> {
+  const probe = realProbe(exec)
+  const at = setupPaths(unitPath())
+  const checks = [
+    ...(await preflight(probe)),
+    ...pluginChecks(at),
+    ...(await machineChecks(probe, at)),
+    ...toolChecks(await detectTools(exec), at.opencodeJson),
+  ]
+  console.log(formatChecks(checks))
+  const bad = checks.filter((c) => c.level === "fail").length
+  const warn = checks.filter((c) => c.level === "warn").length
+  console.log(`\n${bad ? `${bad} problem${bad === 1 ? "" : "s"}` : "no problem"}${warn ? `, ${warn} warning${warn === 1 ? "" : "s"}` : ""}`)
+  return bad ? 1 : 0
+}
+
+// `setup <minimal|coding|creator|full> [--gpu <id>]` installs what the profile names and is not there yet; `setup ask`
+// shows the profiles and asks which (install.sh's question when it runs in a terminal).
+async function setupCommand(args: string[]): Promise<number> {
+  let id = args[0] as ProfileId | "ask" | undefined
+  if (id === "ask") {
+    if (!process.stdin.isTTY) {
+      console.log("no terminal: the Minimal profile (./install.sh --profile coding|creator|full installs more)")
+      return 0
+    }
+    console.log("\nWhat should omacode install?")
+    PROFILE_IDS.forEach((p, i) => console.log(`  ${i + 1}) ${PROFILES[p].title}: ${PROFILES[p].what}.\n     Downloads: ${PROFILES[p].download}.`))
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    const answer = (await rl.question(`Profile [1-${PROFILE_IDS.length}, default 1]: `)).trim()
+    rl.close()
+    id = PROFILE_IDS[Math.max(0, Math.min(PROFILE_IDS.length - 1, (Number(answer) || 1) - 1))]!
+  }
+  if (!id || !(PROFILE_IDS as readonly string[]).includes(id)) {
+    console.error(`usage: setup <${PROFILE_IDS.join("|")}> [--gpu <id>] | ask`)
+    return 1
+  }
+  const plan = profilePlan(id, await detectTools(exec))
+  console.log(`${PROFILES[id].title}: ${PROFILES[id].what}.`)
+  let failedSteps = 0
+  if (plan.services) {
+    console.log("→ omacode-services (the decider and the embedding service)")
+    const r = await installServices(exec, { log: (line) => console.log(`  ${line}`) })
+    if (!r.ok) {
+      console.error(`  omacode-services: ${r.text}`)
+      failedSteps++
+    }
+  }
+  if (plan.tools.length) {
+    const found = await toolGpus(exec)
+    const wanted = flag(args, "gpu")
+    const gpu = wanted ? found.find((g) => g.id === wanted) : found[0]
+    for (const name of plan.tools) failedSteps += (await installTool(name, name === "comfyui" ? gpu : undefined)) ? 0 : 1
+  }
+  if (!plan.services && !plan.tools.length) console.log("nothing more to install for this profile")
+  return failedSteps ? 1 : 0
+}
+
+// `uninstall [--purge] [--dry-run]`: the plan first, then the removal. Never the user's data: state, memory, settings.
+async function uninstallCommand(args: string[]): Promise<number> {
+  const at = setupPaths(unitPath())
+  const purge = args.includes("--purge")
+  const plan = uninstallPlan(at, { purge })
+  console.log(plan.remove.length ? "Removes:" : "Nothing of omacode's install is left to remove.")
+  for (const r of plan.remove) console.log(`  - ${r.path}: ${r.what}`)
+  console.log("Keeps:")
+  for (const k of plan.keep) console.log(`  - ${k.path}: ${k.what}`)
+  if (args.includes("--dry-run")) return 0
+  if (existsSync(at.unit)) console.log(await removeServices(exec, { purge }))
+  rmSync(at.pluginLink, { force: true })
+  rmSync(at.tuiDir, { recursive: true, force: true })
+  try {
+    const cli = JSON.parse(readFileSync(at.cliJson, "utf8")) as { plugins?: unknown }
+    if (Array.isArray(cli.plugins) && cli.plugins.includes(at.tuiDir)) {
+      cli.plugins = cli.plugins.filter((x) => x !== at.tuiDir)
+      if (!(cli.plugins as unknown[]).length) delete cli.plugins
+      writeFileSync(at.cliJson, `${JSON.stringify(cli, null, 2)}\n`)
+    }
+  } catch {
+    // no cli.json, or not plain JSON: nothing of ours to take out
+  }
+  if (purge) rmSync(join(at.data, "tools"), { recursive: true, force: true })
+  console.log("omacode is removed; restart OpenCode")
+  return 0
 }

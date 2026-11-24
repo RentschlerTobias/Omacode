@@ -38,11 +38,12 @@ function kfdNode(h: Home, node: string, gfx: number, name = "") {
 test("found or not: the version each tool prints, ComfyUI from its workspace", async () => {
   const h = machine()
   const none = await detect(fakeRun({}), h)
-  assert.deepEqual(none.map((t) => [t.name, t.found]), [["hyperframes", false], ["manim", false], ["comfyui", false]])
+  assert.deepEqual(none.map((t) => [t.name, t.found]), [["hyperframes", false], ["manim", false], ["comfyui", false], ["comfy-mcp", false]])
   mkdirSync(join(h.home, "Apps", "ComfyUI"), { recursive: true })
   writeFileSync(join(h.home, "Apps", "ComfyUI", "comfyui_version.py"), '__version__ = "0.38.0"\n')
-  const some = await detect(fakeRun({ "hyperframes --version": { stdout: "hyperframes v0.9.54\n" }, "manim --version": { stdout: "Manim Community v0.22.1\n" } }), h)
-  assert.deepEqual(some.map((t) => t.version), ["0.9.54", "0.22.1", "0.38.0"])
+  // comfy-mcp starts a server when run, so it is read from uv's tool list
+  const some = await detect(fakeRun({ "hyperframes --version": { stdout: "hyperframes v0.9.54\n" }, "manim --version": { stdout: "Manim Community v0.22.1\n" }, "uv tool list": { stdout: "comfy-cli v1.25.0\n- comfy\ncomfy-mcp v0.10.0\n- comfy-mcp\n" } }), h)
+  assert.deepEqual(some.map((t) => t.version), ["0.9.54", "0.22.1", "0.38.0", "0.10.0"])
   assert.equal(some[2]!.where, join(h.home, "Apps", "ComfyUI"), "one installed by hand is found")
   const ours = join(h.data, "tools", "comfyui")
   mkdirSync(ours, { recursive: true })
@@ -110,4 +111,13 @@ test("after a GPU install PyTorch is asked whether it sees the GPU, an integrate
   writeFileSync(join(h.home, "Apps", "ComfyUI", "venv", "bin", "python"), "")
   assert.equal(comfyPython(h, join(h.home, "Apps", "ComfyUI")), join(h.home, "Apps", "ComfyUI", "venv", "bin", "python"), "venv/ as well")
   assert.equal(comfyLaunch({ HSA_OVERRIDE_GFX_VERSION: "11.0.0" }, h), `HSA_OVERRIDE_GFX_VERSION=11.0.0 comfy --workspace ${ws} launch -- --listen 127.0.0.1 --port 8188`)
+})
+
+test("comfy-mcp is a pinned uv tool, pointed at the ComfyUI workspace through comfy-cli's default", () => {
+  const h = machine()
+  const steps = installSteps("comfy-mcp", h).map((s) => [s.cmd, ...s.args].join(" "))
+  assert.deepEqual(steps, [
+    `uv tool install --force comfy-mcp==${PINS.comfyMcp}`,
+    `comfy --skip-prompt set-default ${join(h.data, "tools", "comfyui")}`,
+  ])
 })

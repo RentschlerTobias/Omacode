@@ -3,20 +3,24 @@
 # without a checkout use OpenCode's own installer, which needs nothing from this script:
 #   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
 #
-#   ./install.sh            link packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts, and write the TUI
-#                           package ~/.config/opencode/omacode-tui/ (job progress in the TUI, packages/tui/src/tui.js) into
-#                           the "plugins" of ~/.config/opencode/cli.json
-#   ./install.sh --remove   remove both
+#   ./install.sh            check the machine (preflight), link packages/micromanager/src/plugin.ts into
+#                           ~/.config/opencode/plugins/omacode.ts, write the TUI package ~/.config/opencode/omacode-tui/
+#                           into the "plugins" of ~/.config/opencode/cli.json, then ask which profile to install:
+#                             Minimal  the plugin and the TUI
+#                             Coding   + omacode-services (the local decider and the embedding service)
+#                             Creator  + HyperFrames, ComfyUI (no model) and comfy-mcp
+#                             Full     + Manim
+#                           each says what it downloads before anything is fetched (packages/micromanager/src/setup.ts)
+#   ./install.sh --profile minimal|coding|creator|full [--gpu nvidia|amd|amd-igpu|cpu]   that profile, without asking
+#   ./install.sh --with hyperframes,manim,comfyui,comfy-mcp [--gpu …]   those tools, without asking
+#   ./install.sh --yes | --no-tools | --skip-all   ask nothing, install only the plugin (Minimal)
+#   ./install.sh --tools    only the per-tool question round, for a plugin already installed
+#   ./install.sh --doctor   the installed state, each finding with its fix
+#   ./install.sh --remove [--purge] [--dry-run]   remove the plugin, the TUI package and omacode-services, and say what
+#                           stays (tools and models unless --purge; your journal, memory and settings always)
+#   ./install.sh --embedding [0.6b|4b|8b]   install omacode-services with that embedding size (was its own unit)
+#   ./install.sh --embedding-remove         remove the old micromanager-embedding unit (before omacode-services)
 #   ./install.sh --skills   no-op: the plugin registers skills/<name> into OpenCode itself, a restart is enough
-#   ./install.sh --embedding [0.6b|4b|8b]   download Qwen3-Embedding (Q8, default 4b) and run it as the user service
-#                           micromanager-embedding.service (llama.cpp on the CPU, port 8093) for the memory's search
-#   ./install.sh --embedding-remove         stop and remove that service (the model file stays)
-#   After the plugin it asks, in a terminal, about the optional creative tools: HyperFrames (decks, video), Manim (math
-#   animations), ComfyUI (images; on the NVIDIA, AMD or integrated Radeon GPU found, or the CPU). Each is installed at a
-#   pinned version into your home (packages/micromanager/src/creative-tools.ts).
-#   ./install.sh --with hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]   install those without asking
-#   ./install.sh --yes | --no-tools          ask nothing, install no optional tool
-#   ./install.sh --tools                     only the question round, for a plugin already installed
 # OpenCode loads plugins when it starts: restart the hub/server afterwards.
 set -euo pipefail
 
@@ -61,8 +65,10 @@ cli_plugin() {
   ' "$CLI" "${2:-$TUI}" "$1"
 }
 
-# The optional tools: --with, --gpu, --yes and --no-tools may follow the plain install.
-WITH=""; GPU=""; ASK=1
+CLI_TS="$REPO/packages/micromanager/src/cli.ts"
+
+# The optional parts: --profile, --with, --gpu, --yes and --no-tools may follow the plain install.
+WITH=""; GPU=""; ASK=1; PROFILE=""; PURGE=""; DRY=""
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
   case "${args[$i]}" in
@@ -70,21 +76,31 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     --with=*) WITH="${args[$i]#--with=}" ;;
     --gpu) GPU="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
     --gpu=*) GPU="${args[$i]#--gpu=}" ;;
-    --yes|-y|--no-tools) ASK=0 ;;
+    --profile) PROFILE="${args[$((i + 1))]:-}"; i=$((i + 1)) ;;
+    --profile=*) PROFILE="${args[$i]#--profile=}" ;;
+    --yes|-y|--no-tools|--skip-all) ASK=0 ;;
+    --purge) PURGE=--purge ;;
+    --dry-run) DRY=--dry-run ;;
   esac
 done
-tools() {
-  if [[ -n "$WITH" ]]; then
-    node "$REPO/packages/micromanager/src/cli.ts" tools install "$WITH" ${GPU:+--gpu "$GPU"}
+# After the plugin: a profile named, tools named, the profile question in a terminal, or nothing.
+optional() {
+  if [[ -n "$PROFILE" ]]; then
+    node "$CLI_TS" setup "$PROFILE" ${GPU:+--gpu "$GPU"}
+  elif [[ -n "$WITH" ]]; then
+    node "$CLI_TS" tools install "$WITH" ${GPU:+--gpu "$GPU"}
   elif [[ "$ASK" == 1 && -t 0 && -t 1 ]]; then
-    node "$REPO/packages/micromanager/src/cli.ts" tools ask
+    node "$CLI_TS" setup ask
   else
-    echo "optional tools: none asked about (./install.sh --tools asks, --with <names> installs)"
+    echo "Minimal: only the plugin (./install.sh --profile coding|creator|full adds more)"
   fi
 }
 if [[ "${1:-}" == "--tools" ]]; then
-  ASK=1
-  tools
+  node "$CLI_TS" tools ask
+  exit $?
+fi
+if [[ "${1:-}" == "--doctor" ]]; then
+  node "$CLI_TS" doctor
   exit $?
 fi
 
@@ -105,53 +121,23 @@ if [[ "${1:-}" == "--embedding-remove" ]]; then
   exit 0
 fi
 if [[ "${1:-}" == "--embedding" ]]; then
-  size="${2:-4b}"
-  case "$size" in 0.6b|0.6B) size="0.6B" ;; 4b|4B) size="4B" ;; 8b|8B) size="8B" ;; *) echo "size must be 0.6b, 4b or 8b" >&2; exit 1 ;; esac
-  models="${MICROMANAGER_MODELS:-$HOME/Models/gguf}/qwen3-embedding-${size,,}"
-  file="$models/Qwen3-Embedding-${size}-Q8_0.gguf"
-  if [[ ! -f "$file" ]]; then
-    mkdir -p "$models"
-    echo "downloading Qwen3-Embedding-${size} (Q8) to $file"
-    curl -fL -C - -o "$file.part" "https://huggingface.co/Qwen/Qwen3-Embedding-${size}-GGUF/resolve/main/Qwen3-Embedding-${size}-Q8_0.gguf"
-    mv "$file.part" "$file"
-  fi
-  # llama.cpp's server: LLAMA_SERVER, else llama-server on PATH, else the llama-vulkan build with its serve command.
-  if [[ -n "${LLAMA_SERVER:-}" ]]; then server="$LLAMA_SERVER"
-  elif command -v llama-server >/dev/null; then server="$(command -v llama-server)"
-  elif [[ -x "$HOME/.local/bin/llama-vulkan" ]]; then server="$HOME/.local/bin/llama-vulkan serve"
-  else echo "no llama.cpp server found; set LLAMA_SERVER to its command" >&2; exit 1
-  fi
-  mkdir -p "$(dirname "$UNIT")"
-  cat >"$UNIT" <<UNIT_EOF
-[Unit]
-Description=micromanager memory embeddings: Qwen3-Embedding-${size} on the CPU (port 8093)
-After=default.target
-
-[Service]
-ExecStart=$server --embedding --pooling last -m $file --alias qwen3-embedding-${size,,} -dev none -ngl 0 -c 8192 -b 2048 -ub 2048 --host 127.0.0.1 --port 8093
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-UNIT_EOF
-  systemctl --user daemon-reload
-  systemctl --user enable --now micromanager-embedding.service
-  echo "micromanager-embedding.service runs Qwen3-Embedding-${size} on :8093"
-  if [[ "$size" != "4B" ]]; then
-    echo "set \"memory\": { \"embedding\": { \"url\": \"http://127.0.0.1:8093\", \"model\": \"qwen3-embedding-${size,,}\" } } in ~/.config/opencode/omacode.jsonc (or micromanager.jsonc, if that is the file you have), so the vectors are made again with this model"
-  fi
-  exit 0
+  # Since omacode-services (2026-11-21) the embedding service is one of its services, not a unit of its own.
+  node "$CLI_TS" services install --embedding "${2:-0.6b}" --replace
+  exit $?
 fi
 
 if [[ "${1:-}" == "--remove" ]]; then
-  [[ -L "$LINK" ]] && rm "$LINK" && echo "removed $LINK" || echo "not installed"
-  [[ -L "$PLUGINS/micromanager.ts" ]] && rm "$PLUGINS/micromanager.ts" && echo "removed $PLUGINS/micromanager.ts"
-  cli_plugin remove
-  rm -rf "$TUI"
-  if [[ -d "$OLD_TUI" ]]; then cli_plugin remove "$OLD_TUI"; rm -rf "$OLD_TUI"; fi
-  exit 0
+  if [[ -z "$DRY" ]]; then
+    # The links and the TUI package under their names before the rename; the rest is the CLI's uninstall.
+    [[ -L "$PLUGINS/micromanager.ts" ]] && rm "$PLUGINS/micromanager.ts" && echo "removed $PLUGINS/micromanager.ts"
+    if [[ -d "$OLD_TUI" ]]; then cli_plugin remove "$OLD_TUI"; rm -rf "$OLD_TUI"; fi
+  fi
+  node "$CLI_TS" uninstall $PURGE $DRY
+  exit $?
 fi
+
+# Before anything is written: does this machine have what omacode needs?
+node "$CLI_TS" preflight || { echo "preflight failed: fix the ✗ lines above and run ./install.sh again" >&2; exit 1; }
 
 mkdir -p "$PLUGINS"
 # The link's names before: jev-micromanager.ts (until 2026-10-19), micromanager.ts (until 2026-11-23). Two links to the
@@ -175,4 +161,4 @@ echo "linked $LINK -> $REPO/packages/micromanager/src/plugin.ts (restart the Ope
 write_tui
 cli_plugin add
 echo "the TUI shows job progress from its next start (the sidebar toggles with <leader>b, or set \"session\": {\"sidebar\": \"auto\"} in cli.json; /tasks opens a task)"
-tools || echo "an optional tool did not install; the plugin is installed, try again with ./install.sh --tools"
+optional || echo "a part of the profile did not install; the plugin is installed, try again with ./install.sh --profile <name>, or see ./install.sh --doctor"

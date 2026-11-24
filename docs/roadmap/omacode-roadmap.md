@@ -761,6 +761,12 @@ licenses.
 
 - [ ] **A6-T1 — Extend, don't rewrite.** `install.sh` already does one-command install, `--embedding`, a user service,
   TUI wiring and `--remove`. Extend it; `npx @omacode/setup` is the front door.
+- *Status 2026-11-24 (1.0 slice):* `packages/micromanager/src/setup.ts` + CLI `preflight | doctor | setup <profile>|ask |
+  uninstall [--purge] [--dry-run]`; install.sh runs the preflight, asks Minimal/Coding/Creator/Full (each states its
+  download first), `--profile`, `--doctor`, `--remove` via the CLI; comfy-mcp 0.10.0 is a fourth creative tool
+  (uv tool + `mcp.servers.comfy`). Doctor calls `hyperframes doctor` and counts only what decks and videos need.
+  Walked in a throwaway XDG profile: install → doctor → remove. Still open: the licence manifest (T9), local-LLM
+  detection (T4), Blender (T6), macOS walkthrough.
 - [ ] **A6-T2 — Preflight.** OS/arch/Node/git/uv/ffmpeg/Chromium/RAM/GPU/VRAM/disk/OpenCode version/TUI slot API/
   sandbox availability.
 - [ ] **A6-T3 — Profiles.** Minimal/Coding/Creator/Full/Custom; `--yes` preselects; `--skip-all` installs nothing.

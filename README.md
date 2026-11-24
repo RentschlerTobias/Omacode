@@ -35,7 +35,7 @@ and research [docs/plan.md](docs/plan.md). Development happens on the branch `om
   cloud URL; in `cloud` without a key, every decision goes to you.
 - For the sandbox: on Linux `bubblewrap`, `socat` and `ripgrep`; on macOS nothing extra (Seatbelt). Without them
   commands run unwrapped, and the plugin says so.
-- Optional: the local embedding service for the memory (`./install.sh --embedding`, a systemd user unit), and `uv`
+- Optional: the local embedding service for the memory (the Coding profile, or `./install.sh --embedding`), and `uv`
   for the GLiNER decision server in `decider/` and for the evolver in `packages/micromanager/evolver/` (`evolve_task`; `uv` sets up its
   environment, OpenEvolve pinned, on the first run).
 
@@ -64,13 +64,29 @@ From a checkout, for development (the symlink means the running server reads you
 git clone git@github.com:RentschlerTobias/Micromanager.git micromanager
 cd micromanager
 npm install                    # the sandbox runtime
-./install.sh                   # links packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts
-./install.sh --embedding 4b    # optional: the memory's embedding service (0.6b, 4b or 8b), see "Context and memory"
-./install.sh --remove
+./install.sh                   # preflight, link the plugin and the TUI, then ask for a profile
+./install.sh --profile coding  # the same without asking (minimal | coding | creator | full)
+./install.sh --doctor          # the installed state, each finding with its fix
+./install.sh --remove          # remove it again; --dry-run says what would go, --purge also removes tools and services
 ```
 
-**Optional creative tools.** In a terminal, `./install.sh` then asks about each tool the artifact adapters use,
-says whether it is already there, and installs it at a pinned version if you say yes, under the data directory
+**Profiles.** Before anything is written, `./install.sh` checks the machine (Node, OpenCode, git, uv, bubblewrap,
+Chromium, ffmpeg, RAM, disk) and stops on what blocks the plugin. Then, in a terminal, it asks what to install; each
+profile says what it downloads before anything is fetched:
+
+| Profile | Installs | Downloads |
+|---|---|---|
+| Minimal | the plugin and the TUI | nothing |
+| Coding | + omacode-services: the local decider and the embedding service | about 2 GB, models on first use |
+| Creator | + HyperFrames, ComfyUI (no model) and comfy-mcp | about 8–12 GB |
+| Full | + Manim | about 8–12 GB |
+
+`--yes` (or `--skip-all`) installs only the plugin. `./install.sh --remove` removes the plugin link, the TUI package
+and omacode-services and lists what it keeps: your journal, memory, model registry and settings always; the tools and
+the services' models unless `--purge`. `./install.sh --doctor` is `node packages/micromanager/src/cli.ts doctor`.
+
+**Optional creative tools.** `./install.sh --tools` asks about each tool the artifact adapters use, says whether it is
+already there, and installs it at a pinned version if you say yes, under the data directory
 (`~/.local/share/omacode/tools/`), never as a new folder in your home:
 
 | Tool | For | Installed as |
@@ -78,13 +94,13 @@ says whether it is already there, and installs it at a pinned version if you say
 | HyperFrames 0.9.54 | decks and videos | npm into `tools/hyperframes`, linked into `~/.local/bin` |
 | Manim 0.22.1 | math animations (LaTeX is not installed) | `uv tool install manim` |
 | ComfyUI 0.44.2 | images | comfy-cli 1.25.0 into `tools/comfyui` (or `COMFYUI_WORKSPACE`), no model downloaded |
+| comfy-mcp 0.10.0 (AGPL-3.0) | agents running ComfyUI workflows | `uv tool install comfy-mcp`, added to `opencode.json` as `mcp.servers.comfy` |
 
 A ComfyUI already on the machine (`~/Apps/ComfyUI`, `~/ComfyUI`) is found and offered to omacode-services instead of a
 second install. For ComfyUI it lists where it could run: an NVIDIA GPU, an AMD GPU ROCm can reach (`/dev/kfd`), an integrated
 Radeon (a ROCm preview; after the install it checks whether PyTorch sees it, also as its discrete family through
 `HSA_OVERRIDE_GFX_VERSION`), or the CPU, and prints the line that starts it. `./install.sh --with
-hyperframes,manim,comfyui [--gpu nvidia|amd|amd-igpu|cpu]` installs without asking, `--yes` or `--no-tools` installs no
-tool, `./install.sh --tools` asks again later. The same from npm: `npm run tools -- status | gpus | install <names>`.
+hyperframes,manim,comfyui,comfy-mcp [--gpu nvidia|amd|amd-igpu|cpu]` installs without asking. The same from npm: `npm run tools -- status | gpus | install <names>`.
 With omacode-services installed, ComfyUI joins it as a third service on its usual port 8188: started by its first
 request only (it holds GB of GPU memory), stopped after the idle time, reachable without the token (its own page in a
 browser talks to it directly), and switched in `/services` like the others, on its GPU or the CPU. For a ComfyUI
