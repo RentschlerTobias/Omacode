@@ -1,3 +1,4 @@
-# derived by synth-guards --rows; rebuilt from guards.jsonl
-guards.rows.jsonl
-entities.rows.jsonl
+# Training data is not kept in the repository: it is made with `synth-guards` / `synth-entities` (see decider/README.md)
+# and contains realistic-looking but fake secrets and personal data, which secret scanners rightly flag.
+*
+!.gitignore

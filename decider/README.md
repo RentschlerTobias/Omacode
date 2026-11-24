@@ -19,3 +19,17 @@ extraction checkpoint instead, loaded on its first request.
 The zero-shot model is only a starting point: in Phase A it scored about 0.5 on every guard. Guards need a
 fine-tune on our own labels (`npm run export-dataset -- --target gliner` in the repo root) before the plugin lets
 them decide anything; until then a guard "yes" only asks the user.
+
+## Training data
+
+The guards' and entities' training sets are not in the repository: they are made on demand into `decider/data/`
+(ignored by git) and stay on the machine that trains.
+
+```bash
+node packages/micromanager/src/cli.ts synth-guards --public --rows     # decider/data/guards.jsonl (+ .rows.jsonl)
+node packages/micromanager/src/cli.ts synth-entities                   # decider/data/entities.jsonl
+```
+
+Only synthetic cases (written by a model, see the command's help) and public datasets (deepset/prompt-injections,
+Apache-2.0) go in, never the user's journal. The credential cases look like real keys on purpose, so the guard learns
+them; they are fake, but secret scanners flag them, which is one more reason they are not committed.
