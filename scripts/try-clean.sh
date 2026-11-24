@@ -38,7 +38,9 @@ run() {
   if [[ "$AUTO" == "--auto" ]]; then
     podman run --rm --userns=keep-id -v "$WORK:/in:ro,Z" "$IMAGE" bash -lc "$PRELUDE; $script"
   else
-    podman run --rm -it --userns=keep-id -v "$WORK:/in:ro,Z" "$IMAGE" bash -lc "$PRELUDE; $script; echo; echo '$hint'; exec bash"
+    # --network=host: the presenter and the Studio listen on 127.0.0.1 inside; with the host's network the host's browser
+    # opens the address the agent prints.
+    podman run --rm -it --network=host --userns=keep-id -v "$WORK:/in:ro,Z" "$IMAGE" bash -lc "$PRELUDE; $script; echo; echo '$hint'; exec bash"
   fi
 }
 
