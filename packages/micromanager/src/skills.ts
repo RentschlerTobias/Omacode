@@ -51,6 +51,7 @@ export const SKILLS: readonly CatalogSkill[] = [
   { name: "deck", description: "build and check an HTML deck: the spec, what the checks mean, and a placeholder instead of a missing picture", roles: ["code", "visual"], asked: true },
   { name: "image", description: "build and check an image set: the spec, the checkpoint hash policy, split files versus a full checkpoint, and placeholders", roles: ["code", "visual"], asked: true },
   { name: "web", description: "build and check a website: the spec's build contract, the browser checks at three widths, axe, and the weight budget", roles: ["code", "visual"], asked: true },
+  { name: "video", description: "build and check a short video with HyperFrames: the spec, Manim animations as scene clips, the frame and sound checks, and a film on a website", roles: ["code", "visual"], asked: true },
 ]
 
 export type Stage = "implement" | "red" | "review" | "review_fix" | "reader"
