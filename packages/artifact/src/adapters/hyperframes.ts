@@ -11,10 +11,10 @@
 // environment, the working directory and the network; the answers are values, because a refusal, a crash and an
 // unparseable envelope are all things a report has to be able to say.
 
-import { mkdirSync, symlinkSync } from "node:fs"
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs"
 import { connect, createServer } from "node:net"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 
 import type { HostRunInput, HostRunner, HostRunResult } from "../adapter.ts"
 import type { ToolProvenance } from "../provenance.ts"
@@ -134,6 +134,58 @@ export async function checkHyperframes(run: HostRunner, what = "a deck"): Promis
   if (doctor.passed) detail.push(...nonEmptyLines(doctor.stdout || doctor.stderr, DOCTOR_LINES))
 
   return { ok: false, reason, ...(detail.length > 0 ? { detail: detail.join("\n") } : {}) }
+}
+
+// The runtime script the installed engine ships (`dist/hyperframe.runtime.iife.js`), found through the same
+// `hyperframes` on PATH the runner starts, so the page and the presenter's player come from one release. A deck carries
+// a copy of it: `hyperframes present` serves the project as written, and its player only injects a runtime (from a CDN)
+// when a scene lives in its own file. Without one in the page nothing hides the scenes that are not playing and no scene
+// list reaches the slideshow, so every slide is drawn on top of the others (2026-11-24).
+export interface HyperframesRuntime {
+  readonly file: string
+  readonly version?: string
+}
+
+export const RUNTIME_FILE = "hyperframe.runtime.iife.js"
+
+// The first executable `hyperframes` on PATH, the one a run of the host runner would start.
+export function hyperframesBin(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  for (const dir of (env["PATH"] ?? "").split(":").filter(Boolean)) {
+    const bin = join(dir, "hyperframes")
+    try {
+      accessSync(bin, constants.X_OK)
+      return bin
+    } catch {
+      // not here
+    }
+  }
+  return undefined
+}
+
+export function hyperframesRuntime(env: NodeJS.ProcessEnv = process.env): HyperframesRuntime | undefined {
+  const bin = hyperframesBin(env)
+  if (bin !== undefined) {
+    let real: string
+    try {
+      real = realpathSync(bin)
+    } catch {
+      return undefined
+    }
+    // bin/hyperframes.mjs today; a dist/cli.js entry would be one level less deep, so walk up a few levels.
+    for (let root = dirname(real), depth = 0; depth < 3; root = dirname(root), depth++) {
+      const file = join(root, "dist", RUNTIME_FILE)
+      if (!existsSync(file)) continue
+      let version: string | undefined
+      try {
+        const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: unknown }
+        if (typeof pkg.version === "string") version = pkg.version
+      } catch {
+        // a runtime without a readable package.json still runs; the version is only reported
+      }
+      return { file, ...(version ? { version } : {}) }
+    }
+  }
+  return undefined
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

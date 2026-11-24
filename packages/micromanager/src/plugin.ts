@@ -2809,12 +2809,21 @@ const plugin = {
             if (report.presented) {
               presenters.get(report.jobDir)?.()
               presenters.set(report.jobDir, report.presented.stop)
-              if (hasDesktop()) {
-                execFileCb(process.platform === "darwin" ? "open" : "xdg-open", [report.presented.url], () => undefined)
-                text += "\nOpened in the user's browser."
-              } else {
-                text += "\nNo desktop here: give the user the address."
-              }
+              // Say only what is known: the opener's exit, not whether a window appeared. The address is always given,
+              // so the user can open it if nothing came up.
+              const url = report.presented.url
+              const opened = hasDesktop()
+                ? await new Promise<string | undefined>((done) => {
+                    const timer = setTimeout(() => done("the opener did not answer within 5 s"), 5000)
+                    execFileCb(process.platform === "darwin" ? "open" : "xdg-open", [url], (err) => {
+                      clearTimeout(timer)
+                      done(err ? err.message : undefined)
+                    })
+                  })
+                : "there is no desktop here"
+              text += opened === undefined
+                ? `\nAsked the desktop to open ${url} in the user's browser. Tell the user the address too, in case no window came up; do not claim you saw the deck.`
+                : `\nCould not open a browser (${opened}): give the user the address ${url}.`
             }
             return { content: text }
           } catch (err) {

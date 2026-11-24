@@ -4,7 +4,9 @@
 // slides the spec has, a note hangs off each one, a hotspot lands on a branch, every reference resolves, and a missing
 // picture is a labelled box rather than a gap — and when the four things only a browser can see are true too: nothing
 // overflows, the text passes contrast, the page throws nothing, and every frame has something on it. The first group is
-// a mapping over the spec and the project; the second is read out of one `hyperframes check` envelope.
+// a mapping over the spec and the project; the second is read out of one `hyperframes check` envelope. One more is about
+// the presenter itself (deck.present): what a probe saw stepping through `hyperframes present` in a real browser, because
+// a page that renders well frame by frame can still present every slide at once.
 //
 // The mapping is a function of values, not of the engine: `deckResults` is given the spec, the project, the report and
 // the snapshot paths, and says what follows. That makes a rule testable without a browser — a broken branch is a wrong
@@ -25,14 +27,14 @@ import { CONTRACT_CHECKS, SKIPPED_CODE, type CheckDef, type CheckResult } from "
 import { insidePath } from "../paths.ts"
 import { blankFrame, readPng } from "../png.ts"
 import type { DeckSpec, Slide } from "../spec.ts"
-import { firstFew, listLengthIn, many, numberIn, partOf, recordOf } from "./hyperframes.ts"
+import { firstFew, listLengthIn, many, NAMED_FINDINGS, numberIn, partOf, recordOf } from "./hyperframes.ts"
 import { placeholderNote, type DeckIsland, type DeckProject } from "./deck-project.ts"
 
 // The definition of every check this adapter produces. The contract check comes from the registry (B1-T2) rather than
 // being written again here, so there is one spelling of its id and one title for it: the spec parse owns L0, this file
 // owns L1 and L2, and `assertRegistry` makes sure the levels and the producers still agree.
 //
-// All eleven are required. A deck whose links were not looked at, or whose frames were not read, is not a deck that
+// All twelve are required. A deck whose links were not looked at, or whose frames were not read, is not a deck that
 // passed; the caller decides what a skip is worth, and a skip is never turned into a pass here.
 const DECK_CONTRACT = CONTRACT_CHECKS.filter((def) => def.kind === "deck")
 
@@ -104,6 +106,17 @@ export const DECK_CHECKS: readonly CheckDef[] = [
   },
   { id: "deck.blank", level: "L2", kind: "deck", title: "no snapshot is blank", run: "argv", required: true },
   {
+    id: "deck.present",
+    level: "L2",
+    kind: "deck",
+    title: "the presenter shows one slide at a time and steps through all of them",
+    run: "argv",
+    required: true,
+    // Skippable by declaration: it needs a Chromium where the plugin runs, and the site adapter's browser checks are
+    // declared the same way. A deck that was never opened in a presenter is reported as such, never as passed.
+    skippable: true,
+  },
+  {
     id: "deck.vlm",
     level: "L2",
     kind: "deck",
@@ -140,6 +153,28 @@ export interface DeckResultInput {
   readonly project: DeckProject
   readonly report?: unknown
   readonly shots?: readonly string[]
+  // What deck-probe.mjs saw in the live presenter, or why it could not look: `presentSkip` when no browser is here (a
+  // skip), `presentProblem` when the probe broke (a failure).
+  readonly present?: DeckPresentReport
+  readonly presentSkip?: string
+  readonly presentProblem?: string
+}
+
+// The presenter probe's report (deck-probe.mjs), as the rule reads it.
+export interface DeckPresentStep {
+  readonly expected: string
+  readonly stop: number
+  readonly visible: readonly string[]
+  readonly titleOpacity: number | null
+}
+
+export interface DeckPresentReport {
+  readonly url?: string
+  readonly errors: readonly string[]
+  readonly scenes: number
+  readonly steps: readonly DeckPresentStep[]
+  readonly shots: readonly string[]
+  readonly problem?: string
 }
 
 // The island's slides as values. The island's own type is `unknown[]` because it is written as JSON and read back by the
@@ -391,6 +426,37 @@ function runtimeVerdict(input: DeckResultInput): Verdict {
   return passed("the page ran with no console error")
 }
 
+// The deck as the person presenting sees it (2026-11-24): every check above passed on a deck whose presenter drew all
+// slides on top of each other, because they read renders and the island, not the slideshow. This rule reads what the
+// probe saw while stepping through the live presenter: no console error, scenes reported, exactly the expected slide on
+// stage at every rest point, and its title shown.
+function presentVerdict(input: DeckResultInput): Verdict {
+  if (input.presentSkip !== undefined) return skipped(input.presentSkip)
+  if (input.presentProblem !== undefined) return failed(`the presenter probe could not look: ${input.presentProblem}`)
+  const report = input.present
+  if (report === undefined) return failed("the presenter probe wrote no report, so nobody looked at the presenter")
+  const said: string[] = []
+  if (report.problem !== undefined) said.push(report.problem)
+  if (report.errors.length > 0) {
+    said.push(`${many(report.errors.length, "console error")}: ${report.errors.slice(0, NAMED_FINDINGS).join("; ")}`)
+  }
+  const expected = visibleSlides(input.spec).length
+  const slides = new Set(report.steps.map((step) => step.expected)).size
+  if (slides !== expected) said.push(`the presenter stepped through ${many(slides, "slide")}, the deck has ${expected}`)
+  for (const step of report.steps) {
+    const where = `at ${step.expected}${step.stop > 0 ? ` (step ${step.stop + 1})` : ""}`
+    if (step.visible.length !== 1) {
+      said.push(`${many(step.visible.length, "slide")} on stage ${where}${step.visible.length ? `: ${step.visible.join(", ")}` : ""}`)
+    } else if (step.visible[0] !== step.expected) {
+      said.push(`${step.visible[0]} was on stage ${where}`)
+    } else if (step.titleOpacity !== null && step.titleOpacity < 0.99) {
+      said.push(`the title is not shown ${where} (opacity ${step.titleOpacity.toFixed(2)})`)
+    }
+  }
+  if (said.length > 0) return failed(said.slice(0, NAMED_FINDINGS + 2).join("; "))
+  return passed(`${many(slides, "slide")} in ${many(report.steps.length, "step")}, one slide on stage at each, no console error`)
+}
+
 function snapshotVerdict(input: DeckResultInput): Verdict {
   const frames = (input.shots ?? []).length
   const visible = visibleSlides(input.spec).length
@@ -482,6 +548,8 @@ function verdictFor(id: string, input: DeckResultInput): Verdict | undefined {
       return snapshotVerdict(input)
     case "deck.blank":
       return blankVerdict(input)
+    case "deck.present":
+      return presentVerdict(input)
     case "deck.vlm":
       return skipped(NO_VISION_MODEL)
     default:

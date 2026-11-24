@@ -30,6 +30,8 @@ import { test, type TestContext } from "node:test"
 import {
   DECK_CHECKS,
   DECK_ENV_NAMES,
+  DECK_PROBE_ENV_NAMES,
+  DECK_RUNTIME,
   HYPERFRAMES_INSTALL,
   MAX_ASSET_BYTES,
   checkHyperframes,
@@ -42,6 +44,7 @@ import {
   placeholderNote,
   writeDeckProject,
   type DeckCheck,
+  type DeckPresentReport,
   type DeckProject,
 } from "../packages/artifact/src/adapters/deck.ts"
 import { assertAdapter, type AdapterContext, type HostRunInput, type HostRunResult, type HostRunner } from "../packages/artifact/src/adapter.ts"
@@ -221,6 +224,8 @@ test("the machine's HyperFrames answers through the host runner, or the runner s
 
 interface IslandSlideView {
   readonly sceneId: string
+  readonly startTime: number
+  readonly endTime: number
   readonly fragments: readonly number[]
   readonly hotspots: readonly { readonly id: string; readonly label: string; readonly target: string }[]
   readonly notes?: string
@@ -360,8 +365,11 @@ test("a spec becomes a project whose island keeps the main line, the branch and 
   // The hidden slide is not a slide the room will see, so it is not a scene the player can reach.
   assert.equal(slides.some((slide) => slide.sceneId === "hidden-plan"), false)
   assert.equal(slides[0]?.notes, "say it slowly")
-  // The reveal pair is a pair of times inside the slide's own window (8 s to 16 s), not the indices as written.
-  assert.deepEqual(slides[1]?.fragments, [10.667, 13.333])
+  // The reveal pair is three rest points inside the slide's own window (8 s to 16 s), not the indices as written: the
+  // player enters a slide at its first fragment, so the first stop shows the slide before either reveal.
+  assert.deepEqual(slides[1]?.fragments, [9.333, 12, 14.667])
+  // Each slide names its own window, so the slideshow does not depend on the runtime's scene list arriving first.
+  assert.deepEqual([slides[1]?.startTime, slides[1]?.endTime], [8, 16])
   assert.deepEqual(slides[2]?.hotspots, [{ id: "more", label: "The details", target: "details" }])
 
   const sequences = islandSequences(project)
@@ -792,7 +800,7 @@ test("the deck's checks are a registry, and the deck adapter is an adapter", () 
   assertRegistry(DECK_CHECKS)
 
   const ids = DECK_CHECKS.map((def) => def.id)
-  assert.equal(ids.length, 11)
+  assert.equal(ids.length, 12)
   // The contract check is the gate's: the parse produces it, so it lives in CONTRACT_CHECKS and not in what this adapter
   // claims to produce. A registry that carried it would make the adapter answer for an L0 it never runs.
   assert.equal(ids.includes("deck.contract"), false, "the adapter's registry is what the adapter produces")
@@ -808,6 +816,7 @@ test("the deck's checks are a registry, and the deck adapter is an adapter", () 
     "deck.runtime",
     "deck.snapshot",
     "deck.blank",
+    "deck.present",
     "deck.vlm",
   ]) {
     assert.ok(ids.includes(id), `the registry must carry ${id}`)
@@ -819,7 +828,8 @@ test("the deck's checks are a registry, and the deck adapter is an adapter", () 
   assert.equal(adapter.kind, "deck")
   assert.equal(adapter.name, "hyperframes")
   assert.equal(adapter.version, "0.1.0")
-  assert.deepEqual(adapter.executables, ["hyperframes"])
+  // node runs the presenter probe (deck-probe.mjs), which looks at the slideshow the way a presenter sees it.
+  assert.deepEqual(adapter.executables, ["hyperframes", "node"])
   // The network is the presenter's permission; the check and the snapshot do not ask for it.
   assert.equal(adapter.network, true)
   for (const step of ["prepare", "render", "snapshot", "check", "openEditor", "cancel"]) {
@@ -849,7 +859,7 @@ test("prepare asks for the engine before it writes, and a refusal leaves the job
 test("a clean five-slide deck goes through prepare, render, snapshot and check, and only the vision review is skipped", async (t) => {
   const job = jobFor(t)
   const spec = talkDeck()
-  const runner = await createHostRunner({ allow: ["hyperframes"], jobDir: job, network: false, env: [...DECK_ENV_NAMES] })
+  const runner = await createHostRunner({ allow: ["hyperframes", "node"], jobDir: job, network: false, env: [...DECK_ENV_NAMES, ...DECK_PROBE_ENV_NAMES] })
   const { ctx, logs } = harnessFor(job, runner)
   const adapter = deckAdapter()
 
@@ -865,7 +875,7 @@ test("a clean five-slide deck goes through prepare, render, snapshot and check, 
   assert.equal(prepared.notes?.length, 1, "a deck with no placeholders has no placeholder note")
 
   const rendered = await adapter.render(ctx)
-  assert.deepEqual(rendered.outputs, ["index.html", "hyperframes.json", "meta.json"])
+  assert.deepEqual(rendered.outputs, ["index.html", "hyperframes.json", "meta.json", DECK_RUNTIME])
 
   const snapshot = await adapter.snapshot(ctx)
   if (snapshot.shots.length !== 5) {
@@ -1340,7 +1350,7 @@ test("brief → deck → checks → present: a plan's page becomes a deck that c
   assert.equal(prepared.notes?.length, 1, "a deck whose asset is there has no placeholder note")
 
   const rendered = await adapter.render(ctx)
-  assert.deepEqual(rendered.outputs, ["index.html", "hyperframes.json", "meta.json"])
+  assert.deepEqual(rendered.outputs, ["index.html", "hyperframes.json", "meta.json", DECK_RUNTIME])
   for (const name of rendered.outputs) assert.ok(existsSync(join(jobDir, name)), name)
 
   // One frame for the one visible slide, named by it.
@@ -1401,6 +1411,11 @@ test("brief → deck → checks → present: a plan's page becomes a deck that c
   assert.ok(snapshotCall?.args.includes("--no-browser-gpu"), "the snapshot asks for the same renderer")
   // A check reads a local file, so it narrows the adapter's network declaration to nothing and stays wrapped.
   assert.equal(checkCall.network, undefined, "the check must not ask for the host network")
+  // The presenter probe stays wrapped too: its presenter and its browser talk over the sandbox's own loopback.
+  const probeCall = run.calls.find((call) => call.exe === "node")
+  assert.ok(probeCall !== undefined, "the presenter probe ran")
+  assert.equal(probeCall.network, undefined, "the presenter probe must not ask for the host network")
+  assert.match(resultOf(results, "deck.present").output ?? "", /one slide on stage at each, no console error/)
 
   // Present: the adapter picks a free port and the run's own argv names it, so the test reads the port from the call it
   // recorded rather than guessing one. Every wait below is bounded: a presenter that never answers fails this test.
@@ -1477,7 +1492,7 @@ test("the package builds one adapter per kind and names no artifact daemon or de
   // (web.ts with its project, checks and browser probe); a file here
   // outside those producers and their own modules is a third artifact producer that was built without a task, which is
   // the thing the acceptance says did not happen — not that a kind must live in exactly one file.
-  const allowed = new Set(["deck.ts", "deck-checks.ts", "deck-project.ts", "deck-run.ts", "hyperframes.ts", "video.ts", "image.ts", "web.ts", "web-checks.ts", "web-project.ts", "web-probe.mjs"])
+  const allowed = new Set(["deck.ts", "deck-checks.ts", "deck-project.ts", "deck-run.ts", "hyperframes.ts", "video.ts", "image.ts", "web.ts", "web-checks.ts", "web-project.ts", "web-probe.mjs", "deck-probe.mjs"])
   assert.deepEqual(built.filter((name) => !allowed.has(name)), [])
 
   const source = new URL("../packages/artifact/src/", import.meta.url)

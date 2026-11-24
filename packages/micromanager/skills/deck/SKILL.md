@@ -18,7 +18,9 @@ decides whether it is worth presenting. Your job is the spec and its content, no
 - `slides[]`, each with `id`, `title`, `body`, `notes`, and optionally `asset`, `reveals`, `hotspots`, `hidden`.
 - `branches[]` are the optional paths off a slide; a `hotspot` with `target` names one. The main line's id `main` is
   the player's, so a branch cannot use it.
-- `reveals` are fragment indices on one slide, ascending by the player's sort and unique; they are not seconds.
+- `reveals` are line indices of the slide's `body` (lines split at `\n`, counted from 0): each named line appears on
+  its own click, in ascending order, after the slide has come up with its other lines. They are not seconds.
+  `"body": "Point\nDetail one\nDetail two", "reveals": [1, 2]` shows "Point", then "Detail one", then "Detail two".
 - Every path is relative to the job directory. An absolute path, a `..` or a backslash is refused, as is a slide id
   that is used twice or a hotspot that points at a branch that does not exist.
 
@@ -34,6 +36,12 @@ The adapter runs the engine's checks, and each one can fail:
   is **not** checked by the engine; if a slide links somewhere, say so in the notes so a reader knows.
 - **branch** — every hotspot names a branch, and every branch slide is a scene.
 - **snapshots** — one frame per slide, and no frame is blank (99.9 % of one colour).
+- **presenter** — a probe opens `hyperframes present` in a real browser and steps through every slide and reveal:
+  exactly one slide on stage at each step, its title shown, no console error. This is what the audience sees; a
+  deck can pass every frame check and still fail here.
+
+In the presenter each slide comes up with a short rise-in of its rule, title and lines; snapshots and checks see the
+finished slide. You do not write animation code: the adapter owns the HTML.
 
 A missing picture is not a failure: it becomes a labelled placeholder (`missing asset: <path>`), and the check names it.
 Write the path you meant anyway — the placeholder is how the deck stays presentable while the image is still missing.

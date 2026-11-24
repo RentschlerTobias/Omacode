@@ -14,15 +14,19 @@
 // and the sentence a user reads is built from that answer. There is no `child_process` import and no shell, because a
 // check that could start a program on its own would be a second door past the allowlist the runner exists to keep.
 
-import { relative, resolve } from "node:path"
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs"
+import { createRequire } from "node:module"
+import { dirname, join, relative, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
 
-import type { Adapter, HostRunner } from "../adapter.ts"
+import type { Adapter, AdapterContext, HostRunner } from "../adapter.ts"
+import { findChromium } from "../chromium.ts"
 import { insidePath } from "../paths.ts"
 import type { DeckSpec } from "../spec.ts"
-import { deckResults } from "./deck-checks.ts"
+import { deckResults, type DeckPresentReport } from "./deck-checks.ts"
 import { placeholderNote, writeDeckProject, type DeckProject } from "./deck-project.ts"
 import { DECK_ENV_NAMES, deckCheck, deckPresent, deckSnapshot } from "./deck-run.ts"
-import { checkHyperframes, freePort, tailOf } from "./hyperframes.ts"
+import { checkHyperframes, freePort, HYPERFRAMES_ENV, HYPERFRAMES_INSTALL, hyperframesBin, hyperframesRuntime, outputOf, RUNTIME_FILE, tailOf } from "./hyperframes.ts"
 
 // The three layers, re-exported so the package's one deck entry keeps every name it published before the split. A caller
 // that wants a single layer can import `@omacode/artifact/adapters/deck-project` (or `-run`, `-checks`) instead.
@@ -56,11 +60,67 @@ function jobRelative(jobDir: string, path: string): string {
   return relative(resolve(jobDir), full) || "."
 }
 
-export function deckAdapter(): Adapter<DeckSpec> {
+// The presenter probe (deck-probe.mjs): copied into the job like the site probe, started by the runner with `node`, and
+// told by environment which Chromium and which hyperframes to start, so it searches nothing itself.
+const PROBE_DIR = ".probe"
+const PROBE_FILE = "deck-probe.mjs"
+const PROBE_REPORT = join(PROBE_DIR, "present.json")
+const PROBE_SHOTS = join(PROBE_DIR, "present")
+const PROBE_TIMEOUT_MS = 5 * 60_000
+export const DECK_PROBE_ENV_NAMES = ["NODE_PATH", "DECK_PROBE_CHROMIUM", "DECK_PROBE_HYPERFRAMES"] as const
+
+const require = createRequire(import.meta.url)
+
+// Where Playwright is installed, for the probe's NODE_PATH.
+function playwrightModules(): string | undefined {
+  try {
+    return resolve(dirname(require.resolve("playwright-core/package.json")), "..")
+  } catch {
+    return undefined
+  }
+}
+
+export interface DeckAdapterOptions {
+  readonly chromium?: string | null // injected by tests; undefined means "find one", null means "there is none"
+}
+
+export function deckAdapter(options: DeckAdapterOptions = {}): Adapter<DeckSpec> {
   let runner: HostRunner | undefined
   let spec: DeckSpec | undefined
   let project: DeckProject | undefined
   let shots: readonly string[] = []
+
+  // One pass through the live presenter: `hyperframes present` and Chromium inside the runner's sandbox, stepping
+  // through every rest point. What it saw, or why it could not look, goes to the deck.present rule.
+  const lookAtPresenter = async (ctx: AdapterContext): Promise<{ present?: DeckPresentReport; presentSkip?: string; presentProblem?: string }> => {
+    const chromium = options.chromium === undefined ? findChromium() : options.chromium
+    if (!chromium) return { presentSkip: "no browser is installed where the plugin runs (chromium, google-chrome or Playwright's chromium)" }
+    const modules = playwrightModules()
+    if (!modules) return { presentSkip: "playwright-core is not installed beside the plugin, so the presenter could not be opened" }
+    const bin = hyperframesBin()
+    if (!bin) return { presentProblem: "no hyperframes on PATH for the presenter" }
+    const job = resolve(ctx.jobDir)
+    rmSync(join(job, PROBE_REPORT), { force: true })
+    rmSync(join(job, PROBE_SHOTS), { recursive: true, force: true })
+    const result = await ctx.run.run({
+      exe: "node",
+      args: [join(PROBE_DIR, PROBE_FILE), PROBE_REPORT, PROBE_SHOTS],
+      cwd: job,
+      env: { ...HYPERFRAMES_ENV, NODE_PATH: modules, DECK_PROBE_CHROMIUM: chromium, DECK_PROBE_HYPERFRAMES: bin },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    })
+    if (!result.passed) {
+      const why = result.refused ?? (tailOf(outputOf(result)) || `the probe exited with ${result.code}`)
+      ctx.log(`deck presenter probe: ${why}`)
+      return { presentProblem: why }
+    }
+    try {
+      const present = JSON.parse(readFileSync(join(job, PROBE_REPORT), "utf8")) as DeckPresentReport
+      return { present }
+    } catch (error) {
+      return { presentProblem: `the probe wrote no readable report: ${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
 
   const built = (): DeckProject => {
     if (project === undefined) {
@@ -78,9 +138,9 @@ export function deckAdapter(): Adapter<DeckSpec> {
     kind: "deck",
     name: "hyperframes",
     version: "0.1.0",
-    executables: ["hyperframes"],
+    executables: ["hyperframes", "node"],
     network: true,
-    env: DECK_ENV_NAMES,
+    env: [...DECK_ENV_NAMES, ...DECK_PROBE_ENV_NAMES],
 
     // The engine is asked before anything is written. A machine without HyperFrames gets the install sentence from
     // `checkHyperframes` as a throw with no job directory touched, which is the difference between a job that failed and
@@ -91,7 +151,19 @@ export function deckAdapter(): Adapter<DeckSpec> {
       const engine = await checkHyperframes(ctx.run)
       if (!engine.ok) throw new Error(engine.reason ?? "HyperFrames is not usable, so a deck could not be made")
       spec = input
-      project = writeDeckProject(input, ctx.jobDir)
+      // The page carries the engine's own runtime, so the presenter shows one slide at a time (see DeckWriteOptions).
+      const runtime = hyperframesRuntime()
+      if (runtime === undefined) {
+        throw new Error(`HyperFrames runs, but its runtime script (dist/${RUNTIME_FILE}) was not found beside the hyperframes on PATH, so a deck could not be presented. Reinstall it with: ${HYPERFRAMES_INSTALL}`)
+      }
+      if (runtime.version !== undefined && engine.version !== undefined && runtime.version !== engine.version) {
+        throw new Error(`the HyperFrames runtime found (${runtime.version}, ${runtime.file}) is not the engine that runs (${engine.version}); a deck needs both from one release`)
+      }
+      project = writeDeckProject(input, ctx.jobDir, { runtime: runtime.file })
+      // The presenter probe, laid down fresh on every prepare (the runner refuses a path outside the job).
+      const probeDir = join(resolve(ctx.jobDir), PROBE_DIR)
+      mkdirSync(probeDir, { recursive: true, mode: 0o700 })
+      copyFileSync(join(dirname(fileURLToPath(import.meta.url)), PROBE_FILE), join(probeDir, PROBE_FILE))
       const placeholder = placeholderNote(project)
       const notes = [
         `HyperFrames ${engine.version ?? "an unknown version"} made this deck`,
@@ -124,8 +196,9 @@ export function deckAdapter(): Adapter<DeckSpec> {
       }
     },
 
-    // One check run for every mechanical and visual rule, because a second browser session would answer about a page that
-    // is not the one the first looked at. `network` stays unset: the check reads a local file.
+    // One check run for every mechanical and visual rule of the page, then one probe of the presenter for deck.present:
+    // the two look at different things (a page seeked frame by frame, the slideshow a person steps through), and a deck
+    // can pass the first and fail the second. `network` stays unset for both: they read local files and loopback only.
     async check(ctx, defs) {
       const current = built()
       const result = await deckCheck(ctx.run, ctx.jobDir)
@@ -133,7 +206,8 @@ export function deckAdapter(): Adapter<DeckSpec> {
         const said = result.refused ?? (tailOf(result.output) || "exited with no output")
         ctx.log(`hyperframes check: ${said}`)
       }
-      return deckResults({ spec: asked(), project: current, report: result.report, shots }, defs)
+      const present = defs.some((def) => def.id === "deck.present") ? await lookAtPresenter(ctx) : {}
+      return deckResults({ spec: asked(), project: current, report: result.report, shots, ...present }, defs)
     },
 
     // The human's door (L3). A free port, then the presenter, which asks for the network itself: its server listens inside

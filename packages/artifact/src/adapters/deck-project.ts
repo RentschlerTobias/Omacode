@@ -18,7 +18,7 @@
 // `numberText`) are exported for that reason, so a bad value is named in a run's sentence the same way the writer names
 // it in a refusal.
 
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import { chmodSync, copyFileSync, mkdirSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 
 import { insidePath } from "../paths.ts"
@@ -56,6 +56,10 @@ interface IslandHotspot {
 // an array; the sorted order is the player's (it re-sorts anyway), and an empty array is the same as none.
 interface IslandSlide {
   readonly sceneId: string
+  // The scene's window, written out although the player could look it up by `sceneId`: the lookup waits for the scene
+  // list the runtime posts, and a slideshow that initialised first resolved no slide at all (2026-11-24).
+  readonly startTime: number
+  readonly endTime: number
   readonly fragments: readonly number[]
   readonly hotspots: readonly IslandHotspot[]
   readonly notes?: string
@@ -193,7 +197,14 @@ export const MAX_ASSET_BYTES = 32 * 1024 * 1024
 // writing 32 MiB into a temporary directory; production callers leave it alone and get `MAX_ASSET_BYTES`.
 export interface DeckWriteOptions {
   readonly maxAssetBytes?: number
+  // The engine's runtime script (`hyperframesRuntime()` in hyperframes.ts). It is copied into the project and loaded by
+  // the page, because `hyperframes present` serves the page as written and its player adds no runtime to a deck whose
+  // scenes are inline: without it every slide is on stage at once. Tests that only read the island leave it out.
+  readonly runtime?: string
 }
+
+// The name the runtime copy has in the project.
+export const DECK_RUNTIME = "hyperframe.runtime.iife.js"
 
 // Every slide the project writes, in the order it writes them: the main line as the author wrote it (hidden slides
 // included, because they are in the HTML) and then each branch's slides. The asset scan walks this list rather than the
@@ -272,16 +283,24 @@ function layout(spec: DeckSpec): readonly Scene[] {
 const timeOf = (seconds: number): number => Math.round(seconds * 1000) / 1000
 export const numberText = (value: number): string => String(timeOf(value))
 
-// The times a slide's reveals uncover. The spec says `reveals` as build indices; the player wants absolute seconds and
-// validates them against the scene's window. A reveal is a step, so the window is divided into one more step than there
-// are reveals and the k-th sorted reveal is the end of step k+1: [0, 1] on an eight-second slide lands at 2.67 s and
-// 5.33 s, both inside the slide, and the order the author wrote is irrelevant because the player reads a set.
+// The times a slide rests at while its reveals uncover. A reveal `k` is the body's line `k` (0-based), shown one step
+// after the line before it. The player enters a slide with fragments at the first one and steps through the rest, so
+// n reveals need n + 1 stops: the first shows the slide without them, and stop j + 1 uncovers the j-th reveal in sorted
+// order. The window is cut into n + 1 equal steps and each stop sits in the middle of its step, inside the slide:
+// [0, 1] on a slide from 8 s rests at 9.333, 12 and 14.667. The order the author wrote is irrelevant, the player reads
+// a set.
 function fragmentTimes(slide: Slide, start: number): number[] {
-  const reveals = slide.reveals ?? []
+  const reveals = [...new Set(slide.reveals ?? [])]
   if (reveals.length === 0) return []
-  const ordered = [...reveals].sort((left, right) => left - right)
-  const step = SLIDE_SECONDS / (ordered.length + 1)
-  return ordered.map((_, position) => timeOf(start + (position + 1) * step))
+  const step = SLIDE_SECONDS / (reveals.length + 1)
+  return Array.from({ length: reveals.length + 1 }, (_, k) => timeOf(start + (k + 0.5) * step))
+}
+
+// The second at which each revealed body line appears, by line index. Lines no reveal names are there from the start.
+function revealTimes(slide: Slide, start: number): ReadonlyMap<number, number> {
+  const ordered = [...new Set(slide.reveals ?? [])].sort((left, right) => left - right)
+  const stops = fragmentTimes(slide, start)
+  return new Map(ordered.map((line, j) => [line, stops[j + 1]!]))
 }
 
 // One slide as the player reads it. `fragments` and `hotspots` are always present (the manifest is easier to read and
@@ -290,6 +309,8 @@ function fragmentTimes(slide: Slide, start: number): number[] {
 function islandSlide(slide: Slide, start: number): IslandSlide {
   return {
     sceneId: slide.id,
+    startTime: start,
+    endTime: timeOf(start + SLIDE_SECONDS),
     fragments: fragmentTimes(slide, start),
     hotspots: (slide.hotspots ?? []).map((hotspot) => ({
       id: hotspot.id,
@@ -393,8 +414,75 @@ const STYLE = `
         text-align: center;
         overflow-wrap: anywhere;
       }
-      .slide .rule { width: 96px; height: 6px; background: var(--accent); border-radius: 3px; }
+      .slide .rule { width: 96px; height: 6px; background: var(--accent); border-radius: 3px; transform-origin: left center; }
       .is-hidden { display: none; }
+
+      /* Motion, in the presenter only (LIVE_SCRIPT sets .deck-live there). The slideshow seeks from rest point to rest
+         point and never plays, so a tween on the timeline would never be seen; instead a slide that comes on stage gets
+         .deck-in and its parts rise in one after the other, and a revealed line rises when its stop is reached.
+         Snapshots and checks render without .deck-live and see every slide whole and still. */
+      .deck-live .slide > * { opacity: 0; transform: translateY(36px); }
+      .deck-live .slide > .rule { transform: scaleX(0); }
+      .deck-live .slide.deck-in > * {
+        opacity: 1;
+        transform: none;
+        transition: opacity 0.55s ease-out, transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+      }
+      .deck-live .slide.deck-in > [data-reveal-at]:not(.deck-shown) { opacity: 0; transform: translateY(36px); }
+      @media (prefers-reduced-motion: reduce) {
+        .deck-live .slide > *, .deck-live .slide > .rule { opacity: 1; transform: none; transition: none !important; }
+      }
+`
+
+// The presenter's script. It acts only when the page sits inside `hyperframes present` (the parent document holds the
+// slideshow element), so a snapshot, a check or a render sees the static page they already know how to drive.
+//
+// In the presenter it first loads the engine's runtime from the project, synchronously, before the player looks for one:
+// the player adds a runtime only to a deck whose scenes live in their own files, and without one every slide is on stage
+// at once. Loading it only here keeps it out of the lint (which reads every local script, and the runtime's own clock
+// reads are errors there) and out of the render, which brings its own.
+//
+// Then the motion: on every seek it finds the scene the playhead is in; a new scene gets .deck-in with its parts
+// staggered, and a line whose reveal time has been reached gets .deck-shown. Nothing here is a clock: it reacts to the
+// player's seeks.
+const liveScript = (runtime: boolean): string => `
+      (function () {
+        var host = null;
+        try {
+          host = window.parent !== window ? window.parent.document.querySelector("hyperframes-slideshow") : null;
+        } catch (err) {
+          host = null;
+        }
+        if (!host) return;
+${runtime ? `        if (!window.__player) document.write('<script src="${DECK_RUNTIME}"><\\/script>');\n` : ""}        document.documentElement.classList.add("deck-live");
+        var scenes = Array.prototype.slice.call(document.querySelectorAll("section[data-composition-id]")).map(function (el) {
+          var start = Number(el.getAttribute("data-start"));
+          return { el: el, start: start, end: start + Number(el.getAttribute("data-duration")) };
+        });
+        var current = null;
+        function enter(el) {
+          if (current) current.classList.remove("deck-in");
+          current = el;
+          var step = 0;
+          Array.prototype.forEach.call(el.children, function (child) {
+            child.style.transitionDelay = child.hasAttribute("data-reveal-at") ? "0s" : (0.05 + 0.12 * step++).toFixed(2) + "s";
+          });
+          el.classList.remove("deck-in");
+          void el.offsetWidth;
+          el.classList.add("deck-in");
+        }
+        function show(time) {
+          var scene = scenes.find(function (s) { return time >= s.start && time < s.end; });
+          if (scene && scene.el !== current) enter(scene.el);
+          Array.prototype.forEach.call(document.querySelectorAll("[data-reveal-at]"), function (el) {
+            el.classList.toggle("deck-shown", time >= Number(el.getAttribute("data-reveal-at")) - 0.001);
+          });
+        }
+        window.addEventListener("hf-seek", function (event) {
+          var time = event && event.detail ? Number(event.detail.time) : NaN;
+          if (Number.isFinite(time)) show(time);
+        });
+      })();
 `
 
 // The asset block a slide carries: the picture when the file is there, and a labelled box when it is not. The box says
@@ -413,6 +501,16 @@ function assetLines(slide: Slide, fault: AssetFault | undefined): string[] {
 // One visible slide as a nested composition: the runtime reads the id, start and duration off a `[data-composition-id]`
 // element inside the root, emits it as a scene, and shows only the scene whose window contains the playhead. The title
 // and body are real text, so the page is readable without any script at all.
+// The body as paragraphs, one per line the author wrote, so a reveal can uncover a line. A line a reveal names carries
+// the second it appears at; the presenter hides it until then, everything else shows it.
+function bodyLines(slide: Slide, reveals: ReadonlyMap<number, number>): string[] {
+  if (slide.body === undefined) return []
+  return slide.body.split("\n").map((line, index) => {
+    const at = reveals.get(index)
+    return at === undefined ? `        <p>${escapeHtml(line)}</p>` : `        <p data-reveal-at="${numberText(at)}">${escapeHtml(line)}</p>`
+  })
+}
+
 function sceneHtml(scene: Scene, track: number, faults: ReadonlyMap<string, AssetFault>): string {
   const { slide, start } = scene
   const lines = [
@@ -420,7 +518,7 @@ function sceneHtml(scene: Scene, track: number, faults: ReadonlyMap<string, Asse
     '        <div class="rule"></div>',
   ]
   if (slide.title !== undefined) lines.push(`        <h2>${escapeHtml(slide.title)}</h2>`)
-  if (slide.body !== undefined) lines.push(`        <p>${escapeHtml(slide.body)}</p>`)
+  lines.push(...bodyLines(slide, revealTimes(slide, start)))
   lines.push(...assetLines(slide, faults.get(slide.id)))
   lines.push("      </section>")
   return lines.join("\n")
@@ -432,7 +530,7 @@ function sceneHtml(scene: Scene, track: number, faults: ReadonlyMap<string, Asse
 function hiddenHtml(slide: Slide, faults: ReadonlyMap<string, AssetFault>): string {
   const lines = [`      <section id="hidden-${slide.id}" class="slide is-hidden" data-slide-id="${slide.id}" hidden>`]
   if (slide.title !== undefined) lines.push(`        <h2>${escapeHtml(slide.title)}</h2>`)
-  if (slide.body !== undefined) lines.push(`        <p>${escapeHtml(slide.body)}</p>`)
+  lines.push(...bodyLines(slide, new Map()))
   lines.push(...assetLines(slide, faults.get(slide.id)))
   lines.push("      </section>")
   return lines.join("\n")
@@ -443,6 +541,7 @@ function htmlFor(
   scenes: readonly Scene[],
   island: DeckIsland,
   faults: ReadonlyMap<string, AssetFault>,
+  runtime: boolean,
 ): string {
   const total = scenes.length * SLIDE_SECONDS
   const body = [
@@ -474,6 +573,7 @@ ${islandText(island)}
         pause: function () {},
       };
     </script>
+    <script>${liveScript(runtime)}    </script>
   </body>
 </html>
 `
@@ -516,7 +616,7 @@ export function writeDeckProject(spec: DeckSpec, jobDir: string, opts: DeckWrite
   const scenes = layout(spec)
   const island = islandFor(spec, scenes)
   const files: ReadonlyArray<readonly [string, string]> = [
-    ["index.html", htmlFor(spec, scenes, island, faults)],
+    ["index.html", htmlFor(spec, scenes, island, faults, opts.runtime !== undefined)],
     ["hyperframes.json", PROJECT_JSON],
     ["meta.json", metaJson(spec.job)],
   ]
@@ -525,10 +625,15 @@ export function writeDeckProject(spec: DeckSpec, jobDir: string, opts: DeckWrite
     writeFileSync(path, text, { mode: 0o600 })
     chmodSync(path, 0o600)
   }
+  if (opts.runtime !== undefined) {
+    const path = join(dir, DECK_RUNTIME)
+    copyFileSync(opts.runtime, path)
+    chmodSync(path, 0o600)
+  }
 
   return {
     dir,
-    files: files.map(([name]) => name),
+    files: [...files.map(([name]) => name), ...(opts.runtime !== undefined ? [DECK_RUNTIME] : [])],
     slides: island.slides.length,
     island,
     // The scenes as the caller may hold them: ids and seconds, and no slide body. A snapshot seeks to `start`, and a
