@@ -1,6 +1,6 @@
 {
   "name": "@omacode/sandbox",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "Run delegated child sessions' shell commands in a sandbox",
@@ -26,8 +26,8 @@
     "security"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "exports": {
     ".": "./src/plugin.ts",
@@ -39,7 +39,7 @@
     "src"
   ],
   "dependencies": {
-    "@omacode/core": "0.1.1"
+    "@omacode/core": "1.0.0"
   },
   "publishConfig": {
     "access": "public"

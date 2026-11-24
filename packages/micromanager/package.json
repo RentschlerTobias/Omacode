@@ -1,6 +1,6 @@
 {
   "name": "@omacode/micromanager",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "An OpenCode v2 plugin that orchestrates sub-agents, with Jev making the decisions",
@@ -26,6 +26,9 @@
     "./features": "./src/features.ts",
     "./setup": "./src/setup.ts"
   },
+  "bin": {
+    "omacode": "./src/cli.ts"
+  },
   "files": [
     "src",
     "skills",
@@ -43,17 +46,17 @@
     "access": "public"
   },
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "dependencies": {
-    "@omacode/artifact": "0.1.1",
-    "@omacode/context": "0.1.1",
-    "@omacode/core": "0.1.1",
-    "@omacode/guard": "0.1.1",
-    "@omacode/sandbox": "0.1.1",
-    "@omacode/state": "0.1.1",
-    "@omacode/tui": "0.1.1",
+    "@omacode/artifact": "1.0.0",
+    "@omacode/context": "1.0.0",
+    "@omacode/core": "1.0.0",
+    "@omacode/guard": "1.0.0",
+    "@omacode/sandbox": "1.0.0",
+    "@omacode/state": "1.0.0",
+    "@omacode/tui": "1.0.0",
     "@anthropic-ai/sandbox-runtime": "0.0.81",
     "playwright-core": "^1.64.1"
   }

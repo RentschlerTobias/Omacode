@@ -1,6 +1,6 @@
 {
   "name": "@omacode/context",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "Context epochs, memory and token accounting for OpenCode sessions",
@@ -36,10 +36,10 @@
     "access": "public"
   },
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "dependencies": {
-    "@omacode/core": "0.1.1"
+    "@omacode/core": "1.0.0"
   }
 }

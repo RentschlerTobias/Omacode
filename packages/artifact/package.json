@@ -1,6 +1,6 @@
 {
   "name": "@omacode/artifact",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "Artifact contracts for the Omacode plugins: deck, video, site and image specs",
@@ -26,8 +26,8 @@
     "contracts"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "exports": {
     ".": "./src/index.ts",
@@ -66,8 +66,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@omacode/core": "0.1.1",
-    "@omacode/sandbox": "0.1.1",
+    "@omacode/core": "1.0.0",
+    "@omacode/sandbox": "1.0.0",
     "axe-core": "4.14.0",
     "playwright-core": "^1.64.1"
   }

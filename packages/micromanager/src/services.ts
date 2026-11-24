@@ -14,7 +14,7 @@
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { dirname, extname, join, resolve } from "node:path"
 
 import { userDataDir } from "@omacode/core/paths"
 import { runDir } from "@omacode/core/services"
@@ -73,9 +73,11 @@ export function registerComfy(comfy: ComfyConfig, home = servicesHome()): boolea
   return true
 }
 
-// The plugin's own decider/ directory: beside packages/ in a checkout and in the installed package alike.
+// The plugin's own decider/ directory: in the published package beside dist/ (scripts/pack-js.mjs copies it in), in a
+// checkout at the repository root beside packages/.
 export function deciderSource(): string {
-  return resolve(import.meta.dirname, "..", "..", "..", "decider")
+  const packed = resolve(import.meta.dirname, "..", "decider")
+  return existsSync(join(packed, "uv.lock")) ? packed : resolve(import.meta.dirname, "..", "..", "..", "decider")
 }
 
 // The newest tuned checkpoint the plugin ships (decider/models/<name>/model.safetensors), if any.
@@ -126,7 +128,8 @@ export const embeddingUrl = (size: EmbeddingSize): string =>
 // working after a reboot, and both name nothing of the user's checkout but the plugin's own entry file.
 
 export function supervisorEntry(): string {
-  return resolve(import.meta.dirname, "services-main.ts")
+  // .ts in a checkout, .js in the published package (Node runs no TypeScript from node_modules)
+  return resolve(import.meta.dirname, `services-main${extname(import.meta.filename)}`)
 }
 
 export function systemdUnit(node: string, entry: string, home: string): string {

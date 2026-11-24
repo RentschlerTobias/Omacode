@@ -3,15 +3,17 @@
 // on. `--dry` (the default) typechecks, runs the fast suite and prints every tarball; `--publish` uploads and needs a
 // 2FA code per package, or an NPM_TOKEN with bypass 2FA.
 //
-//   node scripts/release.mjs             # checks + `npm publish --dry-run` for all 8
+//   node scripts/release.mjs             # checks + `npm publish --dry-run` for all 9
 //   node scripts/release.mjs --publish   # the real thing
 import { spawnSync } from "node:child_process"
 
-// Dependencies first: @omacode/micromanager pulls @omacode/tui (its progress helpers), which pulls state and context.
+// Dependencies first: @omacode/micromanager pulls @omacode/tui (its progress helpers) and @omacode/artifact; the TUI
+// imports @omacode/micromanager's installer back, a cycle npm resolves at install time (nothing checks it at publish).
 const ORDER = [
   "@omacode/core",
   "@omacode/guard",
   "@omacode/sandbox",
+  "@omacode/artifact",
   "@omacode/state",
   "@omacode/context",
   "@omacode/tui",

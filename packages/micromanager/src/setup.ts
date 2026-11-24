@@ -353,7 +353,11 @@ export function pluginChecks(at: Paths): Check[] {
       ? { area: "plugin", level: "ok", text: `linked from a checkout: ${linked}` }
       : { area: "plugin", level: "fail", text: `${at.pluginLink} points at ${linked}, which is gone`, fix: "run ./install.sh in the checkout again, or ./install.sh --remove" })
   }
-  for (const p of packages) out.push({ area: "plugin", level: "info", text: `also listed in opencode.json: ${p} (each part registers once, so this is harmless)` })
+  for (const p of packages) {
+    out.push(linked !== undefined
+      ? { area: "plugin", level: "info", text: `also listed in opencode.json: ${p} (each part registers once, so this is harmless)` }
+      : { area: "plugin", level: "ok", text: `installed as a package: ${p}` })
+  }
   if (linked === undefined && packages.length === 0) out.push({ area: "plugin", level: "fail", text: "the plugin is not installed", fix: "./install.sh in a checkout, or: opencode plugin add @omacode/full" })
 
   const tui = pluginEntries(readJson(at.cliJson)).includes(at.tuiDir) && existsSync(join(at.tuiDir, "tui.tsx"))

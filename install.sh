@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install micromanager into OpenCode from a checkout (a symlink, so the repo stays the source), or remove it. For a run
-# without a checkout use OpenCode's own installer, which needs nothing from this script:
-#   opencode plugin add 'github:RentschlerTobias/Micromanager#v0.1.0'
+# Install omacode into OpenCode from a checkout (a symlink, so the repo stays the source), or remove it. Without a
+# checkout use OpenCode's own installer, which needs nothing from this script:
+#   opencode plugin add @omacode/full
 #
 #   ./install.sh            install what omacode needs and is missing (Node 22.18+, OpenCode, git, bubblewrap: one
 #                           question, then the package manager or the project's own installer), link

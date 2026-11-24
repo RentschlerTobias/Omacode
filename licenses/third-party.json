@@ -4,7 +4,7 @@
     {
       "name": "omacode",
       "kind": "plugin",
-      "version": "0.1.1",
+      "version": "1.0.0",
       "spdx": "Apache-2.0",
       "installedBy": "minimal",
       "source": "https://github.com/RentschlerTobias/Omacode",

@@ -14,7 +14,7 @@ DISABLE_TELEMETRY=1 for everything it starts and for every agent shell (`package
 
 | Name | Version | Licence | Installed by | Where | Commercial use of what you make | When you pass it on | Telemetry |
 |---|---|---|---|---|---|---|---|
-| omacode | 0.1.1 | `Apache-2.0` | minimal | global | yes | keep LICENSE when redistributing | none |
+| omacode | 1.0.0 | `Apache-2.0` | minimal | global | yes | keep LICENSE when redistributing | none |
 | OpenCode |  | `MIT` | you | global | yes | keep the copyright notice | none found in 2.2.5 (an embedded component honours DO_NOT_TRACK, which omacode sets) |
 | uv |  | `MIT OR Apache-2.0` | you | global | n/a | keep the copyright notice | not checked |
 | bubblewrap |  | `LGPL-2.1-or-later` | you | global | n/a | none for use; LGPL terms when redistributing it | none |

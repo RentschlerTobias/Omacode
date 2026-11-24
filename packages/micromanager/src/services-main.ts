@@ -2,6 +2,7 @@
 // install` wrote, keeps a token in the run directory (only the user can read it; the plugin sends it), and starts the
 // supervisor with the decider and the embedding service on their usual ports.
 
+import { isMain } from "@omacode/core/main"
 import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
@@ -102,7 +103,7 @@ function token(dir: string): string {
   return t
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   const home = process.env.OMACODE_SERVICES_HOME || servicesHome()
   const config = JSON.parse(readFileSync(configPath(home), "utf8")) as ServicesConfig
   const dir = runDir()

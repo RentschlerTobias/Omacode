@@ -1,6 +1,6 @@
 {
   "name": "@omacode/core",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "Shared paths, journal and configuration primitives for the Omacode plugins",
@@ -26,8 +26,8 @@
     "redaction"
   ],
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "exports": {
     "./paths": "./src/paths.ts",
@@ -42,7 +42,8 @@
     "./project": "./src/project.ts",
     "./supervisor": "./src/supervisor.ts",
     "./service-control": "./src/service-control.ts",
-    "./telemetry": "./src/telemetry.ts"
+    "./telemetry": "./src/telemetry.ts",
+    "./main": "./src/main.ts"
   },
   "files": [
     "src"

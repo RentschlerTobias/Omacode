@@ -41,22 +41,28 @@ and research [docs/plan.md](docs/plan.md). Development happens on the branch `om
 
 ## Install
 
-As an OpenCode plugin, from npm:
+As an OpenCode plugin, from npm (Node 22.18 or newer):
 
 ```bash
-opencode plugin add @omacode/micromanager
+opencode plugin add @omacode/full
 ```
 
-That installs the orchestrator and its library dependencies (`@omacode/core`, `state`, `guard`, `sandbox`, `context`).
-The TUI is a separate CLI plugin:
+One package brings the server plugin (guard, sandbox, context and the micromanager) and the TUI: OpenCode loads a
+package's `.` export as the server plugin and its `./tui` export as the TUI. On the first start the TUI asks what you
+want to make and offers the parts that goal needs; `/setup` lists and installs them later. Upgrade with
+`opencode plugin update`, remove with `opencode plugin remove @omacode/full`.
+
+The command line (`doctor`, `preflight`, `services install`, `uninstall`, `tools`) is the `omacode` command of
+`@omacode/micromanager`:
 
 ```bash
-opencode plugin add @omacode/tui
+npx -p @omacode/micromanager omacode doctor     # once
+npm install -g @omacode/micromanager            # or keep it on PATH
 ```
 
-and `opencode plugin add` puts it into `~/.config/opencode/cli.json` (its `./tui` entry; the package has no server
-part, so the server never loads it). `./install.sh --all` does both from a checkout.
-To upgrade: `opencode plugin update`; to remove: `opencode plugin remove @omacode/micromanager`.
+The packages ship JavaScript built from the TypeScript sources at pack time (`scripts/pack-js.mjs`): Node runs no
+TypeScript from `node_modules`. The decider's sources come along; its model is downloaded on the services' first
+start.
 
 From a checkout, for development (the symlink means the running server reads your working tree):
 

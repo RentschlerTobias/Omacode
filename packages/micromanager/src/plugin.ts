@@ -1413,7 +1413,7 @@ const plugin = {
       const state = (p: Progress, s: "running" | "done" | "failed") => ({ state: s, iterations, evaluations: p.evaluations, valid: p.valid, ...(p.best ? { best: p.best } : {}), ...bridge.calls(), started })
       let last: Progress = { evaluations: 0, valid: 0 }
       const run = runEvolver(
-        specOf({ workdir: dir, file, initial, checks, contract, output: out, models, iterations, runner: ["node", fileURLToPath(new URL("./cli.ts", import.meta.url)), "sandboxed", "--dir", "{dir}", "--"], bridge, ...(contract.corpus.heldOut ? { heldOutDir: heldOutDir(proj, job.id, contract.id) } : {}) }),
+        specOf({ workdir: dir, file, initial, checks, contract, output: out, models, iterations, runner: ["node", fileURLToPath(new URL(`./cli${extname(fileURLToPath(import.meta.url))}`, import.meta.url)), "sandboxed", "--dir", "{dir}", "--"], bridge, ...(contract.corpus.heldOut ? { heldOutDir: heldOutDir(proj, job.id, contract.id) } : {}) }),
         (p) => {
           last = p
           native.noteEvolve(proj, job.id, task.id, state(p, "running"))

@@ -8,7 +8,7 @@
     "telemetry": "what it reports to its maker on its own, and how omacode turns it off ('not checked' where nobody has looked yet)"
   },
   "components": [
-    {"name": "omacode", "kind": "plugin", "version": "0.1.1", "spdx": "Apache-2.0", "installedBy": "minimal", "source": "https://github.com/RentschlerTobias/Omacode", "territory": "global", "commercialOutput": "yes", "attribution": "keep LICENSE when redistributing", "telemetry": "none"},
+    {"name": "omacode", "kind": "plugin", "version": "1.0.0", "spdx": "Apache-2.0", "installedBy": "minimal", "source": "https://github.com/RentschlerTobias/Omacode", "territory": "global", "commercialOutput": "yes", "attribution": "keep LICENSE when redistributing", "telemetry": "none"},
     {"name": "OpenCode", "kind": "host", "spdx": "MIT", "installedBy": "you", "source": "https://github.com/anomalyco/opencode", "territory": "global", "commercialOutput": "yes", "attribution": "keep the copyright notice", "telemetry": "none found in 2.2.5 (an embedded component honours DO_NOT_TRACK, which omacode sets)"},
     {"name": "uv", "kind": "tool", "spdx": "MIT OR Apache-2.0", "installedBy": "you", "source": "https://github.com/astral-sh/uv", "territory": "global", "commercialOutput": "n/a", "attribution": "keep the copyright notice", "telemetry": "not checked"},
     {"name": "bubblewrap", "kind": "system", "spdx": "LGPL-2.1-or-later", "installedBy": "you", "source": "https://github.com/containers/bubblewrap", "territory": "global", "commercialOutput": "n/a", "attribution": "none for use; LGPL terms when redistributing it", "telemetry": "none"},

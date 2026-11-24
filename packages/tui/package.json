@@ -1,6 +1,6 @@
 {
   "name": "@omacode/tui",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "private": false,
   "type": "module",
   "description": "The OpenCode TUI plugin: jobs, tasks, workers and the context panel",
@@ -38,14 +38,14 @@
     "access": "public"
   },
   "scripts": {
-    "prepack": "node ../../scripts/copy-license.mjs",
-    "postpack": "node ../../scripts/copy-license.mjs --remove"
+    "prepack": "node ../../scripts/pack-js.mjs",
+    "postpack": "node ../../scripts/pack-js.mjs --restore"
   },
   "dependencies": {
-    "@omacode/context": "0.1.1",
-    "@omacode/core": "0.1.1",
-    "@omacode/state": "0.1.1",
-    "@omacode/micromanager": "0.1.1"
+    "@omacode/context": "1.0.0",
+    "@omacode/core": "1.0.0",
+    "@omacode/state": "1.0.0",
+    "@omacode/micromanager": "1.0.0"
   },
   "peerDependencies": {
     "@opencode/plugin": "*",

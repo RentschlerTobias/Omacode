@@ -12,5 +12,5 @@
     "skipLibCheck": true
   },
   "include": ["packages", "test", "container"],
-  "exclude": ["src/tui.tsx", "packages/tui/src/tui.tsx"]
+  "exclude": ["src/tui.tsx", "packages/tui/src/tui.tsx", "packages/full/src/tui.ts"]
 }

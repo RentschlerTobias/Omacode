@@ -178,6 +178,11 @@ test("doctor finds the plugin by its link or its package, and says a dangling li
   assert.equal(levelOf(good, "config"), "ok")
   assert.ok(good.some((c) => c.level === "info" && /also listed in opencode\.json/.test(c.text)))
 
+  // Installed from npm alone (opencode plugin add): the package entry is the install.
+  rmSync(at.pluginLink)
+  assert.ok(pluginChecks(at).some((c) => c.area === "plugin" && c.level === "ok" && /installed as a package/.test(c.text)))
+  symlinkSync(target, at.pluginLink)
+
   rmSync(target)
   writeFileSync(at.config, "{ broken")
   writeFileSync(at.cliJson, "{}")

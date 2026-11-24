@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Command line: npm run eval -- [--floor 0.8] [--backend cloud] [--journal path]
 //               npm run export-dataset -- [--target openjev|gliner|router] [--out file] [--journal path]
 //               npm run bench -- [--guard-cases bench/guard_cases.json] [--permission-cases bench/permission_cases.json] [--out path]
@@ -25,6 +26,7 @@
 //                                                                the evolver's candidates run under it, src/evolver.ts)
 
 import { spawnSync } from "node:child_process"
+import { isMain } from "@omacode/core/main"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname as dir, join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
@@ -306,7 +308,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   return 2
 }
 
-if (import.meta.main) process.exit(await main(process.argv.slice(2)))
+if (isMain(import.meta)) process.exit(await main(process.argv.slice(2)))
 
 // memory-adopt: without slugs it proposes the keys that look like this project's (its folder name, its jobs'
 // worktrees) and asks before moving them; with slugs it moves exactly those, which is how a key under another name is
