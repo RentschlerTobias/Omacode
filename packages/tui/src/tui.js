@@ -1540,8 +1540,10 @@ async function installFlow(context, parts, why = "") {
   const there = await presentState(featuresExec);
   const missing = parts.filter(id => !isPresent(id, there) && !(OFFERS[id].after && !parts.includes(OFFERS[id].after) && !isPresent(OFFERS[id].after, there)));
   if (!missing.length) return true;
-  const sudo = missing.filter(id => OFFERS[id].system);
-  const user = missing.filter(id => !OFFERS[id].system);
+  // root (a container) needs no password: system packages install from here too
+  const root = process.getuid?.() === 0;
+  const sudo = root ? [] : missing.filter(id => OFFERS[id].system);
+  const user = root ? missing : missing.filter(id => !OFFERS[id].system);
   if (user.length) {
     const yes = await context.ui.dialog.confirm({
       title: `${why}Install ${user.map(id => OFFERS[id].title).join(" and ")}?`,
@@ -1593,28 +1595,43 @@ async function installFlow(context, parts, why = "") {
   return sudo.length === 0;
 }
 
-// /setup: every optional part, whether it is there, and installing one by picking it.
+// /setup: every optional part with whether it is there. Picking a missing part ticks or unticks it; "Install" installs
+// everything ticked after one confirmation (OpenCode's select picks one option, so the list comes back after each tick).
 async function setupDialog(context) {
   const there = await presentState(featuresExec);
-  const chosen = await context.ui.dialog.select({
-    title: "Omacode parts · ↵ install",
-    placeholder: "part",
-    options: OFFER_IDS.map(id => {
-      const o = OFFERS[id];
-      const here = isPresent(id, there);
-      return {
-        title: `${here ? "✓" : "○"} ${o.title}`,
-        value: id,
-        description: here ? "installed" : `${o.what} · ${o.size}${o.system ? " · needs sudo" : ""}`
-      };
-    })
-  });
-  const id = OFFER_IDS.find(x => x === chosen);
-  if (!id) return;
-  if (isPresent(id, there)) return context.ui.toast.show({
-    message: `${OFFERS[id].title} is installed`
-  });
-  await installFlow(context, [id]);
+  const picked = new Set();
+  const INSTALL = "__install__";
+  for (;;) {
+    const size = [...picked].map(id => OFFERS[id].size).join(" + ");
+    const chosen = await context.ui.dialog.select({
+      title: "Omacode parts · ↵ tick, then Install",
+      placeholder: "part",
+      options: [...(picked.size ? [{
+        title: `▶ Install ${picked.size} part${picked.size === 1 ? "" : "s"}`,
+        value: INSTALL,
+        description: size
+      }] : []), ...OFFER_IDS.map(id => {
+        const o = OFFERS[id];
+        const here = isPresent(id, there);
+        return {
+          title: `${here ? "✓" : picked.has(id) ? "[x]" : "[ ]"} ${o.title}`,
+          value: id,
+          description: here ? "installed" : `${o.what} · ${o.size}${o.system ? " · system package" : ""}`
+        };
+      })]
+    });
+    if (chosen === INSTALL) break;
+    const id = OFFER_IDS.find(x => x === chosen);
+    if (!id) return; // esc: nothing installed
+    if (isPresent(id, there)) {
+      context.ui.toast.show({
+        message: `${OFFERS[id].title} is installed`
+      });
+      continue;
+    }
+    if (picked.has(id)) picked.delete(id);else picked.add(id);
+  }
+  await installFlow(context, [...picked]);
 }
 
 // The first start: what do you want to make? The answer decides which parts are offered; decks then lead to the first

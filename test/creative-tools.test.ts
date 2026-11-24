@@ -79,8 +79,9 @@ test("each install is pinned and stays in the home", async () => {
   const hf = installSteps("hyperframes", h)
   assert.deepEqual(hf[0]!.args.slice(0, 3), ["install", "--prefix", join(h.data, "tools", "hyperframes")])
   assert.ok(hf[0]!.args.includes(`hyperframes@${PINS.hyperframes}`))
-  assert.deepEqual(hf[1]!.args, ["-sfn", join(h.data, "tools", "hyperframes", "node_modules", ".bin", "hyperframes"), join(h.home, ".local", "bin", "hyperframes")])
-  assert.deepEqual(installSteps("manim", h).map((s) => [s.cmd, ...s.args].join(" ")), [`uv tool install --force manim==${PINS.manim}`])
+  assert.deepEqual(hf[1]!.args, ["-p", join(h.home, ".local", "bin")], "the bin directory exists before the link (a fresh machine has none)")
+  assert.deepEqual(hf[2]!.args, ["-sfn", join(h.data, "tools", "hyperframes", "node_modules", ".bin", "hyperframes"), join(h.home, ".local", "bin", "hyperframes")])
+  assert.deepEqual(installSteps("manim", h).map((s) => [s.cmd, ...s.args].join(" ")), [`uv tool install --force --python 3.12 manim==${PINS.manim}`])
 
   kfdNode(h, "1", 110500)
   const [, igpu] = await gpus(fakeRun({ "nvidia-smi": { stdout: "X, 1024\n" } }), h)

@@ -168,12 +168,14 @@ export async function installParts(parts: readonly OfferId[], o: InstallOptions)
   let terminal: string | undefined
 
   // uv from its own installer when sudo cannot run: it needs none, and the services and Python tools need it.
-  const sudoNeeds = plan.system.filter((n) => !(n === "uv" && !o.allowSudo))
-  const userNeeds = plan.system.filter((n) => n === "uv" && !o.allowSudo)
+  // root (a container) needs no password, so system packages install from any door there
+  const sudo = o.allowSudo || process.getuid?.() === 0
+  const sudoNeeds = plan.system.filter((n) => !(n === "uv" && !sudo))
+  const userNeeds = plan.system.filter((n) => n === "uv" && !sudo)
   const manager = packageManager(realProbe(o.run))
   if (sudoNeeds.length) {
     const sys = systemInstall(manager, sudoNeeds)
-    if (o.allowSudo) {
+    if (sudo) {
       for (const m of sys.manual) {
         o.log(`install by hand: ${m}`)
         failed.push(m)

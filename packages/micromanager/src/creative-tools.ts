@@ -195,11 +195,12 @@ export function installSteps(tool: ToolName, h: Home = home(), gpu?: Gpu): Step[
     const prefix = hyperframesPrefix(h)
     return [
       { say: `HyperFrames ${PINS.hyperframes} into ${prefix}`, cmd: "npm", args: ["install", "--prefix", prefix, "--no-audit", "--no-fund", `hyperframes@${PINS.hyperframes}`] },
+      { say: `make ${localBin(h)}`, cmd: "mkdir", args: ["-p", localBin(h)] },
       { say: `link ${join(localBin(h), "hyperframes")}`, cmd: "ln", args: ["-sfn", join(prefix, "node_modules", ".bin", "hyperframes"), join(localBin(h), "hyperframes")] },
     ]
   }
   if (tool === "manim") {
-    return [{ say: `Manim ${PINS.manim} as a uv tool`, cmd: "uv", args: ["tool", "install", "--force", `manim==${PINS.manim}`] }]
+    return [{ say: `Manim ${PINS.manim} as a uv tool`, cmd: "uv", args: ["tool", "install", "--force", "--python", "3.12", `manim==${PINS.manim}`] }]
   }
   if (tool === "web-guidance") {
     const dir = webGuidanceDir(h)
