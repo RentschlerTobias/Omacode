@@ -202,7 +202,15 @@ export async function installParts(parts: readonly OfferId[], o: InstallOptions)
     const devices = await gpus(o.run)
     gpu = typeof o.gpu === "string" ? devices.find((g) => g.id === o.gpu) : (o.gpu ?? devices[0])
   }
-  for (const name of plan.tools) (await installTool(name, o.log, name === "comfyui" ? gpu : undefined)) ? installed.push(TOOL_INFO[name].title) : failed.push(TOOL_INFO[name].title)
+  for (const name of plan.tools) {
+    const need = Object.values(OFFERS).find((x) => x.tool === name)?.buildNeeds
+    if (need && terminal && sudoNeeds.includes(need)) {
+      o.log(`${TOOL_INFO[name].title} waits for its system libraries (the terminal command above); install them, then this part again`)
+      failed.push(`${TOOL_INFO[name].title} (needs its system libraries first)`)
+      continue
+    }
+    ;(await installTool(name, o.log, name === "comfyui" ? gpu : undefined)) ? installed.push(TOOL_INFO[name].title) : failed.push(TOOL_INFO[name].title)
+  }
   return { ok: failed.length === 0, installed, present, ...(terminal ? { terminal } : {}), failed }
 }
 

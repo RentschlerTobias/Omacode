@@ -42,3 +42,14 @@ test("a deck or a video names what it needs; sites and images have fallbacks and
   assert.match(note, /ask the user whether to install it/)
   assert.match(note, /ffmpeg .* is a system package: ask the user to run \.\/install\.sh --with ffmpeg/)
 })
+
+test("Manim brings the libraries it is built against; without sudo it waits for them instead of failing halfway", async () => {
+  const { planFor } = await import("../packages/micromanager/src/setup.ts")
+  const bare = present({ which: (n) => (n === "uv" ? "/usr/bin/uv" : undefined) })
+  assert.deepEqual(planFor(["manim"], bare).system, ["cairo-build"])
+  assert.deepEqual(planFor(["manim"], present({ which: (n) => (["uv", "pkg-config"].includes(n) ? `/usr/bin/${n}` : undefined) })).system, [], "a machine with pkg-config has the libraries")
+  const outcome = await installParts(["manim"], { run: never, log: () => undefined, there: bare })
+  assert.match(outcome.terminal ?? "", /cairo/)
+  assert.deepEqual(outcome.installed, [])
+  assert.match(outcome.failed.join(), /Manim \(needs its system libraries first\)/)
+})

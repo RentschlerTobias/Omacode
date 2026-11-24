@@ -133,15 +133,17 @@ export async function preflight(p: Probe): Promise<Check[]> {
 // brings uv along. A profile is the same answers given up front.
 
 export type Manager = "pacman" | "apt" | "dnf" | "brew"
-export type SystemNeed = "git" | "bubblewrap" | "chromium" | "ffmpeg" | "uv" | "node"
+// cairo-build: what Manim builds pycairo and manimpango against (cairo, pango, pkg-config, a C compiler); without it a
+// fresh machine fails the Manim install (found in a bare Arch container, 2026-11-24).
+export type SystemNeed = "git" | "bubblewrap" | "chromium" | "ffmpeg" | "uv" | "node" | "cairo-build"
 
 // The package of each need per package manager. A need a manager does not carry is installed another way (uv) or
 // named for the user to install (Node on apt, whose nodejs is older than the plugin needs).
 export const PACKAGES: Readonly<Record<Manager, Partial<Record<SystemNeed, string>>>> = {
-  pacman: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg", uv: "uv", node: "nodejs npm" },
-  apt: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg" },
-  dnf: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg-free", uv: "uv", node: "nodejs" },
-  brew: { git: "git", ffmpeg: "ffmpeg", uv: "uv", node: "node" },
+  pacman: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg", uv: "uv", node: "nodejs npm", "cairo-build": "cairo pango pkgconf gcc" },
+  apt: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg", "cairo-build": "libcairo2-dev libpango1.0-dev pkg-config build-essential" },
+  dnf: { git: "git", bubblewrap: "bubblewrap", chromium: "chromium", ffmpeg: "ffmpeg-free", uv: "uv", node: "nodejs", "cairo-build": "cairo-devel pango-devel pkgconf gcc" },
+  brew: { git: "git", ffmpeg: "ffmpeg", uv: "uv", node: "node", "cairo-build": "cairo pango pkgconf" },
 }
 
 // uv's own installer where the package manager has no uv, pinned to a release older than two weeks (2026-10-20).
@@ -215,6 +217,8 @@ export interface Offer {
   readonly system?: SystemNeed
   readonly tool?: ToolName
   readonly needsUv?: boolean
+  // system libraries it is built against; installed with the system packages when it is not there yet
+  readonly buildNeeds?: SystemNeed
   // only offered when this other part is there or chosen
   readonly after?: OfferId
 }
@@ -226,7 +230,7 @@ export const OFFERS: Readonly<Record<OfferId, Offer>> = {
   hyperframes: { title: TOOL_INFO.hyperframes.title, what: TOOL_INFO.hyperframes.what, size: TOOL_INFO.hyperframes.size, licence: "Apache-2.0", tool: "hyperframes" },
   comfyui: { title: TOOL_INFO.comfyui.title, what: TOOL_INFO.comfyui.what, size: TOOL_INFO.comfyui.size, licence: "GPL-3.0-only", tool: "comfyui", needsUv: true },
   "comfy-mcp": { title: TOOL_INFO["comfy-mcp"].title, what: TOOL_INFO["comfy-mcp"].what, size: TOOL_INFO["comfy-mcp"].size, licence: "AGPL-3.0-or-later OR LicenseRef-Comfy-Commercial", tool: "comfy-mcp", needsUv: true, after: "comfyui" },
-  manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, licence: "MIT", tool: "manim", needsUv: true },
+  manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, licence: "MIT", tool: "manim", needsUv: true, buildNeeds: "cairo-build" },
   "web-guidance": { title: TOOL_INFO["web-guidance"].title, what: TOOL_INFO["web-guidance"].what, size: TOOL_INFO["web-guidance"].size, licence: "Apache-2.0", tool: "web-guidance" },
 }
 
@@ -262,6 +266,10 @@ export function planFor(chosen: readonly OfferId[], there: Present): Plan {
   })
   const system: SystemNeed[] = kept.map((id) => OFFERS[id].system).filter((x): x is SystemNeed => Boolean(x))
   if (kept.some((id) => OFFERS[id].needsUv) && !there.which("uv")) system.unshift("uv")
+  for (const id of kept) {
+    const need = OFFERS[id].buildNeeds
+    if (need && !there.which("pkg-config") && !system.includes(need)) system.push(need)
+  }
   return {
     system,
     services: kept.includes("services"),
