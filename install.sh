@@ -168,6 +168,11 @@ fi
 
 # Before anything is written: what omacode needs, installed after one question when it is missing.
 ensure_node
+# The checkout's own packages and their dependencies (a fresh clone has no node_modules), from the lockfile as it is.
+if [[ ! -e "$REPO/node_modules/@omacode/core" ]]; then
+  echo "installing the plugin's dependencies (npm ci, from package-lock.json)"
+  (cd "$REPO" && npm ci --no-audit --no-fund) || { echo "npm ci failed; run it in $REPO and then ./install.sh again" >&2; exit 1; }
+fi
 node "$CLI_TS" setup required $YES || { echo "omacode cannot run here yet: see the ✗ lines above, then run ./install.sh again" >&2; exit 1; }
 
 mkdir -p "$PLUGINS"

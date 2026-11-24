@@ -1,0 +1,14 @@
+# A machine that has never seen omacode, for scripts/try-clean.sh: Arch Linux (as the maintainer's Omarchy) with its
+# base system, sudo and one user. No Node, no git, no bubblewrap, no OpenCode: install.sh has to bring them.
+# The image is pinned by date (at least two weeks old); pacman -Syu brings the packages a new user would get today.
+FROM docker.io/library/archlinux:base-20261108.0.623074
+
+RUN pacman -Syu --noconfirm --needed sudo \
+ && pacman -Scc --noconfirm \
+ && useradd -m -s /bin/bash tester \
+ && echo "tester ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/tester \
+ && chmod 0440 /etc/sudoers.d/tester
+
+USER tester
+WORKDIR /home/tester
+ENV LANG=C.UTF-8
