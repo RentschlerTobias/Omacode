@@ -30,8 +30,9 @@ export interface BuildOptions {
   readonly adapter?: Adapter
   readonly runner?: HostRunner
   readonly signal?: AbortSignal
-  // After a build whose checks all passed: start the adapter's presenter (a deck's `hyperframes present`) and say where.
-  readonly present?: boolean
+  // After a build whose checks all passed: start the adapter's presenter (a deck's `hyperframes present`) and say where;
+  // "studio" starts HyperFrames Studio on a deck instead, where the user can edit it by hand.
+  readonly present?: boolean | "studio"
 }
 
 export type BuildStep = "spec" | "prepare" | "render" | "snapshot" | "check"
@@ -53,7 +54,7 @@ export interface BuildReport {
 }
 
 export function adapterFor(kind: ArtifactKind, options: BuildOptions = {}): Adapter {
-  if (kind === "deck") return deckAdapter() as unknown as Adapter
+  if (kind === "deck") return deckAdapter({ editor: options.present === "studio" ? "studio" : "present" }) as unknown as Adapter
   if (kind === "video") return videoAdapter() as unknown as Adapter
   if (kind === "site") return webAdapter() as unknown as Adapter
   return imageAdapter(options.images) as unknown as Adapter

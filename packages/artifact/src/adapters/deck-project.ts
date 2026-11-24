@@ -18,7 +18,8 @@
 // `numberText`) are exported for that reason, so a bad value is named in a run's sentence the same way the writer names
 // it in a refusal.
 
-import { chmodSync, copyFileSync, mkdirSync, statSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { isAbsolute, join, resolve } from "node:path"
 
 import { insidePath } from "../paths.ts"
@@ -205,6 +206,35 @@ export interface DeckWriteOptions {
 
 // The name the runtime copy has in the project.
 export const DECK_RUNTIME = "hyperframe.runtime.iife.js"
+
+// What the writer last wrote, so a page changed by hand since (in HyperFrames Studio, or in an editor) is never
+// overwritten without a word. The page is generated from the spec, so a rebuild would silently throw such a change away;
+// instead the writer compares the page on disk with the hash it recorded and stops when they differ (2026-11-24).
+export const DECK_STAMP = ".deck-written.json"
+
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex")
+
+// The root this writer gives every page; a page with it and no stamp was written by this adapter before stamps existed.
+const ROOT_MARK = `data-composition-id="${MAIN_COMPOSITION}" data-root="true"`
+
+export const HAND_EDITED =
+  "index.html was changed by hand since the last build (for example in HyperFrames Studio), so building again would throw those changes away. Ask the user what they want: to keep the changes, leave the deck as it is or carry them into the spec (text, order, notes) yourself; to drop them, delete index.html and build again."
+
+// Why the page on disk may not be replaced, or undefined when it may: there is none, it is what this writer last wrote,
+// or it predates stamps and carries this writer's root.
+export function handEditProblem(dir: string): string | undefined {
+  const page = join(dir, "index.html")
+  if (!existsSync(page)) return undefined
+  const text = readFileSync(page, "utf8")
+  let recorded: unknown
+  try {
+    recorded = (JSON.parse(readFileSync(join(dir, DECK_STAMP), "utf8")) as Record<string, unknown>)["index.html"]
+  } catch {
+    recorded = undefined
+  }
+  if (typeof recorded === "string") return recorded === sha256(text) ? undefined : HAND_EDITED
+  return text.includes(ROOT_MARK) ? undefined : "index.html is there but was not written by the deck adapter; move it away or delete it, then build again."
+}
 
 // Every slide the project writes, in the order it writes them: the main line as the author wrote it (hidden slides
 // included, because they are in the HTML) and then each branch's slides. The asset scan walks this list rather than the
@@ -609,6 +639,8 @@ export function writeDeckProject(spec: DeckSpec, jobDir: string, opts: DeckWrite
   if (problem !== undefined) throw new Error(`deck: ${problem}`)
 
   const dir = resolve(jobDir)
+  const edited = handEditProblem(dir)
+  if (edited !== undefined) throw new Error(`deck: ${edited}`)
   const { faults, placeholders } = scanAssets(spec, dir, opts.maxAssetBytes ?? MAX_ASSET_BYTES)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
@@ -625,6 +657,9 @@ export function writeDeckProject(spec: DeckSpec, jobDir: string, opts: DeckWrite
     writeFileSync(path, text, { mode: 0o600 })
     chmodSync(path, 0o600)
   }
+  const stamp = join(dir, DECK_STAMP)
+  writeFileSync(stamp, `${JSON.stringify({ "index.html": sha256(files[0]![1]) })}\n`, { mode: 0o600 })
+  chmodSync(stamp, 0o600)
   if (opts.runtime !== undefined) {
     const path = join(dir, DECK_RUNTIME)
     copyFileSync(opts.runtime, path)

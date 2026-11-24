@@ -25,7 +25,7 @@ import { insidePath } from "../paths.ts"
 import type { DeckSpec } from "../spec.ts"
 import { deckResults, type DeckPresentReport } from "./deck-checks.ts"
 import { placeholderNote, writeDeckProject, type DeckProject } from "./deck-project.ts"
-import { DECK_ENV_NAMES, deckCheck, deckPresent, deckSnapshot } from "./deck-run.ts"
+import { DECK_ENV_NAMES, deckCheck, deckPresent, deckSnapshot, deckStudio } from "./deck-run.ts"
 import { checkHyperframes, freePort, HYPERFRAMES_ENV, HYPERFRAMES_INSTALL, hyperframesBin, hyperframesRuntime, outputOf, RUNTIME_FILE, tailOf } from "./hyperframes.ts"
 
 // The three layers, re-exported so the package's one deck entry keeps every name it published before the split. A caller
@@ -82,6 +82,8 @@ function playwrightModules(): string | undefined {
 
 export interface DeckAdapterOptions {
   readonly chromium?: string | null // injected by tests; undefined means "find one", null means "there is none"
+  // What openEditor starts: the presenter (default), or HyperFrames Studio for looking and editing by hand.
+  readonly editor?: "present" | "studio"
 }
 
 export function deckAdapter(options: DeckAdapterOptions = {}): Adapter<DeckSpec> {
@@ -215,7 +217,7 @@ export function deckAdapter(options: DeckAdapterOptions = {}): Adapter<DeckSpec>
     async openEditor(ctx) {
       built()
       const port = await freePort("deck")
-      const present = await deckPresent(ctx.run, ctx.jobDir, port)
+      const present = await (options.editor === "studio" ? deckStudio : deckPresent)(ctx.run, ctx.jobDir, port)
       if (!present.started) throw new Error(present.output)
       ctx.log(present.output)
     },

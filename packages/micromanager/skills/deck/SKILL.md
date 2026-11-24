@@ -59,6 +59,19 @@ The adapter runs the engine's checks, and each one can fail:
 In the presenter each slide comes up with a short rise-in of its rule, title and lines; snapshots and checks see the
 finished slide. You do not write animation code: the adapter owns the HTML.
 
+## Studio and hand edits
+
+`make_artifact` with `present: studio` opens the deck in HyperFrames Studio instead of the presenter: the user sees the
+slides on a timeline and can change them by hand. When they point at something ("make this bigger"), read what they
+selected with `hyperframes preview --selection --json`, run in the deck's folder.
+
+The adapter writes `index.html` from `deck.json` and records what it wrote. If the page was changed since (in the
+Studio or an editor), the next build stops with "index.html was changed by hand" instead of overwriting it. Then ask
+the user: keep the changes (leave the deck, or carry text, order and notes into `deck.json` yourself), or drop them
+(delete `index.html` and build again). Never delete it without asking.
+
+Share and Publish in the Studio upload the deck to HeyGen's servers; say so when you open the Studio.
+
 A missing picture is not a failure: it becomes a labelled placeholder (`missing asset: <path>`), and the check names it.
 Write the path you meant anyway — the placeholder is how the deck stays presentable while the image is still missing.
 

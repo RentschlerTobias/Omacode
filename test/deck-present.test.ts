@@ -10,13 +10,19 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test, type TestContext } from "node:test"
 
+import { createServer } from "node:net"
+
 import {
   DECK_CHECKS,
   DECK_RUNTIME,
+  DECK_STAMP,
+  HAND_EDITED,
   deckResults,
+  deckStudio,
   writeDeckProject,
   type DeckPresentReport,
 } from "../packages/artifact/src/adapters/deck.ts"
+import type { HostRunInput, HostRunner, HostRunResult } from "../packages/artifact/src/adapter.ts"
 import type { CheckResult } from "../packages/artifact/src/checks.ts"
 import { parseSpec, type DeckSpec } from "../packages/artifact/src/spec.ts"
 
@@ -151,4 +157,61 @@ test("the deck skill's example spec is a spec the parser accepts", () => {
   assert.ok(example, "the skill has a json example")
   const parsed = parseSpec("deck", JSON.parse(example))
   assert.deepEqual(parsed.errors, [])
+})
+
+test("a page changed by hand since the last build is not overwritten, and a deleted one is written again", (t) => {
+  const job = jobFor(t)
+  const spec = deckOf([{ id: "s1", title: "One", body: "first", notes: "n" }])
+  writeDeckProject(spec, job)
+  assert.equal(statSync(join(job, DECK_STAMP)).mode & 0o777, 0o600)
+  // The same spec again, and a changed spec: the page is the one this writer wrote, so both rebuild.
+  writeDeckProject(spec, job)
+  writeDeckProject(deckOf([{ id: "s1", title: "One, renamed", body: "first", notes: "n" }]), job)
+
+  // The user changes it in the Studio: the next build stops and says why, and the change is still there.
+  const page = join(job, "index.html")
+  const edited = readFileSync(page, "utf8").replace("One, renamed", "One, by hand")
+  writeFileSync(page, edited)
+  assert.throws(() => writeDeckProject(spec, job), (err: Error) => err.message === `deck: ${HAND_EDITED}`)
+  assert.equal(readFileSync(page, "utf8"), edited)
+
+  // The user chose to drop the change: with the page deleted the build writes it again.
+  rmSync(page)
+  writeDeckProject(spec, job)
+  assert.match(readFileSync(page, "utf8"), /<h2>One<\/h2>/)
+})
+
+test("a page without a stamp is replaced only when this writer made it", (t) => {
+  const job = jobFor(t)
+  const spec = deckOf([{ id: "s1", title: "One", body: "first", notes: "n" }])
+  // A deck built before stamps existed: it carries the writer's root, so it is rebuilt.
+  writeDeckProject(spec, job)
+  rmSync(join(job, DECK_STAMP))
+  writeDeckProject(spec, job)
+  // A page someone else wrote is not ours to replace.
+  rmSync(join(job, DECK_STAMP))
+  writeFileSync(join(job, "index.html"), "<!doctype html><title>mine</title>\n")
+  assert.throws(() => writeDeckProject(spec, job), /was not written by the deck adapter/)
+})
+
+test("the Studio is hyperframes preview on the job, in the foreground, with the network, held until cancelled", async (t) => {
+  const job = jobFor(t)
+  const server = createServer()
+  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done))
+  t.after(() => server.close())
+  const port = (server.address() as { port: number }).port
+  const calls: HostRunInput[] = []
+  const run: HostRunner = {
+    run: (input: HostRunInput) => {
+      calls.push(input)
+      return new Promise<HostRunResult>(() => undefined) // a server: it runs until cancelled
+    },
+    cancel: () => undefined,
+  } as unknown as HostRunner
+  const started = await deckStudio(run, job, port)
+  assert.equal(started.started, true)
+  assert.equal(started.output, `hyperframes preview is listening on port ${port}`)
+  assert.equal(calls[0]?.exe, "hyperframes")
+  assert.deepEqual(calls[0]?.args, ["preview", job, "--no-open", "--port", String(port), "--foreground"])
+  assert.equal(calls[0]?.network, true)
 })

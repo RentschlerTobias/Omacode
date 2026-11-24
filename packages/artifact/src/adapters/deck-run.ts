@@ -53,3 +53,17 @@ export function deckPresent(run: HostRunner, jobDir: string, port: number): Prom
   }
   return hyperframesServe(run, () => run.run(input), port, "hyperframes present")
 }
+
+// `hyperframes preview <job> --no-open --port <port> --foreground`: HyperFrames Studio on the deck, where the user can
+// look at it on a timeline and change it by hand. Same contract as the presenter: returned once the port answers, held
+// until `run.cancel()`. `--foreground` keeps it attached: the runner's child has no terminal, and without the flag the
+// CLI would detach a background server the runner could not stop. A page changed here is protected from the next build
+// by the writer's stamp (DECK_STAMP in deck-project.ts).
+export function deckStudio(run: HostRunner, jobDir: string, port: number): Promise<DeckPresent> {
+  const input: HostRunInput = {
+    exe: "hyperframes",
+    args: ["preview", resolve(jobDir), "--no-open", "--port", String(port), "--foreground"],
+    network: true,
+  }
+  return hyperframesServe(run, () => run.run(input), port, "hyperframes preview")
+}

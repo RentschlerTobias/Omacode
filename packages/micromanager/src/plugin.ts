@@ -2794,7 +2794,7 @@ const plugin = {
       draft.add({
         id: "make_artifact",
         name: "make_artifact",
-        description: `Build an artifact from the spec file you wrote and run its checks: a deck (${SPEC_FILES.deck}), a video (${SPEC_FILES.video}), a site (${SPEC_FILES.site}) or an image set (${SPEC_FILES.images}). The spec's directory is the artifact's directory: every path in the spec is relative to it, and the files are written there. Read the matching skill first (deck, video, web, image) for the spec's fields. spec: the spec file's path, relative to your working directory. present: "yes" to open a deck whose checks all passed in the user's browser. Fix the spec or its content when a check fails, never the check.`,
+        description: `Build an artifact from the spec file you wrote and run its checks: a deck (${SPEC_FILES.deck}), a video (${SPEC_FILES.video}), a site (${SPEC_FILES.site}) or an image set (${SPEC_FILES.images}). The spec's directory is the artifact's directory: every path in the spec is relative to it, and the files are written there. Read the matching skill first (deck, video, web, image) for the spec's fields. spec: the spec file's path, relative to your working directory. present: "yes" to open a deck whose checks all passed in the user's browser; "studio" to open it in HyperFrames Studio instead, where the user can look at it on a timeline and change it by hand (a later build then stops rather than overwrite those changes). Fix the spec or its content when a check fails, never the check.`,
         input: read.input.mapFields(() => ({ spec: str, present: str })),
         execute: async (args: Record<string, unknown>, tctx: { sessionID?: string; agent?: string }) => {
           try {
@@ -2802,7 +2802,8 @@ const plugin = {
             const specPath = resolve(base, String(args?.spec ?? "").trim())
             if (!String(args?.spec ?? "").trim() || !insidePath(realish(specPath), realish(base))) return { content: `make_artifact: the spec must be a file inside ${base}` }
             if (STATE_DIRS.some((d) => insidePath(realish(specPath), realish(join(base, d))))) return { content: "make_artifact: not inside the plugin's state directory; put the artifact in the project" }
-            const present = /^(yes|true|1)$/i.test(String(args?.present ?? "").trim())
+            const asked = String(args?.present ?? "").trim()
+            const present = /^studio$/i.test(asked) ? ("studio" as const) : /^(yes|true|1)$/i.test(asked)
             const report = await buildArtifact(specPath, { present, images: { comfy: { startingWaitMs: 5 * 60_000 } } })
             record({ kind: "artifact.build", sessionID: tctx?.sessionID, agent: tctx?.agent, spec: specPath, artifact: report.kind, ok: report.ok, failed: report.failed, ...(report.coverage ? { failedChecks: report.coverage.failed.map((f) => f.id), skippedChecks: report.coverage.skipped.map((f) => f.id) } : {}) })
             let text = formatBuild(report)
@@ -2821,6 +2822,9 @@ const plugin = {
                     })
                   })
                 : "there is no desktop here"
+              if (present === "studio") {
+                text += `\nThis is HyperFrames Studio (${url}): the user can change the deck there by hand. Tell them that Share and Publish in the Studio upload the deck to HeyGen's servers, and that what they select there can be read with \`hyperframes preview --selection --json\` in the deck's folder.`
+              }
               text += opened === undefined
                 ? `\nAsked the desktop to open ${url} in the user's browser. Tell the user the address too, in case no window came up; do not claim you saw the deck.`
                 : `\nCould not open a browser (${opened}): give the user the address ${url}.`
