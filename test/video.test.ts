@@ -18,6 +18,7 @@
 // host limitation is worth skipping rather than waiting out, and real enough that `ffprobe` measures an actual file.
 
 import assert from "node:assert/strict"
+import { TELEMETRY_OFF } from "../packages/core/src/telemetry.ts"
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { connect } from "node:net"
 import { tmpdir } from "node:os"
@@ -901,7 +902,7 @@ test("preview asks for a foreground studio on a free port, with the network and 
   // The one networked video run: the page is served inside the child's namespace, so only a shared network reaches it.
   assert.equal(call.network, true)
   assert.equal(call.cwd, resolve(job))
-  assert.deepEqual(call.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+  assert.deepEqual(call.env, { HYPERFRAMES_CHROME_SANDBOX: "0", ...TELEMETRY_OFF })
 })
 
 test("the check verb is one JSON check in the job, wrapped, and the lint verb is its own static pass", async (t) => {
@@ -930,7 +931,7 @@ test("the check verb is one JSON check in the job, wrapped, and the lint verb is
   assert.ok(check, "the adapter asked the engine to check the project")
   assert.deepEqual(check.args, ["check", "--json", ...BROWSER_GPU_ARGS])
   assert.equal(check.cwd, resolve(job))
-  assert.deepEqual(check.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+  assert.deepEqual(check.env, { HYPERFRAMES_CHROME_SANDBOX: "0", ...TELEMETRY_OFF })
   // A check reads a local file: it narrows the adapter's network permission to nothing and the runner keeps it wrapped.
   assert.equal(check.network, undefined)
 
@@ -957,7 +958,7 @@ test("every video call goes through hyperframesRun, which names the engine and t
   assert.equal(calls[0]?.exe, "hyperframes")
   assert.deepEqual(calls[0]?.args, ["lint", "--json"])
   assert.equal(calls[0]?.cwd, resolve(job))
-  assert.deepEqual(calls[0]?.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+  assert.deepEqual(calls[0]?.env, { HYPERFRAMES_CHROME_SANDBOX: "0", ...TELEMETRY_OFF })
   assert.ok(existsSync(join(job, ".home", ".cache", "hyperframes")), "the browser cache link is made under the job")
 })
 

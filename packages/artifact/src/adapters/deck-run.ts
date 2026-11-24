@@ -50,6 +50,7 @@ export function deckPresent(run: HostRunner, jobDir: string, port: number): Prom
   const input: HostRunInput = {
     exe: "hyperframes",
     args: ["present", resolve(jobDir), "--no-open", "--port", String(port)],
+    env: { ...HYPERFRAMES_ENV },
     network: true,
   }
   return hyperframesServe(run, () => run.run(input), port, "hyperframes present")
@@ -72,6 +73,7 @@ export function deckStudio(run: HostRunner, jobDir: string, port: number): Promi
   const input: HostRunInput = {
     exe: "hyperframes",
     args: ["preview", resolve(jobDir), "--no-open", "--port", String(port), "--foreground"],
+    env: { ...HYPERFRAMES_ENV },
     network: true,
   }
   return hyperframesServe(run, () => run.run(input), port, "hyperframes preview")

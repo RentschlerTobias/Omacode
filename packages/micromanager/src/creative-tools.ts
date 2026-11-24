@@ -21,6 +21,7 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 
 import { userDataDir } from "@omacode/core/paths"
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 
 import type { Exec } from "./worktree/git.ts"
 
@@ -79,7 +80,7 @@ const version = (text: string): string | undefined => /\bv?(\d+\.\d+(?:\.\d+)?(?
 export async function detect(run: Exec, h: Home = home()): Promise<Found[]> {
   const cwd = h.home
   const ask = async (cmd: string, args: string[]) => {
-    const r = await run(cmd, args, { cwd, timeoutMs: 30_000 }).catch(() => undefined)
+    const r = await run(cmd, args, { cwd, timeoutMs: 30_000, env: TELEMETRY_OFF }).catch(() => undefined)
     return r && r.code === 0 ? version(`${r.stdout}\n${r.stderr}`) : undefined
   }
   const hf = await ask("hyperframes", ["--version"])

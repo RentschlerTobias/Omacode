@@ -16,6 +16,8 @@ import { connect, createServer } from "node:net"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
+
 import type { HostRunInput, HostRunner, HostRunResult } from "../adapter.ts"
 import type { ToolProvenance } from "../provenance.ts"
 
@@ -109,7 +111,7 @@ const unusable = (happened: string): string =>
 // `what` names the artifact in the one sentence that mentions it, so a deck's diagnosis still reads "a deck" and a
 // video's reads "a video" without two copies of this probe.
 export async function checkHyperframes(run: HostRunner, what = "a deck"): Promise<HyperframesCheck> {
-  const input: HostRunInput = { exe: "hyperframes", args: [...VERSION_ARGS] }
+  const input: HostRunInput = { exe: "hyperframes", args: [...VERSION_ARGS], env: { ...HYPERFRAMES_ENV } }
   const probe = await run.run(input)
 
   // The version may arrive on either stream: a CLI that banners to stdout and one that prints a version to stderr are
@@ -130,7 +132,7 @@ export async function checkHyperframes(run: HostRunner, what = "a deck"): Promis
     reason = unusable(whatHappened(probe))
   }
 
-  const doctor = await run.run({ exe: "hyperframes", args: [...DOCTOR_ARGS] })
+  const doctor = await run.run({ exe: "hyperframes", args: [...DOCTOR_ARGS], env: { ...HYPERFRAMES_ENV } })
   if (doctor.passed) detail.push(...nonEmptyLines(doctor.stdout || doctor.stderr, DOCTOR_LINES))
 
   return { ok: false, reason, ...(detail.length > 0 ? { detail: detail.join("\n") } : {}) }
@@ -214,8 +216,9 @@ export function ensureBrowserCache(jobDir: string): void {
 // here because this package, not the host environment, knows what it should be. Chrome inside bubblewrap cannot build a
 // sandbox of its own and dies with `FATAL: No usable sandbox!`; HyperFrames normally notices a container by
 // `/.dockerenv` or `/run/.containerenv`, and bwrap leaves neither marker, so the engine is told explicitly.
-export const HYPERFRAMES_ENV_NAMES = ["HYPERFRAMES_CHROME_SANDBOX"] as const
-export const HYPERFRAMES_ENV = { HYPERFRAMES_CHROME_SANDBOX: "0" } as const
+// The telemetry opt-outs ride along on every run (core/telemetry.ts): HyperFrames reports to PostHog otherwise.
+export const HYPERFRAMES_ENV_NAMES = ["HYPERFRAMES_CHROME_SANDBOX", "HYPERFRAMES_NO_TELEMETRY", "DO_NOT_TRACK", "DISABLE_TELEMETRY"] as const
+export const HYPERFRAMES_ENV = { HYPERFRAMES_CHROME_SANDBOX: "0", ...TELEMETRY_OFF } as const
 
 // The flag that decides which GPU path the browser a run starts will take. The help says it plainly: "pass
 // --no-browser-gpu for deterministic SwiftShader". Determinism is the first reason: a check, a snapshot and a render

@@ -41,7 +41,8 @@
     "./services": "./src/services.ts",
     "./project": "./src/project.ts",
     "./supervisor": "./src/supervisor.ts",
-    "./service-control": "./src/service-control.ts"
+    "./service-control": "./src/service-control.ts",
+    "./telemetry": "./src/telemetry.ts"
   },
   "files": [
     "src"

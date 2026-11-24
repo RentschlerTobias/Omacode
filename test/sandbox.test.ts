@@ -19,7 +19,7 @@ test("a worker's environment is an allowlist; the never list beats any grant", (
     SSH_AUTH_SOCK: "/run/a", DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus", HYPRLAND_INSTANCE_SIGNATURE: "h",
     CLAUDE_CODE_MESSAGING_TOKEN: "t", JEV_API_KEY: "j",
   }
-  assert.deepEqual(Object.keys(cleanEnv(env)).sort(), ["CI", "HOME", "LANG", "LC_ALL", "NODE_OPTIONS", "PATH", "UV_CACHE_DIR"])
+  assert.deepEqual(Object.keys(cleanEnv(env)).sort(), ["CI", "DISABLE_TELEMETRY", "DO_NOT_TRACK", "HOME", "HYPERFRAMES_NO_TELEMETRY", "LANG", "LC_ALL", "NODE_OPTIONS", "PATH", "UV_CACHE_DIR"])
   const granted = cleanEnv(env, ["DATABASE_URL", "SSH_AUTH_SOCK", "DBUS_*"])
   assert.equal(granted.DATABASE_URL, "postgres://u:p@h/db", "a grant adds a name")
   assert.equal(granted.SSH_AUTH_SOCK, undefined, "the never list wins")

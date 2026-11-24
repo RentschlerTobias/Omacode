@@ -9,6 +9,7 @@
 // not a host limitation fails the test.
 
 import assert from "node:assert/strict"
+import { TELEMETRY_OFF } from "../packages/core/src/telemetry.ts"
 import {
   appendFileSync,
   copyFileSync,
@@ -591,7 +592,7 @@ test("the deck tells HyperFrames it is inside a sandbox, so Chrome stops buildin
   assert.ok(check, "the check ran")
   // Without this the child aborts with `FATAL: No usable sandbox!` inside bubblewrap: HyperFrames looks for a container
   // marker that bwrap does not leave, so the deck has to say it. The value is the adapter's, not the host's.
-  assert.deepEqual(check.env, { HYPERFRAMES_CHROME_SANDBOX: "0" })
+  assert.deepEqual(check.env, { HYPERFRAMES_CHROME_SANDBOX: "0", ...TELEMETRY_OFF })
   assert.ok((deckAdapter().env ?? []).includes("HYPERFRAMES_CHROME_SANDBOX"), "the adapter declares the name it sets")
 })
 

@@ -25,7 +25,7 @@ test("the committed manifest and THIRD_PARTY.md are what the generator makes fro
 test("every component names its licence, where it may be used, what you may do with its output and who installs it", () => {
   const installers = new Set(["minimal", "coding", "creator", "full", "downloaded", "you", "planned"])
   for (const c of components.components) {
-    for (const field of ["name", "kind", "spdx", "installedBy", "source", "territory", "commercialOutput", "attribution"]) {
+    for (const field of ["name", "kind", "spdx", "installedBy", "source", "territory", "commercialOutput", "attribution", "telemetry"]) {
       assert.ok(typeof c[field] === "string" && c[field].trim(), `${c.name}: ${field}`)
     }
     assert.ok(installers.has(c.installedBy), `${c.name}: installedBy ${c.installedBy}`)

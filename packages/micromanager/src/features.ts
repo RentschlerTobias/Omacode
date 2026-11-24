@@ -13,6 +13,7 @@ import { join } from "node:path"
 
 import { findChromium } from "@omacode/artifact/chromium"
 import { userConfigPath } from "@omacode/core/paths"
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 
 import {
   addComfyMcp,
@@ -49,7 +50,7 @@ export function runStep(cmd: string, args: readonly string[], o: { cwd?: string;
     let out = ""
     let child
     try {
-      child = spawn(cmd, [...args], { cwd: o.cwd, env: { ...process.env, ...o.env }, stdio: ["ignore", "pipe", "pipe"] })
+      child = spawn(cmd, [...args], { cwd: o.cwd, env: { ...process.env, ...o.env, ...TELEMETRY_OFF }, stdio: ["ignore", "pipe", "pipe"] })
     } catch (err) {
       o.log(`${cmd}: ${err instanceof Error ? err.message : String(err)}`)
       return done({ ok: false, stdout: "" })

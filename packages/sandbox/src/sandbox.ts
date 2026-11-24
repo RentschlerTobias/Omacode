@@ -15,6 +15,7 @@
 // ~25-35 ms per command; `npm test` and `uv run pytest` (with PyPI allowed) pass; the environment is passed through
 // as it is, so cleaning it is ours. On Linux a glob in denyRead covers the files that exist when the command is wrapped.
 
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 import { createHash } from "node:crypto"
 import { mkdirSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
@@ -76,6 +77,8 @@ export function cleanEnv(env: Readonly<Record<string, string | undefined>>, extr
     if (allow.some((p) => matches(name, p))) out[name] = value
   }
   out.CI = "1"
+  // No usage reports from what a worker runs (core/telemetry.ts).
+  Object.assign(out, TELEMETRY_OFF)
   return out
 }
 

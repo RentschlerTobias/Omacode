@@ -16,6 +16,7 @@ import { join } from "node:path"
 import { findChromium } from "@omacode/artifact/chromium"
 import { stripComments } from "@omacode/core/jsonc"
 import { configFilePath, userConfigDir, userDataDir, userStateDir } from "@omacode/core/paths"
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 
 import { comfyMcpConfigured } from "./comfy-gate.ts"
 import { PINS, TOOL_INFO, type Found, type ToolName } from "./creative-tools.ts"
@@ -413,7 +414,7 @@ export async function machineChecks(p: Probe, at: Paths): Promise<Check[]> {
   }
   const hf = p.which("hyperframes")
   if (hf) {
-    const doc = await p.run("hyperframes", ["doctor"], { cwd, timeoutMs: 60_000 }).catch(() => undefined)
+    const doc = await p.run("hyperframes", ["doctor"], { cwd, timeoutMs: 60_000, env: TELEMETRY_OFF }).catch(() => undefined)
     // Only the checks a deck or a video needs. The rest of HyperFrames' doctor is optional (a transcriber, a local
     // voice, music, Docker for `render --docker`) or a newer release, which omacode does not want: it pins the version
     // it is tested with. Its exit code counts those too, so the lines are read instead.

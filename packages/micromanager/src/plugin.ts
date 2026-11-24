@@ -95,6 +95,7 @@ import { stripComments } from "@omacode/core/jsonc"
 import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { installParts, outcomeText } from "./features.ts"
+import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 import { missingForKind, missingNote, OFFER_IDS, OFFERS, realProbe, type OfferId } from "./setup.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
@@ -1888,6 +1889,12 @@ const plugin = {
       const service = servicesView().services.find((v) => v.name === "comfyui")
       return { mcp: comfyMcpConfigured(config), ...(service ? { service: { mode: service.mode, state: service.state } } : {}) }
     }
+    // No usage reports from what agents run in a shell (core/telemetry.ts, the user's decision of 2026-11-24): the
+    // opt-outs go into every shell's environment. A worker's sandboxed shell gets them from cleanEnv as well, so the
+    // order of this hook and the sandbox's does not matter.
+    await ctx.shell?.hook("create.before", (input) => {
+      input.env = { ...(input.env ?? process.env), ...TELEMETRY_OFF }
+    })
     await ctx.permission.hook("evaluate", async (evaluation) => {
       // OpenCode's cloud image tool: ComfyUI first; the cloud only where ComfyUI cannot run or failed in this session.
       if (evaluation.action === CLOUD_IMAGE_TOOL) {

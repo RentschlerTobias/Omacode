@@ -10,7 +10,8 @@
       "source": "https://github.com/RentschlerTobias/Omacode",
       "territory": "global",
       "commercialOutput": "yes",
-      "attribution": "keep LICENSE when redistributing"
+      "attribution": "keep LICENSE when redistributing",
+      "telemetry": "none"
     },
     {
       "name": "OpenCode",
@@ -20,7 +21,8 @@
       "source": "https://github.com/anomalyco/opencode",
       "territory": "global",
       "commercialOutput": "yes",
-      "attribution": "keep the copyright notice"
+      "attribution": "keep the copyright notice",
+      "telemetry": "none found in 2.2.5 (an embedded component honours DO_NOT_TRACK, which omacode sets)"
     },
     {
       "name": "uv",
@@ -30,7 +32,8 @@
       "source": "https://github.com/astral-sh/uv",
       "territory": "global",
       "commercialOutput": "n/a",
-      "attribution": "keep the copyright notice"
+      "attribution": "keep the copyright notice",
+      "telemetry": "not checked"
     },
     {
       "name": "bubblewrap",
@@ -40,7 +43,8 @@
       "source": "https://github.com/containers/bubblewrap",
       "territory": "global",
       "commercialOutput": "n/a",
-      "attribution": "none for use; LGPL terms when redistributing it"
+      "attribution": "none for use; LGPL terms when redistributing it",
+      "telemetry": "none"
     },
     {
       "name": "llama.cpp (llama-server)",
@@ -51,7 +55,8 @@
       "territory": "global",
       "commercialOutput": "n/a",
       "attribution": "keep the copyright notice",
-      "notes": "taken from PATH (or LLAMA_SERVER) for the embedding service; omacode does not install it"
+      "notes": "taken from PATH (or LLAMA_SERVER) for the embedding service; omacode does not install it",
+      "telemetry": "not checked"
     },
     {
       "name": "GLiNER2.5-multi-Decide",
@@ -62,7 +67,8 @@
       "territory": "global",
       "commercialOutput": "n/a",
       "attribution": "keep the licence notice",
-      "notes": "the decider's base model, downloaded on its first start when no tuned model ships"
+      "notes": "the decider's base model, downloaded on its first start when no tuned model ships",
+      "telemetry": "none (model weights)"
     },
     {
       "name": "omacode guard model (tuned)",
@@ -73,7 +79,8 @@
       "territory": "global",
       "commercialOutput": "n/a",
       "attribution": "derivative of GLiNER2.5-multi-Decide (Apache-2.0)",
-      "notes": "not published; whether to publish the weights is the maintainer's open decision"
+      "notes": "not published; whether to publish the weights is the maintainer's open decision",
+      "telemetry": "none (model weights)"
     },
     {
       "name": "gliner-guard-uniencoder",
@@ -84,7 +91,8 @@
       "territory": "global",
       "commercialOutput": "n/a",
       "attribution": "keep the licence notice",
-      "notes": "the planned successor base (P6); not installed by 1.0 yet"
+      "notes": "the planned successor base (P6); not installed by 1.0 yet",
+      "telemetry": "none (model weights)"
     },
     {
       "name": "Qwen3-Embedding (0.6B, 4B, 8B GGUF)",
@@ -95,7 +103,8 @@
       "territory": "global",
       "commercialOutput": "n/a",
       "attribution": "keep the licence notice",
-      "notes": "downloaded on the embedding service's first start"
+      "notes": "downloaded on the embedding service's first start",
+      "telemetry": "none (model weights)"
     },
     {
       "name": "HyperFrames",
@@ -106,7 +115,8 @@
       "source": "https://www.npmjs.com/package/hyperframes",
       "territory": "global",
       "commercialOutput": "yes",
-      "attribution": "keep the licence notice"
+      "attribution": "keep the licence notice",
+      "telemetry": "usage events to PostHog; off with HYPERFRAMES_NO_TELEMETRY or DO_NOT_TRACK, which omacode sets on every run and agent shell"
     },
     {
       "name": "chrome-headless-shell (Chrome for Testing)",
@@ -117,7 +127,8 @@
       "territory": "global",
       "commercialOutput": "yes",
       "attribution": "keep the Chromium notices",
-      "notes": "HyperFrames downloads it on first use"
+      "notes": "HyperFrames downloads it on first use",
+      "telemetry": "not checked"
     },
     {
       "name": "Manim (Community)",
@@ -128,7 +139,8 @@
       "source": "https://pypi.org/project/manim/",
       "territory": "global",
       "commercialOutput": "yes",
-      "attribution": "keep the copyright notice"
+      "attribution": "keep the copyright notice",
+      "telemetry": "not checked"
     },
     {
       "name": "ComfyUI",
@@ -140,7 +152,8 @@
       "territory": "global",
       "commercialOutput": "yes for ComfyUI itself; the image model's licence decides (the model registry checks it before every run)",
       "attribution": "GPL terms when you redistribute ComfyUI; none for images",
-      "notes": "a separate program omacode talks to over HTTP; LICENSE is GPL v3 with no 'or later' grant found"
+      "notes": "a separate program omacode talks to over HTTP; LICENSE is GPL v3 with no 'or later' grant found",
+      "telemetry": "not checked"
     },
     {
       "name": "PyTorch (in ComfyUI's environment)",
@@ -150,7 +163,8 @@
       "source": "https://pytorch.org",
       "territory": "global",
       "commercialOutput": "yes",
-      "attribution": "keep the notices"
+      "attribution": "keep the notices",
+      "telemetry": "not checked"
     },
     {
       "name": "comfy-cli",
@@ -162,7 +176,8 @@
       "territory": "global",
       "commercialOutput": "yes",
       "attribution": "GPL terms when redistributing it",
-      "notes": "installs and manages ComfyUI; a separate program"
+      "notes": "installs and manages ComfyUI; a separate program",
+      "telemetry": "usage tracking; omacode turns it off at install (comfy tracking disable)"
     },
     {
       "name": "comfy-mcp",
@@ -174,7 +189,8 @@
       "territory": "global",
       "commercialOutput": "yes",
       "attribution": "AGPL terms when you modify it and offer it to others over a network",
-      "notes": "a separate program OpenCode starts as an MCP server; used unmodified"
+      "notes": "a separate program OpenCode starts as an MCP server; used unmodified",
+      "telemetry": "not checked"
     }
   ],
   "npm": [
