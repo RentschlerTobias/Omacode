@@ -83,5 +83,5 @@ test("the welcome's goals name only parts the installer knows, and only decks le
   assert.equal(new Set(GOALS.map((g) => g.id)).size, GOALS.length)
   for (const g of GOALS) for (const p of g.parts) assert.ok((OFFER_IDS as readonly string[]).includes(p), `${g.id}: ${p}`)
   assert.deepEqual(GOALS.filter((g) => g.firstDeck).map((g) => g.id), ["decks"])
-  assert.deepEqual(GOALS.find((g) => g.id === "none")?.parts, [])
+  for (const g of GOALS) assert.ok(g.parts.length > 0, `${g.id} installs something`)
 })

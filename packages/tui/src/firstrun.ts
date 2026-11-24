@@ -43,7 +43,6 @@ export const GOALS: readonly Goal[] = [
   { id: "websites", title: "Websites", parts: ["web-guidance", "chromium"] },
   { id: "images", title: "Images with local models", parts: ["comfyui", "comfy-mcp"] },
   { id: "code", title: "Code, with the local decider and memory", parts: ["services"] },
-  { id: "none", title: "Nothing to install now (/setup later)", parts: [] },
 ]
 
 export const FIRST_DECK_DIR = "first-deck"

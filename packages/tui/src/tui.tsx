@@ -822,15 +822,33 @@ async function setupDialog(context: Context): Promise<void> {
 async function welcome(context: Context): Promise<void> {
   if (wasOffered()) return
   markOffered()
-  const chosen = await context.ui.dialog.select({
-    title: "Welcome to omacode: what do you want to make?",
-    placeholder: "goal",
-    options: GOALS.map((g) => ({ title: g.title, value: g.id })),
+  // 1. Setup: tick every goal; the parts of all of them are installed together after one confirmation.
+  const goals = new Set<string>()
+  const NEXT = "__next__"
+  for (;;) {
+    const chosen = await context.ui.dialog.select({
+      title: "Welcome to omacode: what do you want to make? · ↵ tick, then Continue",
+      placeholder: "goal",
+      options: [
+        { title: goals.size ? `▶ Continue with ${goals.size} goal${goals.size === 1 ? "" : "s"}` : "▶ Continue without installing anything", value: NEXT, description: "/setup installs parts later" },
+        ...GOALS.filter((g) => g.parts.length).map((g) => ({ title: `${goals.has(g.id) ? "[x]" : "[ ]"} ${g.title}`, value: g.id })),
+      ],
+    })
+    if (chosen === NEXT) break
+    if (!chosen) return
+    if (goals.has(chosen)) goals.delete(chosen)
+    else goals.add(chosen)
+  }
+  const parts = [...new Set(GOALS.filter((g) => goals.has(g.id)).flatMap((g) => g.parts))] as OfferId[]
+  if (parts.length) await installFlow(context, parts, `${goals.size} goal${goals.size === 1 ? "" : "s"}: `)
+  // 2. Tutorial: a first deck shows how omacode works end to end; offered whenever HyperFrames is there.
+  if (!hyperframesInstalled()) return
+  const tour = await context.ui.dialog.confirm({
+    title: "A first deck, to see how it works?",
+    message: "You pick a topic; an agent writes the slides, checks them and opens them in your browser, then explains what it did. A few minutes. Later: /first-deck.",
+    label: "Make a deck",
   })
-  const goal = GOALS.find((g) => g.id === chosen)
-  if (!goal || !goal.parts.length) return
-  const ready = await installFlow(context, goal.parts as OfferId[], `${goal.title}: `)
-  if (goal.firstDeck && (ready || (await presentState(featuresExec)).tools.some((t) => t.name === "hyperframes" && t.found))) await firstDeck(context)
+  if (tour) await firstDeck(context)
 }
 
 // /first-deck (C2-T7): pick a sample brief, and a new session with the build agent writes, checks and presents a deck,
