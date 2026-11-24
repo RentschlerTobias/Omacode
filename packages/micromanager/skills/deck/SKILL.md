@@ -15,6 +15,22 @@ decides whether it is worth presenting. Your job is the spec and its content, no
 
 ## What the spec says
 
+A complete `deck.json`; `kind`, `version`, `job`, `brief` and `slides` are required, and there is no top-level `title`:
+
+```json
+{
+  "kind": "deck",
+  "version": 2,
+  "job": "local-ai",
+  "brief": "Why run AI models on your own computer",
+  "slides": [
+    { "id": "intro", "title": "Your AI, your machine", "body": "Why run models at home", "notes": "Open with the question." },
+    { "id": "privacy", "title": "Privacy", "body": "Nothing leaves the machine\nNo account, no upload", "notes": "Two points, one per click.", "reveals": [0, 1] }
+  ]
+}
+```
+
+- `job` is a short name for this deck (letters, digits, `-`); `brief` is one sentence on what it is for.
 - `slides[]`, each with `id`, `title`, `body`, `notes`, and optionally `asset`, `reveals`, `hotspots`, `hidden`.
 - `branches[]` are the optional paths off a slide; a `hotspot` with `target` names one. The main line's id `main` is
   the player's, so a branch cannot use it.

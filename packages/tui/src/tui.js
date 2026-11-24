@@ -21,6 +21,8 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
 // - In the sidebar, SERVICES (folded, below MODELS), and /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
 //   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
+// - /first-deck, and once on the first start: pick a sample brief and the build agent writes, checks and presents a first
+//   deck, then explains what happened (src/firstrun.ts, C2-T7).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
 //
@@ -32,11 +34,13 @@ import { Plugin } from "@opencode/plugin/tui";
 import { createSignal, For, onCleanup, Show } from "solid-js";
 import { loadPicks, loadRouting, savePicks } from "@omacode/state/picks";
 import { lastOptions, loadControl, optionsOf, updateControl } from "@omacode/state/control";
+import { MICROMANAGER } from "@omacode/state/roles";
 import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION } from "./pools.ts";
 import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view } from "./progress.ts";
 import { listJobs } from "@omacode/state/store";
 import { agentRows, agentSummary, taskSessions } from "./switcher.ts";
 import { seedFromJournal } from "./usage.ts";
+import { BRIEFS, firstDeckDir, firstDeckPrompt, hyperframesInstalled, markOffered, MISSING_ENGINE, prepareFirstDeckDir, wasOffered } from "./firstrun.ts";
 import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "@omacode/core/service-control";
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "@omacode/context/status";
 const POLL_MS = 2_000;
@@ -145,19 +149,27 @@ function Progress(props) {
   const mode = useMode(() => props.sessionID);
   const label = () => mode() === "plan" ? "PLAN · planning only" : "BUILD";
   const shown = () => jobs().filter(j => j.total > 0);
+  // The plan/build mode is the micromanager's: a session of another agent with no job shows nothing here (a build
+  // session used to read "PLAN · planning only" while it was building).
+  const orchestrated = () => props.context.data.session.get(props.sessionID)?.agent === MICROMANAGER.agent;
   return _$createComponent(Show, {
     get when() {
       return shown().length;
     },
     get fallback() {
-      return (() => {
-        var _el$ = _$createElement("text"),
-          _el$2 = _$createTextNode(`micromanager · `);
-        _$insertNode(_el$, _el$2);
-        _$insert(_el$, label, null);
-        _$effect(_$p => _$setProp(_el$, "fg", props.context.theme.text.muted, _$p));
-        return _el$;
-      })();
+      return _$createComponent(Show, {
+        get when() {
+          return orchestrated();
+        },
+        get children() {
+          var _el$ = _$createElement("text"),
+            _el$2 = _$createTextNode(`micromanager · `);
+          _$insertNode(_el$, _el$2);
+          _$insert(_el$, label, null);
+          _$effect(_$p => _$setProp(_el$, "fg", props.context.theme.text.muted, _$p));
+          return _el$;
+        }
+      });
     },
     get children() {
       return _$createComponent(For, {
@@ -1514,6 +1526,63 @@ async function openTask(context) {
     message: "That task has no session yet."
   });
 }
+
+// /first-deck (C2-T7): pick a sample brief, and a new session with the build agent writes, checks and presents a deck,
+// then explains what happened. `offer` is the one-time question on the first start; it is asked once, whatever the
+// answer.
+async function firstDeck(context, offer = false) {
+  if (offer) {
+    if (wasOffered()) return;
+    markOffered();
+    const yes = await context.ui.dialog.confirm({
+      title: "Welcome to omacode",
+      message: "Make a first slide deck now? You pick a topic, an agent writes the slides, checks them and opens them in your browser. Takes a few minutes. You can do this later with /first-deck.",
+      label: "Make a deck"
+    });
+    if (!yes) return;
+  }
+  if (!hyperframesInstalled()) return context.ui.toast.show({
+    message: MISSING_ENGINE,
+    variant: "warning"
+  });
+  const chosen = await context.ui.dialog.select({
+    title: "Your first deck: pick a topic",
+    placeholder: "topic",
+    options: BRIEFS.map(b => ({
+      title: b.title,
+      value: b.id
+    }))
+  });
+  const brief = BRIEFS.find(b => b.id === chosen);
+  if (!brief) return;
+  try {
+    const directory = prepareFirstDeckDir(firstDeckDir(brief));
+    const answer = await context.client.session.create({
+      location: {
+        directory
+      },
+      agent: "build"
+    });
+    const session = answer?.data ?? answer;
+    if (typeof session?.id !== "string") throw new Error("the new session has no id");
+    context.ui.router.navigate({
+      type: "session",
+      sessionID: session.id
+    });
+    await context.client.session.prompt({
+      sessionID: session.id,
+      text: firstDeckPrompt(brief)
+    });
+    context.ui.toast.show({
+      message: `Making "${brief.title}" in ${directory}`
+    });
+  } catch (err) {
+    context.ui.toast.show({
+      message: `Could not start the first deck: ${err instanceof Error ? err.message : String(err)}`,
+      variant: "error"
+    });
+  }
+}
 export default Plugin.define({
   id: "micromanager.tui",
   setup(raw) {
@@ -1602,6 +1671,15 @@ export default Plugin.define({
             },
             run: () => pickServices(context)
           }, {
+            id: "omacode.firstdeck",
+            title: "Omacode: make a first slide deck",
+            group: "Omacode",
+            palette: true,
+            slash: {
+              name: "first-deck"
+            },
+            run: () => firstDeck(context)
+          }, {
             id: "micromanager.auto",
             title: "Micromanager: auto-continue on/off",
             group: "Micromanager",
@@ -1649,6 +1727,8 @@ export default Plugin.define({
             })
           }]
         }));
+        // The first start after install offers the first deck once (a dialog needs the rendered app, hence here).
+        setTimeout(() => void firstDeck(context, true), 1500);
         return null;
       }
     });

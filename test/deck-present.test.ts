@@ -142,3 +142,13 @@ test("a project carries the runtime for the presenter only, names each slide's w
   assert.equal(bare.files.includes(DECK_RUNTIME), false)
   assert.equal(readFileSync(join(job, "bare", "index.html"), "utf8").includes("document.write"), false)
 })
+
+test("the deck skill's example spec is a spec the parser accepts", () => {
+  // A first-run agent wrote a deck without job and brief and had to read the source to find them (2026-11-24); the
+  // skill now carries a complete example, and it must stay one.
+  const skill = readFileSync(new URL("../packages/micromanager/skills/deck/SKILL.md", import.meta.url), "utf8")
+  const example = /```json\n([\s\S]*?)```/.exec(skill)?.[1]
+  assert.ok(example, "the skill has a json example")
+  const parsed = parseSpec("deck", JSON.parse(example))
+  assert.deepEqual(parsed.errors, [])
+})

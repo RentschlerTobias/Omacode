@@ -12,6 +12,8 @@
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
 // - In the sidebar, SERVICES (folded, below MODELS), and /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
 //   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
+// - /first-deck, and once on the first start: pick a sample brief and the build agent writes, checks and presents a first
+//   deck, then explains what happened (src/firstrun.ts, C2-T7).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
 //
@@ -24,12 +26,14 @@ import { createSignal, For, onCleanup, Show } from "solid-js"
 
 import { loadPicks, loadRouting, savePicks } from "@omacode/state/picks"
 import { lastOptions, loadControl, optionsOf, updateControl, type Control } from "@omacode/state/control"
+import { MICROMANAGER } from "@omacode/state/roles"
 import { agentOptions, CLEAR, modelOptions, poolRows, RESET, shortNames, toggle, updatePicks, VISION, type CatalogModel, type PoolRow } from "./pools.ts"
 import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJobs, sidebarCounts, sidebarGroups, summaryLine, taskChoices, view, type JobView, type Mark, type Mode, type SidebarGroup } from "./progress.ts"
 import { listJobs } from "@omacode/state/store"
 import { agentRows, agentSummary, taskSessions, type AgentRow, type Live, type SessionFacts, type Tag, type TaskSessionRow } from "./switcher.ts"
 import type { Job } from "@omacode/state"
 import { seedFromJournal } from "./usage.ts"
+import { BRIEFS, firstDeckDir, firstDeckPrompt, hyperframesInstalled, markOffered, MISSING_ENGINE, prepareFirstDeckDir, wasOffered } from "./firstrun.ts"
 import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode, type ServiceView } from "@omacode/core/service-control"
 import type { Mode as ServiceMode } from "@omacode/core/supervisor"
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus, type ContextStatus, type MemoryStats } from "@omacode/context/status"
@@ -43,13 +47,17 @@ type Color = unknown
 interface Context {
   theme: { text: { base: Color; muted: Color; action?: { primary?: { base?: Color } } }; diff?: { text?: { added?: Color; removed?: Color } }; hue?: Record<string, Record<string, Color>> }
   data: {
-    session: { get(id: string): { location?: { directory?: string } } | undefined }
+    // agent: the session's agent (Session.Info on opencode 2.2.5), absent on sessions that never picked one
+    session: { get(id: string): { location?: { directory?: string }; agent?: string } | undefined }
   }
   client: {
     session: {
       list(input: Record<string, unknown>): Promise<unknown>
       active(input: Record<string, unknown>): Promise<unknown>
       interrupt(input: { sessionID: string }): Promise<unknown>
+      // seen on opencode 2.2.5 (the TUI's own calls): create takes a location and an agent, prompt a session and text
+      create(input: { location: { directory: string }; agent?: string }): Promise<unknown>
+      prompt(input: { sessionID: string; text: string }): Promise<unknown>
     }
     model: { list(input: Record<string, unknown>): Promise<unknown> }
     permission: {
@@ -161,8 +169,11 @@ function Progress(props: { context: Context; sessionID: string }) {
   const mode = useMode(() => props.sessionID)
   const label = () => (mode() === "plan" ? "PLAN · planning only" : "BUILD")
   const shown = () => jobs().filter((j) => j.total > 0)
+  // The plan/build mode is the micromanager's: a session of another agent with no job shows nothing here (a build
+  // session used to read "PLAN · planning only" while it was building).
+  const orchestrated = () => props.context.data.session.get(props.sessionID)?.agent === MICROMANAGER.agent
   return (
-    <Show when={shown().length} fallback={<text fg={props.context.theme.text.muted}>micromanager · {label()}</text>}>
+    <Show when={shown().length} fallback={<Show when={orchestrated()}><text fg={props.context.theme.text.muted}>micromanager · {label()}</text></Show>}>
       <For each={shown()}>
         {(job) => <text fg={props.context.theme.text.muted}>micromanager · {label()} · {summaryLine(job)} · /tasks · /workers</text>}
       </For>
@@ -728,6 +739,41 @@ async function openTask(context: Context): Promise<void> {
   else if (chosen === "") context.ui.toast.show({ message: "That task has no session yet." })
 }
 
+// /first-deck (C2-T7): pick a sample brief, and a new session with the build agent writes, checks and presents a deck,
+// then explains what happened. `offer` is the one-time question on the first start; it is asked once, whatever the
+// answer.
+async function firstDeck(context: Context, offer = false): Promise<void> {
+  if (offer) {
+    if (wasOffered()) return
+    markOffered()
+    const yes = await context.ui.dialog.confirm({
+      title: "Welcome to omacode",
+      message: "Make a first slide deck now? You pick a topic, an agent writes the slides, checks them and opens them in your browser. Takes a few minutes. You can do this later with /first-deck.",
+      label: "Make a deck",
+    })
+    if (!yes) return
+  }
+  if (!hyperframesInstalled()) return context.ui.toast.show({ message: MISSING_ENGINE, variant: "warning" })
+  const chosen = await context.ui.dialog.select({
+    title: "Your first deck: pick a topic",
+    placeholder: "topic",
+    options: BRIEFS.map((b) => ({ title: b.title, value: b.id })),
+  })
+  const brief = BRIEFS.find((b) => b.id === chosen)
+  if (!brief) return
+  try {
+    const directory = prepareFirstDeckDir(firstDeckDir(brief))
+    const answer = await context.client.session.create({ location: { directory }, agent: "build" })
+    const session = ((answer as { data?: unknown })?.data ?? answer) as { id?: unknown }
+    if (typeof session?.id !== "string") throw new Error("the new session has no id")
+    context.ui.router.navigate({ type: "session", sessionID: session.id })
+    await context.client.session.prompt({ sessionID: session.id, text: firstDeckPrompt(brief) })
+    context.ui.toast.show({ message: `Making "${brief.title}" in ${directory}` })
+  } catch (err) {
+    context.ui.toast.show({ message: `Could not start the first deck: ${err instanceof Error ? err.message : String(err)}`, variant: "error" })
+  }
+}
+
 export default Plugin.define({
   id: "micromanager.tui",
   setup(raw: unknown) {
@@ -756,6 +802,7 @@ export default Plugin.define({
             { id: "micromanager.agents", title: "Micromanager: agents", group: "Micromanager", palette: true, slash: { name: "workers" }, run: () => context.ui.panel.open(PANEL) },
             { id: "micromanager.pools", title: "Micromanager: models per agent", group: "Micromanager", palette: true, slash: { name: "pools" }, run: () => pickModels(context) },
             { id: "omacode.services", title: "Omacode: services on/auto/off", group: "Omacode", palette: true, slash: { name: "services" }, run: () => pickServices(context) },
+            { id: "omacode.firstdeck", title: "Omacode: make a first slide deck", group: "Omacode", palette: true, slash: { name: "first-deck" }, run: () => firstDeck(context) },
             { id: "micromanager.auto", title: "Micromanager: auto-continue on/off", group: "Micromanager", palette: true, slash: { name: "auto" }, run: () => onJob(context, (project, job) => { const c = flipped(project, job, "auto"); context.ui.toast.show({ message: `auto-continue ${c.auto ? "on" : "off"} for ${job.id}` }) }) },
             { id: "micromanager.parallel", title: "Micromanager: parallel on/off", group: "Micromanager", palette: true, slash: { name: "parallel" }, run: () => onJob(context, (project, job) => { const c = flipped(project, job, "parallel"); context.ui.toast.show({ message: `parallel ${c.parallel ? "on" : "off"} for ${job.id}` }) }) },
             { id: "micromanager.stop", title: "Micromanager: stop or resume the job", group: "Micromanager", palette: true, slash: { name: "stop" }, run: () => onJob(context, (project, job) => {
@@ -765,6 +812,8 @@ export default Plugin.define({
             }) },
           ],
         }))
+        // The first start after install offers the first deck once (a dialog needs the rendered app, hence here).
+        setTimeout(() => void firstDeck(context, true), 1500)
         return null
       },
     })

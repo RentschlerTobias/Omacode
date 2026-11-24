@@ -1180,6 +1180,11 @@ mode names) and A6.
 - [ ] **C2-T6 — Tests.** Pure formatting; the spike's fallback; manual.
 - [ ] **C2-T7 — First run.** From "installed" to "first successful deck": a sample brief, one click, the deck opens,
   and a short explanation of what just happened. This is the only job that validates the product end to end.
+  *Status 2026-11-24:* deck path done and walked live in the TUI: `/first-deck` (and a one-time offer on the first
+  start) → three sample briefs → a build-agent session in `~/.local/share/omacode/first-deck/<brief>` writes, checks
+  (`make_artifact`, incl. the new `deck.present` presenter probe) and presents the deck, then explains it in plain
+  words (about 3 min on DeepSeek V4.1 Flash). Open: steering a worker without git jargon and a visible ask rate, and
+  the walkthrough on a clean machine (with A6).
 
 **Files:** `packages/tui/src/{tui.tsx,settings.ts,steer.ts,firstrun.ts,tui.js}`, `packages/micromanager/src/native.ts`,
 `test/tui.test.ts`.
