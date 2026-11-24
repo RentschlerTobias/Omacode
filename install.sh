@@ -203,4 +203,11 @@ echo "linked $LINK -> $REPO/packages/micromanager/src/plugin.ts (restart the Ope
 write_tui
 cli_plugin add
 echo "the TUI shows job progress from its next start (the sidebar toggles with <leader>b, or set \"session\": {\"sidebar\": \"auto\"} in cli.json; /tasks opens a task)"
+# A fresh OpenCode (or uv) lands in ~/.opencode/bin or ~/.local/bin, which this shell's PATH may not have yet.
+if ! command -v opencode >/dev/null; then
+  echo
+  echo "OpenCode is installed but not on this shell's PATH yet. Run:"
+  echo "  export PATH=\"\$HOME/.opencode/bin:\$HOME/.local/bin:\$PATH\""
+  echo "(a new terminal has it), then: opencode auth login, and opencode"
+fi
 optional || echo "a part of the profile did not install; the plugin is installed, try again with ./install.sh --profile <name>, or see ./install.sh --doctor"
