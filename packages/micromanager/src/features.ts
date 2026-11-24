@@ -99,6 +99,10 @@ export async function installTool(name: ToolName, log: Log, gpu?: Gpu): Promise<
     log(`comfy-mcp installed. ${addComfyMcp(userConfigPath("opencode.json")).say}`)
     return true
   }
+  if (name === "web-guidance") {
+    log(`${TOOL_INFO[name].title} installed; agents get it as the skill modern-web-guidance after OpenCode restarts`)
+    return true
+  }
   if (name !== "comfyui") {
     log(`${TOOL_INFO[name].title} installed`)
     return true

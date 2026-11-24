@@ -191,6 +191,19 @@
       "attribution": "AGPL terms when you modify it and offer it to others over a network",
       "notes": "a separate program OpenCode starts as an MCP server; used unmodified",
       "telemetry": "not checked"
+    },
+    {
+      "name": "Modern Web Guidance (modern-web-guidance)",
+      "kind": "guides",
+      "version": "1.0.0",
+      "spdx": "Apache-2.0",
+      "installedBy": "creator",
+      "source": "https://www.npmjs.com/package/modern-web-guidance",
+      "territory": "global",
+      "commercialOutput": "yes",
+      "attribution": "keep LICENSE and THIRD_PARTY_NOTICES (both installed beside the guides)",
+      "notes": "Google Chrome's guides and their offline search, taken from the npm tarball at its pin (sha512-checked); the skill is adapted to run the local copy, and its installer and Chrome-extensions skill are not used",
+      "telemetry": "usage events to Google Clearcut on install, update, uninstall, list and legacy-scan; off with DISABLE_TELEMETRY, which omacode sets; search and retrieve report nothing"
     }
   ],
   "npm": [

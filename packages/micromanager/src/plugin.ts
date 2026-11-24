@@ -60,6 +60,7 @@ import { gitState, humanSize, initRepo, surveyFolder } from "./nogit.ts"
 import { CHECK_BUG_FLOOR, CLASSIFY, LOCAL_BLOCK, LOCAL_BLOCK_FLOOR, NOUL_FLOOR, OPEN_ENDED, OPEN_ENDED_FLOOR } from "./catalog.ts"
 import { ending, Notifier, Scheduler, type Cancel } from "./scheduler.ts"
 import { registerSkills, SKILLS, type SkillEditor } from "./skills.ts"
+import { webGuidanceSkill } from "./web-guidance.ts"
 import { backlogIgnored, DIR, listJobs, loadJob, notesDir, reconcileJob, saveJob, stateDir } from "./store.ts"
 import { backlogDir, backlogTool, githubIssue, githubIssues, githubRepo, goalOf, localBackend, publishForm, publishIssue, readPublish, type BacklogItem } from "./backlog.ts"
 import { moveJob, moveTask, stage, type Job, type Task, type TaskStatus } from "./state.ts"
@@ -930,7 +931,7 @@ const plugin = {
     // The leaf skills the workers load, registered into OpenCode instead of linked into its config directory: a
     // package install has no checkout to link from, and the skills ship in this package. Read once per start, like
     // the agents; the set is what a brief may name (src/skills.ts).
-    const installedSkills = await registerSkills(ctx.skill, undefined, (name) => log("warn", `skill ${name} is missing from this install, so no worker gets it`)).catch(
+    const installedSkills = await registerSkills(ctx.skill, undefined, (name) => log("warn", `skill ${name} is missing from this install, so no worker gets it`), [webGuidanceSkill()].filter((x): x is NonNullable<typeof x> => Boolean(x))).catch(
       (err: unknown) => {
         log("warn", `the skills could not be registered: ${String(err)}`)
         return new Set<string>()

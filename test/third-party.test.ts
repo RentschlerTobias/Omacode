@@ -34,7 +34,7 @@ test("every component names its licence, where it may be used, what you may do w
 })
 
 test("every creative tool install.sh offers is in the manifest at its pinned version", () => {
-  const pin: Record<string, string> = { hyperframes: PINS.hyperframes, manim: PINS.manim, comfyui: PINS.comfyui, "comfy-mcp": PINS.comfyMcp }
+  const pin: Record<string, string> = { hyperframes: PINS.hyperframes, manim: PINS.manim, comfyui: PINS.comfyui, "comfy-mcp": PINS.comfyMcp, "web-guidance": PINS.webGuidance }
   for (const tool of TOOL_NAMES) {
     const title = TOOL_INFO[tool].title
     const row = components.components.find((c: { name: string }) => c.name.toLowerCase().startsWith(title.toLowerCase()))

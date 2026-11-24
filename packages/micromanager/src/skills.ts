@@ -98,8 +98,10 @@ export async function registerSkills(
   domain: SkillDomain | undefined,
   dir = SKILLS_DIR,
   missing?: (name: string) => void,
+  // skills that are not shipped with the plugin but installed as an optional part (src/web-guidance.ts)
+  extra: readonly SkillFile[] = [],
 ): Promise<ReadonlySet<string>> {
-  const files = skillFiles(dir, missing)
+  const files = [...skillFiles(dir, missing), ...extra]
   const added = new Set<string>()
   if (!domain || files.length === 0) return added
   await domain.transform((editor) => {

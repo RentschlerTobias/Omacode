@@ -25,8 +25,16 @@ import { TELEMETRY_OFF } from "@omacode/core/telemetry"
 
 import type { Exec } from "./worktree/git.ts"
 
-export const PINS = { hyperframes: "0.9.54", manim: "0.22.1", comfyCli: "1.25.0", comfyui: "0.44.2", comfyMcp: "0.10.0" } as const
-export const TOOL_NAMES = ["hyperframes", "manim", "comfyui", "comfy-mcp"] as const
+export const PINS = { hyperframes: "0.9.54", manim: "0.22.1", comfyCli: "1.25.0", comfyui: "0.44.2", comfyMcp: "0.10.0", webGuidance: "1.0.0" } as const
+export const TOOL_NAMES = ["hyperframes", "manim", "comfyui", "comfy-mcp", "web-guidance"] as const
+
+// modern-web-guidance (Google Chrome, Apache-2.0, 2026-11-10): the guides and their local search, taken from the npm
+// tarball at its pin and checked against the registry's sha512 before anything is unpacked. Its installer, its npx
+// @latest calls and its Chrome-extensions skill are not used (src/web-guidance.ts adapts the skill).
+export const WEB_GUIDANCE_INTEGRITY = "sha512-vafIZwC8AS6QjM2yyoflZbnc7n3/TVOMLbEMRdPTwcFy0f9/Tq8s5rJQ8UIqRt2KPl9ixravyaMR4nTGuUrcmg=="
+export const WEB_GUIDANCE_SKILL_VERSION = "2026_11_09-5bcc021b"
+// The sha512 check, as a step: node computes it and exits 1 on a mismatch.
+const VERIFY_SHA512 = 'const [f, want] = process.argv.slice(1); const got = "sha512-" + require("node:crypto").createHash("sha512").update(require("node:fs").readFileSync(f)).digest("base64"); if (got !== want) { console.error("checksum mismatch: " + got); process.exit(1) }'
 export type ToolName = (typeof TOOL_NAMES)[number]
 
 export const TOOL_INFO: Readonly<Record<ToolName, { readonly title: string; readonly what: string; readonly size: string }>> = {
@@ -34,6 +42,7 @@ export const TOOL_INFO: Readonly<Record<ToolName, { readonly title: string; read
   manim: { title: "Manim", what: "math animations (without LaTeX: formulas need a TeX install of your own)", size: "about 200 MB" },
   comfyui: { title: "ComfyUI", what: "images from local models (the image adapter); no model is downloaded", size: "4–8 GB with PyTorch" },
   "comfy-mcp": { title: "comfy-mcp", what: "lets agents run ComfyUI workflows, checked by the plugin (needs ComfyUI; AGPL-3.0-or-later)", size: "about 100 MB" },
+  "web-guidance": { title: "Modern Web Guidance", what: "the browser makers' guides to modern HTML, CSS and JavaScript, searched offline by agents building websites", size: "about 17 MB" },
 }
 
 export interface Found {
@@ -60,6 +69,7 @@ export function home(env: NodeJS.ProcessEnv = process.env): Home {
 
 export const toolsDir = (h: Home): string => join(h.data, "tools")
 export const hyperframesPrefix = (h: Home): string => join(toolsDir(h), "hyperframes")
+export const webGuidanceDir = (h: Home): string => join(toolsDir(h), "modern-web-guidance")
 // Where an install puts ComfyUI: COMFYUI_WORKSPACE, else the tools directory.
 export const comfyWorkspace = (h: Home): string => h.env.COMFYUI_WORKSPACE || join(toolsDir(h), "comfyui")
 // Where a ComfyUI may already be, installed by hand or by comfy-cli's default: found, it is offered instead of a
@@ -90,11 +100,18 @@ export async function detect(run: Exec, h: Home = home()): Promise<Found[]> {
   // comfy-mcp starts an MCP server when run, so it is found in uv's tool list rather than by asking it.
   const uvTools = await run("uv", ["tool", "list"], { cwd, timeoutMs: 30_000 }).catch(() => undefined)
   const mcp = uvTools && uvTools.code === 0 ? /^comfy-mcp v(\S+)/m.exec(uvTools.stdout)?.[1] : undefined
+  let guidance: string | undefined
+  try {
+    guidance = readFileSync(join(webGuidanceDir(h), "skill-version.txt"), "utf8").trim()
+  } catch {
+    guidance = existsSync(join(webGuidanceDir(h), "modern-web.mjs")) ? "unknown" : undefined
+  }
   return [
     { name: "hyperframes", found: Boolean(hf), ...(hf ? { version: hf } : {}) },
     { name: "manim", found: Boolean(manim), ...(manim ? { version: manim } : {}) },
     { name: "comfyui", found: Boolean(comfy), ...(comfy ? { version: comfy, where: workspace } : {}) },
     { name: "comfy-mcp", found: Boolean(mcp), ...(mcp ? { version: mcp } : {}) },
+    { name: "web-guidance", found: guidance !== undefined, ...(guidance !== undefined ? { version: guidance === WEB_GUIDANCE_SKILL_VERSION ? PINS.webGuidance : `unknown (${guidance})`, where: webGuidanceDir(h) } : {}) },
   ]
 }
 
@@ -183,6 +200,20 @@ export function installSteps(tool: ToolName, h: Home = home(), gpu?: Gpu): Step[
   }
   if (tool === "manim") {
     return [{ say: `Manim ${PINS.manim} as a uv tool`, cmd: "uv", args: ["tool", "install", "--force", `manim==${PINS.manim}`] }]
+  }
+  if (tool === "web-guidance") {
+    const dir = webGuidanceDir(h)
+    const tgz = join(toolsDir(h), `modern-web-guidance-${PINS.webGuidance}.tgz`)
+    return [
+      { say: `make ${dir}`, cmd: "mkdir", args: ["-p", toolsDir(h)] },
+      { say: `modern-web-guidance ${PINS.webGuidance} from npm (no install script runs)`, cmd: "npm", args: ["pack", `modern-web-guidance@${PINS.webGuidance}`, "--pack-destination", toolsDir(h), "--ignore-scripts", "--silent"] },
+      { say: "check it against the pinned sha512", cmd: "node", args: ["-e", VERIFY_SHA512, tgz, WEB_GUIDANCE_INTEGRITY] },
+      { say: "clear an older copy", cmd: "rm", args: ["-rf", dir] },
+      { say: "make the directory", cmd: "mkdir", args: ["-p", dir] },
+      { say: "unpack the guides and their search", cmd: "tar", args: ["xzf", tgz, "-C", dir, "--strip-components=3", "package/skills/modern-web-guidance"] },
+      { say: "unpack its licence and notices", cmd: "tar", args: ["xzf", tgz, "-C", dir, "--strip-components=1", "package/LICENSE", "package/THIRD_PARTY_NOTICES"] },
+      { say: "remove the download", cmd: "rm", args: ["-f", tgz] },
+    ]
   }
   if (tool === "comfy-mcp") {
     // comfy-mcp finds ComfyUI through comfy-cli's default workspace.

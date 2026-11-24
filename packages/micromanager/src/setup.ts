@@ -192,7 +192,7 @@ export function requiredNeeds(p: Pick<Probe, "which" | "platform">): SystemNeed[
   return needs
 }
 
-export const OFFER_IDS = ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "manim"] as const
+export const OFFER_IDS = ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "manim", "web-guidance"] as const
 export type OfferId = (typeof OFFER_IDS)[number]
 
 export interface Offer {
@@ -217,6 +217,7 @@ export const OFFERS: Readonly<Record<OfferId, Offer>> = {
   comfyui: { title: TOOL_INFO.comfyui.title, what: TOOL_INFO.comfyui.what, size: TOOL_INFO.comfyui.size, licence: "GPL-3.0-only", tool: "comfyui", needsUv: true },
   "comfy-mcp": { title: TOOL_INFO["comfy-mcp"].title, what: TOOL_INFO["comfy-mcp"].what, size: TOOL_INFO["comfy-mcp"].size, licence: "AGPL-3.0-or-later OR LicenseRef-Comfy-Commercial", tool: "comfy-mcp", needsUv: true, after: "comfyui" },
   manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, licence: "MIT", tool: "manim", needsUv: true },
+  "web-guidance": { title: TOOL_INFO["web-guidance"].title, what: TOOL_INFO["web-guidance"].what, size: TOOL_INFO["web-guidance"].size, licence: "Apache-2.0", tool: "web-guidance" },
 }
 
 // What is already on the machine, so it is not offered again.
@@ -292,8 +293,8 @@ export interface Profile {
 export const PROFILES: Readonly<Record<ProfileId, Profile>> = {
   minimal: { title: "Minimal", offers: [], download: "nothing" },
   coding: { title: "Coding", offers: ["services"], download: "about 2 GB, models on first use" },
-  creator: { title: "Creator", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp"], download: "about 8–12 GB" },
-  full: { title: "Full", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "manim"], download: "about 8–12 GB" },
+  creator: { title: "Creator", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "web-guidance"], download: "about 8–12 GB" },
+  full: { title: "Full", offers: ["services", "chromium", "ffmpeg", "hyperframes", "comfyui", "comfy-mcp", "web-guidance", "manim"], download: "about 8–12 GB" },
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -372,7 +373,7 @@ export function pluginChecks(at: Paths): Check[] {
 }
 
 export function toolChecks(found: readonly Found[], opencodeJson: string): Check[] {
-  const pin: Partial<Record<ToolName, string>> = { hyperframes: PINS.hyperframes, manim: PINS.manim, comfyui: PINS.comfyui, "comfy-mcp": PINS.comfyMcp }
+  const pin: Partial<Record<ToolName, string>> = { hyperframes: PINS.hyperframes, manim: PINS.manim, comfyui: PINS.comfyui, "comfy-mcp": PINS.comfyMcp, "web-guidance": PINS.webGuidance }
   const out: Check[] = []
   for (const f of found) {
     const title = TOOL_INFO[f.name].title

@@ -30,6 +30,7 @@ DISABLE_TELEMETRY=1 for everything it starts and for every agent shell (`package
 | PyTorch (in ComfyUI's environment) |  | `Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT` | creator | global | yes | keep the notices | not checked |
 | comfy-cli<br><sub>installs and manages ComfyUI; a separate program</sub> | 1.25.0 | `GPL-3.0-only` | creator | global | yes | GPL terms when redistributing it | usage tracking; omacode turns it off at install (comfy tracking disable) |
 | comfy-mcp<br><sub>a separate program OpenCode starts as an MCP server; used unmodified</sub> | 0.10.0 | `AGPL-3.0-or-later OR LicenseRef-Comfy-Commercial` | creator | global | yes | AGPL terms when you modify it and offer it to others over a network | not checked |
+| Modern Web Guidance (modern-web-guidance)<br><sub>Google Chrome's guides and their offline search, taken from the npm tarball at its pin (sha512-checked); the skill is adapted to run the local copy, and its installer and Chrome-extensions skill are not used</sub> | 1.0.0 | `Apache-2.0` | creator | global | yes | keep LICENSE and THIRD_PARTY_NOTICES (both installed beside the guides) | usage events to Google Clearcut on install, update, uninstall, list and legacy-scan; off with DISABLE_TELEMETRY, which omacode sets; search and retrieve report nothing |
 
 ## npm packages the plugin runs with
 

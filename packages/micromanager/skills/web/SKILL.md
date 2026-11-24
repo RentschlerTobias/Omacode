@@ -24,6 +24,11 @@ job is the pages and the spec, not the checks.
 
 Start static: plain HTML, CSS and a little JavaScript need no build and are checked exactly like a built site.
 
+**How to write the HTML, CSS and JavaScript:** when the `modern-web-guidance` skill is available, search its guides
+before you write a component, a layout, a form, a dialog or an animation, and follow what they say. Aim for features
+that are Baseline widely available; when a guide says a feature is new, use its fallback. Without the skill, the user
+can add it with `/setup` (Modern Web Guidance).
+
 ## Videos and animations in a page
 
 A film or a Manim animation is made first with the video skill (`make_artifact` with a `video.json`), then copied into

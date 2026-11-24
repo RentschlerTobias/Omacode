@@ -77,7 +77,7 @@ terminal: Chromium (the deck and site checks open a real browser) and ffmpeg (vi
 
 **Everything else is installed from inside OpenCode**, none of it needs sudo:
 
-- On the first start the TUI asks what you want to make (decks, videos, images, code) and offers the parts that goal
+- On the first start the TUI asks what you want to make (decks, videos, websites, images, code) and offers the parts that goal
   needs, each with what it is for, its size and its licence; decks then lead to a first deck.
 - `/setup` lists every part, whether it is there, and installs one when you pick it.
 - An agent that needs a missing part asks you and installs it with the `install_feature` tool, after a permission
@@ -90,6 +90,7 @@ terminal: Chromium (the deck and site checks open a real browser) and ffmpeg (vi
 | HyperFrames | decks and videos | about 300 MB |
 | ComfyUI, comfy-mcp | images from local models; agents running ComfyUI | 4–8 GB |
 | Manim | math animations | about 200 MB |
+| Modern Web Guidance 1.0.0 | Google Chrome's guides to modern HTML, CSS and JS, searched offline by agents building sites (Apache-2.0; pinned, sha512-checked, telemetry off) | about 17 MB |
 
 `./install.sh --tools` asks about all of them in the terminal instead; `--with <parts>` and
 `--profile coding|creator|full` give the answers up front (coding: the services; creator: + Chromium, ffmpeg,

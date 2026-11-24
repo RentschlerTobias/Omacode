@@ -40,6 +40,7 @@ export interface Goal {
 export const GOALS: readonly Goal[] = [
   { id: "decks", title: "Slide decks", parts: ["hyperframes", "chromium"], firstDeck: true },
   { id: "videos", title: "Videos", parts: ["hyperframes", "ffmpeg"] },
+  { id: "websites", title: "Websites", parts: ["web-guidance", "chromium"] },
   { id: "images", title: "Images with local models", parts: ["comfyui", "comfy-mcp"] },
   { id: "code", title: "Code, with the local decider and memory", parts: ["services"] },
   { id: "none", title: "Nothing to install now (/setup later)", parts: [] },
