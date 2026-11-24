@@ -59,11 +59,12 @@ npm)
   # What a user without a checkout does: Node and OpenCode first, then the plugin package. The packages are not on
   # npm yet, so the tarballs packed here stand in for `opencode plugin add @omacode/full`: installed into one prefix
   # and registered in opencode.json by path, which is what plugin add records too.
-  SETUP='sudo pacman -Syu --noconfirm --needed nodejs npm git >/dev/null && curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.2.5 >/dev/null
-    && npm install --no-audit --no-fund --prefix ~/.local/share/omacode-npm /in/packs/*.tgz >/dev/null
-    && mkdir -p ~/.config/opencode
-    && printf "{ \"plugins\": [\"%s\"] }\n" "$HOME/.local/share/omacode-npm/node_modules/@omacode/full" > ~/.config/opencode/opencode.json
-    && ln -sf ~/.local/share/omacode-npm/node_modules/.bin/omacode ~/.local/bin/omacode 2>/dev/null || { mkdir -p ~/.local/bin && ln -sf ~/.local/share/omacode-npm/node_modules/.bin/omacode ~/.local/bin/omacode; }'
+  SETUP='sudo pacman -Syu --noconfirm --needed nodejs npm git >/dev/null &&
+    curl -fsSL https://opencode.ai/v2/install | bash -s -- --version 2.2.5 >/dev/null &&
+    npm install --no-audit --no-fund --prefix ~/.local/share/omacode-npm /in/packs/*.tgz >/dev/null &&
+    mkdir -p ~/.config/opencode ~/.local/bin &&
+    printf "{ \"plugins\": [\"%s\"] }\n" "$HOME/.local/share/omacode-npm/node_modules/@omacode/full" > ~/.config/opencode/opencode.json &&
+    ln -sf ~/.local/share/omacode-npm/node_modules/.bin/omacode ~/.local/bin/omacode'
   if [[ "$AUTO" == "--auto" ]]; then
     run "$SETUP && { omacode doctor || true; } && $PLUGIN_CHECK" ""
   else

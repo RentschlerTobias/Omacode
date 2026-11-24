@@ -185,6 +185,10 @@ test("doctor finds the plugin by its link or its package, and says a dangling li
   // Installed from npm alone (opencode plugin add): the package entry is the install.
   rmSync(at.pluginLink)
   assert.ok(pluginChecks(at).some((c) => c.area === "plugin" && c.level === "ok" && /installed as a package/.test(c.text)))
+  // @omacode/full brings the TUI: no cli.json entry is needed.
+  writeFileSync(at.cliJson, "{}")
+  assert.match(pluginChecks(at).find((c) => c.area === "tui")?.text ?? "", /the TUI comes with \/src\/omacode\/packages\/full/)
+  writeFileSync(at.cliJson, JSON.stringify({ plugins: [at.tuiDir] }))
   symlinkSync(target, at.pluginLink)
 
   rmSync(target)
@@ -192,7 +196,7 @@ test("doctor finds the plugin by its link or its package, and says a dangling li
   writeFileSync(at.cliJson, "{}")
   const bad = pluginChecks(at)
   assert.match(bad.find((c) => c.area === "plugin" && c.level === "fail")?.text ?? "", /which is gone/)
-  assert.equal(levelOf(bad, "tui"), "warn")
+  assert.equal(levelOf(bad, "tui"), "ok", "@omacode/full is listed, and it brings the TUI")
   assert.equal(levelOf(bad, "config"), "fail")
 })
 
@@ -214,7 +218,7 @@ test("doctor's machine checks: the services unit, the sandbox, and only the Hype
   const at = layout(t)
   const doctorOut = "  ✗ Version          0.9.54 → 0.9.88 available\n  ✗ whisper-cpp      Not found (optional)\n  ✗ Docker running   Not running\n  ✓ FFmpeg  ok\n"
   const run = fakeRun({ "bwrap --ro-bind / / --dev /dev true": {}, "hyperframes doctor": { code: 1, stdout: doctorOut } })
-  const p = probe({ run }, ["hyperframes"])
+  const p = probe({ run }, ["hyperframes", "bwrap"])
   let checks = await machineChecks(p, at)
   assert.equal(levelOf(checks, "services"), "info", "no unit: not installed, not a failure")
   assert.equal(levelOf(checks, "sandbox"), "ok")
@@ -222,10 +226,15 @@ test("doctor's machine checks: the services unit, the sandbox, and only the Hype
 
   writeFileSync(at.unit, "")
   const broken = fakeRun({ "systemctl --user is-active omacode-services.service": { code: 3, stdout: "failed\n" }, "hyperframes doctor": { code: 1, stdout: "  ✗ Chrome   not found\n" } })
-  checks = await machineChecks(probe({ run: broken }, ["hyperframes"]), at)
+  checks = await machineChecks(probe({ run: broken }, ["hyperframes", "bwrap"]), at)
   assert.equal(levelOf(checks, "services"), "warn")
   assert.equal(levelOf(checks, "sandbox"), "fail")
   assert.match(checks.find((c) => c.area === "hyperframes")?.text ?? "", /Chrome/)
+
+  // Not installed at all (an npm install without install.sh): said so, with the command that installs it.
+  checks = await machineChecks(probe({ run: broken }, []), at)
+  assert.match(checks.find((c) => c.area === "sandbox")?.text ?? "", /bubblewrap is not installed/)
+  assert.match(checks.find((c) => c.area === "sandbox")?.fix ?? "", /omacode setup required/)
 })
 
 test("uninstall removes what the install made and keeps the user's data; --purge also takes tools and services", (t) => {

@@ -364,7 +364,13 @@ export function pluginChecks(at: Paths): Check[] {
   if (linked === undefined && packages.length === 0) out.push({ area: "plugin", level: "fail", text: "the plugin is not installed", fix: "./install.sh in a checkout, or: opencode plugin add @omacode/full" })
 
   const tui = pluginEntries(readJson(at.cliJson)).includes(at.tuiDir) && existsSync(join(at.tuiDir, "tui.tsx"))
-  out.push(tui ? { area: "tui", level: "ok", text: "the TUI package is installed" } : { area: "tui", level: "warn", text: "the TUI package is not installed: no progress line, sidebar sections or /first-deck", fix: "./install.sh" })
+  // From npm, @omacode/full brings the TUI itself: OpenCode loads its ./tui export beside the server plugin.
+  const full = packages.find((p) => /(^|[/@])omacode[/-]full$|\/full$/.test(p.replace(/@[\d.]+(-[\w.]+)?$/, "")))
+  out.push(tui
+    ? { area: "tui", level: "ok", text: "the TUI package is installed" }
+    : full
+      ? { area: "tui", level: "ok", text: `the TUI comes with ${full}` }
+      : { area: "tui", level: "warn", text: "the TUI is not installed: no progress line, sidebar sections or /setup", fix: "opencode plugin add @omacode/full, or ./install.sh in a checkout" })
 
   const raw = existsSync(at.config) ? readFileSync(at.config, "utf8") : undefined
   if (raw === undefined) out.push({ area: "config", level: "info", text: `no ${at.config}: the defaults apply` })
@@ -414,7 +420,9 @@ export async function machineChecks(p: Probe, at: Paths): Promise<Check[]> {
   } else {
     out.push({ area: "services", level: "ok", text: `omacode-services is installed (${at.unit})` })
   }
-  if (p.platform === "linux") {
+  if (p.platform === "linux" && !p.which("bwrap")) {
+    out.push({ area: "sandbox", level: "fail", text: "bubblewrap is not installed: plan mode falls back to asking, and decks, videos and sites cannot be built", fix: "omacode setup required (installs it with your package manager)" })
+  } else if (p.platform === "linux") {
     const box = await p.run("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "true"], { cwd, timeoutMs: 15_000 }).catch(() => undefined)
     out.push(box?.code === 0
       ? { area: "sandbox", level: "ok", text: "bubblewrap runs: plan mode and the artifact runner can sandbox" }
