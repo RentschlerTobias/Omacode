@@ -85,6 +85,10 @@ profile says what it downloads before anything is fetched:
 and omacode-services and lists what it keeps: your journal, memory, model registry and settings always; the tools and
 the services' models unless `--purge`. `./install.sh --doctor` is `node packages/micromanager/src/cli.ts doctor`.
 
+**Licences.** [THIRD_PARTY.md](THIRD_PARTY.md) lists everything omacode installs, downloads or relies on: the licence
+of each, where it may be used, and whether what you make with it may be used commercially (`npm run licenses`
+regenerates it from `licenses/components.json`). Image models you add are checked by the model registry instead.
+
 **Optional creative tools.** `./install.sh --tools` asks about each tool the artifact adapters use, says whether it is
 already there, and installs it at a pinned version if you say yes, under the data directory
 (`~/.local/share/omacode/tools/`), never as a new folder in your home:

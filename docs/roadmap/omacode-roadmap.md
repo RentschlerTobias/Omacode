@@ -765,8 +765,11 @@ licenses.
   uninstall [--purge] [--dry-run]`; install.sh runs the preflight, asks Minimal/Coding/Creator/Full (each states its
   download first), `--profile`, `--doctor`, `--remove` via the CLI; comfy-mcp 0.10.0 is a fourth creative tool
   (uv tool + `mcp.servers.comfy`). Doctor calls `hyperframes doctor` and counts only what decks and videos need.
-  Walked in a throwaway XDG profile: install → doctor → remove. Still open: the licence manifest (T9), local-LLM
-  detection (T4), Blender (T6), macOS walkthrough.
+  Walked in a throwaway XDG profile: install → doctor → remove. Licence manifest (T9): `licenses/components.json` →
+  `npm run licenses` → `licenses/third-party.json` + `THIRD_PARTY.md` (SPDX, territory, commercial use of output,
+  attribution; npm from the lockfile, the decider's Python environment from its metadata), tests tie it to the pins.
+  Still open: the compact licence block in agent context and a `license_info` tool (T9), local-LLM detection (T4),
+  Blender (T6), macOS walkthrough.
 - [ ] **A6-T2 — Preflight.** OS/arch/Node/git/uv/ffmpeg/Chromium/RAM/GPU/VRAM/disk/OpenCode version/TUI slot API/
   sandbox availability.
 - [ ] **A6-T3 — Profiles.** Minimal/Coding/Creator/Full/Custom; `--yes` preselects; `--skip-all` installs nothing.

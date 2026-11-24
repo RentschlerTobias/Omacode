@@ -12,7 +12,7 @@
 // Pins (2026-11-23): Manim 0.22.1 (2026-10-27), comfy-cli 1.25.0 (2026-11-03), ComfyUI 0.44.2 (2026-11-06), all older
 // than two weeks. HyperFrames 0.9.54 (2026-11-15) is younger: it is the version the deck and video adapters are tested
 // against (B3), kept by the user's decision. Licences: HyperFrames Apache-2.0, Manim MIT, comfy-cli and ComfyUI
-// GPL-3.0 (separate programs the plugin talks to over HTTP or argv, not linked). comfy-mcp 0.10.0 (Comfy-Org, AGPL-3.0)
+// GPL-3.0 (separate programs the plugin talks to over HTTP or argv, not linked). comfy-mcp 0.10.0 (Comfy-Org, AGPL-3.0-or-later or a commercial licence)
 // is the MCP server agents use to run ComfyUI workflows (src/comfy-gate.ts keeps it in check); it is a separate program
 // OpenCode starts, registered in opencode.json under mcp.servers.comfy.
 
@@ -32,7 +32,7 @@ export const TOOL_INFO: Readonly<Record<ToolName, { readonly title: string; read
   hyperframes: { title: "HyperFrames", what: "decks and videos from HTML (the deck and video adapters)", size: "about 300 MB, Chromium on first use" },
   manim: { title: "Manim", what: "math animations (without LaTeX: formulas need a TeX install of your own)", size: "about 200 MB" },
   comfyui: { title: "ComfyUI", what: "images from local models (the image adapter); no model is downloaded", size: "4–8 GB with PyTorch" },
-  "comfy-mcp": { title: "comfy-mcp", what: "lets agents run ComfyUI workflows, checked by the plugin (needs ComfyUI; AGPL-3.0)", size: "about 100 MB" },
+  "comfy-mcp": { title: "comfy-mcp", what: "lets agents run ComfyUI workflows, checked by the plugin (needs ComfyUI; AGPL-3.0-or-later)", size: "about 100 MB" },
 }
 
 export interface Found {
