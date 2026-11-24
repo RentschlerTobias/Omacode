@@ -765,7 +765,10 @@ licenses.
   uninstall [--purge] [--dry-run]`; install.sh installs what is required and missing after one question (Node in the shell; git, bubblewrap via
   pacman/apt/dnf/brew; OpenCode with its installer), then asks each optional part on its own with its purpose and
   download (services, Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp, Manim; uv comes along when needed);
-  `--profile`/`--with` give the answers up front; `--doctor`, `--remove` via the CLI; comfy-mcp 0.10.0 is a fourth creative tool
+  `--profile`/`--with` give the answers up front; `--doctor`, `--remove` via the CLI. Since then install.sh asks only
+  the sudo parts (Chromium, ffmpeg); the rest is installed inside OpenCode (features.ts): the welcome asks what the user
+  wants to make, `/setup` lists and installs parts, agents call `install_feature` (permission asked via
+  `ctx.permission.assert`, denied to workers) and `make_artifact`/`image_models` name what is missing; comfy-mcp 0.10.0 is a fourth creative tool
   (uv tool + `mcp.servers.comfy`). Doctor calls `hyperframes doctor` and counts only what decks and videos need.
   Walked in a throwaway XDG profile: install → doctor → remove. Licence manifest (T9): `licenses/components.json` →
   `npm run licenses` → `licenses/third-party.json` + `THIRD_PARTY.md` (SPDX, territory, commercial use of output,

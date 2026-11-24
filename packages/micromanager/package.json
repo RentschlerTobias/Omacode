@@ -22,7 +22,9 @@
     ".": "./src/plugin.ts",
     "./guard": "./src/guard/index.ts",
     "./shell": "./src/shell/index.ts",
-    "./context": "./src/context/index.ts"
+    "./context": "./src/context/index.ts",
+    "./features": "./src/features.ts",
+    "./setup": "./src/setup.ts"
   },
   "files": [
     "src",

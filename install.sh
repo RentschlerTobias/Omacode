@@ -7,16 +7,16 @@
 #                           question, then the package manager or the project's own installer), link
 #                           packages/micromanager/src/plugin.ts into ~/.config/opencode/plugins/omacode.ts, write the TUI
 #                           package ~/.config/opencode/omacode-tui/ into the "plugins" of ~/.config/opencode/cli.json,
-#                           then ask about each optional part on its own, with what it is for and what it downloads:
-#                           the local services, Chromium, ffmpeg, HyperFrames, ComfyUI (and its GPU), comfy-mcp, Manim.
-#                           A part that needs uv brings uv along (packages/micromanager/src/setup.ts).
+#                           and ask about the optional parts that need sudo (Chromium, ffmpeg). The parts that do not
+#                           (local services, HyperFrames, ComfyUI, comfy-mcp, Manim) are offered inside OpenCode: on its
+#                           first start, in /setup, and by an agent when it needs one (packages/micromanager/src/features.ts).
 #   ./install.sh --profile minimal|coding|creator|full [--gpu nvidia|amd|amd-igpu|cpu]   the optional answers given up
 #                           front: coding = the services; creator = + Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp;
 #                           full = + Manim
 #   ./install.sh --with services,chromium,ffmpeg,hyperframes,comfyui,comfy-mcp,manim [--gpu …]   those parts, without
 #                           asking (uv comes along when one needs it)
 #   ./install.sh --yes | --no-tools | --skip-all   ask nothing: install what is needed, nothing optional
-#   ./install.sh --tools    only the optional questions, for a plugin already installed
+#   ./install.sh --tools    all optional questions here in the terminal, also for a plugin already installed
 #   ./install.sh --doctor   the installed state, each finding with its fix
 #   ./install.sh --remove [--purge] [--dry-run]   remove the plugin, the TUI package and omacode-services, and say what
 #                           stays (tools and models unless --purge; your journal, memory and settings always)
@@ -92,9 +92,9 @@ optional() {
   elif [[ -n "$WITH" ]]; then
     node "$CLI_TS" setup with "$WITH" ${GPU:+--gpu "$GPU"}
   elif [[ "$ASK" == 1 && -t 0 && -t 1 ]]; then
-    node "$CLI_TS" setup ask ${GPU:+--gpu "$GPU"}
+    node "$CLI_TS" setup ask --system
   else
-    echo "no optional part installed (./install.sh --tools asks, --profile coding|creator|full installs a set)"
+    echo "no optional part installed: OpenCode offers them on its first start and in /setup (./install.sh --tools asks here)"
   fi
 }
 

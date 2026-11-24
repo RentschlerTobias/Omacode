@@ -27,6 +27,24 @@ export const BRIEFS: readonly Brief[] = [
   { id: "repair-cafe", title: "Opening a neighbourhood repair café", topic: "a pitch to neighbours for a monthly repair café: the idea, what people bring, what volunteers do, and how to join" },
 ]
 
+// The welcome on the first start: what the user wants to make decides which parts are offered. Parts that need sudo
+// (Chromium, ffmpeg) are named with the terminal command; the others are installed from the TUI (features.ts).
+export interface Goal {
+  readonly id: string
+  readonly title: string
+  readonly parts: readonly string[]
+  // after the install, the first deck is offered
+  readonly firstDeck?: boolean
+}
+
+export const GOALS: readonly Goal[] = [
+  { id: "decks", title: "Slide decks", parts: ["hyperframes", "chromium"], firstDeck: true },
+  { id: "videos", title: "Videos", parts: ["hyperframes", "ffmpeg"] },
+  { id: "images", title: "Images with local models", parts: ["comfyui", "comfy-mcp"] },
+  { id: "code", title: "Code, with the local decider and memory", parts: ["services"] },
+  { id: "none", title: "Nothing to install now (/setup later)", parts: [] },
+]
+
 export const FIRST_DECK_DIR = "first-deck"
 const OFFERED_FILE = "first-run.json"
 
@@ -63,8 +81,6 @@ export function hyperframesInstalled(env: NodeJS.ProcessEnv = process.env): bool
   return false
 }
 
-export const MISSING_ENGINE =
-  "The first deck needs HyperFrames, which is not installed. Run ./install.sh --with hyperframes in the omacode folder, then /first-deck again."
 
 // The one-time offer on the first start: offered once, whatever the answer, so it never nags. /first-deck stays.
 export const offeredPath = (state = userStateDir()): string => join(state, OFFERED_FILE)

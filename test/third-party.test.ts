@@ -8,6 +8,7 @@ import { test } from "node:test"
 
 import { build, markdown, npmPackages } from "../scripts/third-party.mjs"
 import { PINS, TOOL_INFO, TOOL_NAMES } from "../packages/micromanager/src/creative-tools.ts"
+import { OFFERS } from "../packages/micromanager/src/setup.ts"
 
 const json = (path: string) => JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"))
 const components = json("../licenses/components.json")
@@ -41,4 +42,12 @@ test("every creative tool install.sh offers is in the manifest at its pinned ver
     assert.equal(row.version, pin[tool], `${title}: the manifest's version is the pin`)
   }
   assert.equal(components.components.find((c: { name: string }) => c.name === "comfy-cli")?.version, PINS.comfyCli)
+})
+
+test("the licence an install question shows for a tool is the manifest's", () => {
+  for (const offer of Object.values(OFFERS)) {
+    if (!offer.tool) continue
+    const row = components.components.find((c: { name: string }) => c.name.toLowerCase().startsWith(offer.title.toLowerCase()))
+    assert.equal(offer.licence, row?.spdx, offer.title)
+  }
 })

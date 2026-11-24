@@ -7,13 +7,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { test, type TestContext } from "node:test"
 
+import { OFFER_IDS } from "../packages/micromanager/src/setup.ts"
 import {
   BRIEFS,
   firstDeckDir,
   firstDeckPrompt,
   hyperframesInstalled,
   markOffered,
-  MISSING_ENGINE,
+  GOALS,
   offeredPath,
   prepareFirstDeckDir,
   wasOffered,
@@ -53,7 +54,7 @@ test("the build agent is told the steps: the deck skill, deck.json, make_artifac
   assert.match(text, /Do not say the deck looks good unless the presenter check passed/)
 })
 
-test("HyperFrames is found on PATH the way the runner finds it, and a missing one is named with its install", (t) => {
+test("HyperFrames is found on PATH the way the runner finds it", (t) => {
   const dir = tmp(t)
   assert.equal(hyperframesInstalled({ PATH: dir }), false)
   const bin = join(dir, "hyperframes")
@@ -62,7 +63,6 @@ test("HyperFrames is found on PATH the way the runner finds it, and a missing on
   assert.equal(hyperframesInstalled({ PATH: dir }), false, "a file that is not executable is not an install")
   chmodSync(bin, 0o755)
   assert.equal(hyperframesInstalled({ PATH: `/nonexistent:${dir}` }), true)
-  assert.match(MISSING_ENGINE, /install\.sh --with hyperframes/)
 })
 
 test("the first-start offer is made once, whatever the answer", (t) => {
@@ -77,4 +77,11 @@ test("the first-start offer is made once, whatever the answer", (t) => {
   mkdirSync(state, { recursive: true })
   writeFileSync(broken, "{not json")
   assert.equal(wasOffered(broken), true)
+})
+
+test("the welcome's goals name only parts the installer knows, and only decks lead to the first deck", () => {
+  assert.equal(new Set(GOALS.map((g) => g.id)).size, GOALS.length)
+  for (const g of GOALS) for (const p of g.parts) assert.ok((OFFER_IDS as readonly string[]).includes(p), `${g.id}: ${p}`)
+  assert.deepEqual(GOALS.filter((g) => g.firstDeck).map((g) => g.id), ["decks"])
+  assert.deepEqual(GOALS.find((g) => g.id === "none")?.parts, [])
 })

@@ -59,6 +59,9 @@ export const WRITER_ROLES: ReadonlySet<string> = new Set(["code", "test", "visua
 // Every other worker is denied it, and OpenCode's cloud image tool with it (the designer's falls back to that only
 // when ComfyUI cannot run, src/comfy-gate.ts); the plugin's gate checks the designer's runs against the model registry
 // (micromanager/src/comfy-gate.ts).
+// Installing a part of omacode (install_feature) changes the user's machine outside the job: the user decides that with
+// the agent they talk to, never a worker on its own.
+const noInstall = [rule("install_feature", "deny")]
 const noComfy = (id: RoleId) => (id === "visual" ? [] : [rule("comfy_*", "deny"), rule("experimental_image_generate", "deny")])
 const noMemory = (id: RoleId) => [...(WRITER_ROLES.has(id) ? [] : ["memory_set", "memory_replace"]), "memory_oversized", "journal_write"].map((t) => rule(t, "deny"))
 const WEB_TOOLS = ["webfetch", "websearch"] as const
@@ -164,7 +167,7 @@ const role = (
   system: string,
   rules: readonly Rule[],
   models: readonly string[],
-): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory(id), ...noQuestion, ...noComfy(id)], models })
+): Role => ({ id, agent: AGENT_NAMES[id], description, system: `${SHARED}\n\n${system}`, rules: [...rules, ...noStateDir, ...noMemory(id), ...noQuestion, ...noComfy(id), ...noInstall], models })
 
 export const ROLES: readonly Role[] = [
   role(

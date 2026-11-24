@@ -94,6 +94,8 @@ import { servicesView } from "@omacode/core/service-control"
 import { stripComments } from "@omacode/core/jsonc"
 import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
+import { installParts, outcomeText } from "./features.ts"
+import { missingForKind, missingNote, OFFER_IDS, OFFERS, realProbe, type OfferId } from "./setup.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
 import { buildArtifact, formatBuild, SPEC_FILES } from "@omacode/artifact/build"
@@ -159,6 +161,9 @@ interface Context {
     // A session's paused requests, and the reply that lets one go or fails it (opencode 2.0.18, src/ask.ts).
     list(args: { sessionID: string }): Promise<{ id: string; action: string; resources: readonly string[] }[]>
     reply(args: { sessionID: string; requestID: string; decision: "once" | "always" | "reject"; message?: string }): Promise<unknown>
+    // what OpenCode's own tools call before they act (seen on 2.2.5): runs the rules and the evaluate hook, asks the user
+    // when the effect is "ask", and throws when the answer, or a rule, is no
+    assert(args: { action: string; resources: readonly string[]; sessionID?: string; agent?: string; metadata?: Record<string, unknown>; source?: { type: "tool"; messageID: string; id: string } }): Promise<unknown>
   }
   // The skills OpenCode discovered at this location: a synchronous transform over them (opencode 2.0.18). The
   // plugin registers its own leaf skills here (src/skills.ts), which is what lets a package install need no links in
@@ -1898,6 +1903,19 @@ const plugin = {
         record({ kind: "image.cloud", sessionID: evaluation.sessionID, agent: evaluation.agent, verdict: evaluation.effect, reason: failed ? `ComfyUI failed: ${failed}` : available.ok ? "" : available.why })
         return
       }
+      // install_feature: the user says yes to each install, told its size and licence (OpenCode's question shows only the
+      // tool's name, so the details go into the conversation just above it).
+      if (evaluation.action === "install_feature") {
+        if (evaluation.effect === "deny") return
+        const part = String((evaluation.metadata?.input as { part?: unknown } | undefined)?.part ?? evaluation.resources[0] ?? "") as OfferId
+        const offer = OFFERS[part]
+        evaluation.effect = "ask"
+        evaluation.message = offer ? `Install ${offer.title} (${offer.size})?` : "Install an omacode part?"
+        if (offer) {
+          await say({ sessionID: evaluation.sessionID, text: `[omacode] ${evaluation.agent} wants to install ${offer.title}: ${offer.what}. ${offer.size}. Licence: ${offer.licence}. Allow the next permission to install it, reject to skip.`, resume: false }).catch(() => undefined)
+        }
+        return
+      }
       // ComfyUI through comfy-mcp, in every session and for every agent (src/comfy-gate.ts).
       if (evaluation.action.startsWith(COMFY_PREFIX)) {
         if (evaluation.effect === "deny") return
@@ -2802,6 +2820,15 @@ const plugin = {
             const specPath = resolve(base, String(args?.spec ?? "").trim())
             if (!String(args?.spec ?? "").trim() || !insidePath(realish(specPath), realish(base))) return { content: `make_artifact: the spec must be a file inside ${base}` }
             if (STATE_DIRS.some((d) => insidePath(realish(specPath), realish(join(base, d))))) return { content: "make_artifact: not inside the plugin's state directory; put the artifact in the project" }
+            // A deck or a video needs HyperFrames (and a video ffmpeg): missing, the agent offers it instead of failing.
+            let kind = ""
+            try {
+              kind = String((JSON.parse(readFileSync(specPath, "utf8")) as { kind?: unknown }).kind ?? "")
+            } catch {
+              kind = ""
+            }
+            const missing = missingForKind(kind, realProbe(exec).which)
+            if (missing.length) return { content: missingNote(`This ${kind}`, missing) }
             const asked = String(args?.present ?? "").trim()
             const present = /^studio$/i.test(asked) ? ("studio" as const) : /^(yes|true|1)$/i.test(asked)
             const report = await buildArtifact(specPath, { present, images: { comfy: { startingWaitMs: 5 * 60_000 } } })
@@ -2848,10 +2875,51 @@ const plugin = {
         input: read.input.mapFields(() => ({ purpose: str })),
         execute: async () => {
           try {
-            return { content: await imageModels(readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(toolsHome())) }
+            const workspace = readServicesConfig()?.comfyui?.workspace ?? comfyWorkspace(toolsHome())
+            if (!existsSync(workspace)) return { content: missingNote("A picture with ComfyUI", ["comfyui", "comfy-mcp"]) + "\nUntil then OpenCode's cloud image tool may stand in, if the user agrees to the cloud." }
+            return { content: await imageModels(workspace) }
           } catch (err) {
             return { content: `failed: ${err instanceof Error ? err.message : String(err)}` }
           }
+        },
+      })
+    })
+    // install_feature: an agent installs an optional part of omacode after the user said yes (a permission question
+    // with its size and licence comes first, below). Parts in user space only; a system package is named for the
+    // user's terminal. Workers may not call it (roles.ts noInstall).
+    await ctx.tool.transform((draft) => {
+      const read = draft.get("read")
+      const str = read?.input?.fields?.path
+      if (!read?.input?.mapFields || !str) return
+      draft.add({
+        id: "install_feature",
+        name: "install_feature",
+        description: `Install an optional part of omacode on this machine, after the user said they want it. Before calling it, tell the user what the part is for, its size and its licence: the permission question that follows shows only this tool's name. part: one of ${OFFER_IDS.map((id) => `"${id}" (${OFFERS[id].what}; ${OFFERS[id].size})`).join(", ")}. gpu: for comfyui, "nvidia", "amd", "amd-igpu" or "cpu" (optional; the first device found otherwise). chromium and ffmpeg are system packages: they need sudo, so this names the command for the user's terminal instead. A ComfyUI install takes several minutes.`,
+        input: read.input.mapFields(() => ({ part: str, gpu: str })),
+        execute: async (args: Record<string, unknown>, tctx: { sessionID?: string; agent?: string; messageID?: string; id?: string }) => {
+          const part = String(args?.part ?? "").trim() as OfferId
+          if (!(OFFER_IDS as readonly string[]).includes(part)) return { content: `install_feature: part must be one of ${OFFER_IDS.join(", ")}` }
+          // A tool added by a plugin is not put to the permission rules by OpenCode on its own (seen on 2.2.5: the
+          // first live call installed without a question). It asks here, as OpenCode's own tools do: the roles deny it
+          // to workers, and the evaluate hook below turns every other call into the user's question.
+          try {
+            await ctx.permission.assert({
+              action: "install_feature",
+              resources: [part],
+              sessionID: tctx.sessionID,
+              agent: tctx.agent,
+              metadata: { input: { part } },
+              ...(tctx.messageID && tctx.id ? { source: { type: "tool", messageID: tctx.messageID, id: tctx.id } } : {}),
+            })
+          } catch (err) {
+            record({ kind: "feature.install", sessionID: tctx?.sessionID, agent: tctx?.agent, part, ok: false, refused: err instanceof Error ? err.message : String(err) })
+            return { content: `install_feature: ${OFFERS[part].title} was not installed: the user did not allow it (${err instanceof Error ? err.message : String(err)}). Do not try another way.` }
+          }
+          const lines: string[] = []
+          const gpu = String(args?.gpu ?? "").trim()
+          const outcome = await installParts([part], { run: exec, log: (line) => lines.push(line), allowSudo: false, ...(gpu ? { gpu } : {}) })
+          record({ kind: "feature.install", sessionID: tctx?.sessionID, agent: tctx?.agent, part, ok: outcome.ok, installed: outcome.installed, failed: outcome.failed, ...(outcome.terminal ? { terminal: outcome.terminal } : {}) })
+          return { content: [outcomeText(outcome), ...(outcome.ok ? [] : ["", "last lines:", ...lines.slice(-15)]), ...(outcome.installed.length ? ["Restart OpenCode if a new MCP server was added (comfy-mcp)."] : [])].join("\n") }
         },
       })
     })

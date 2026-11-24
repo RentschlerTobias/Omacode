@@ -70,20 +70,30 @@ npm install                    # the sandbox runtime
 ./install.sh --remove          # remove it again; --dry-run says what would go, --purge also removes tools and services
 ```
 
-**What install.sh installs.** First what omacode cannot run without: Node 22.12 or newer, OpenCode, git and (on
-Linux) bubblewrap. A missing one is named with the command that installs it (pacman, apt, dnf or brew; OpenCode with
-its own installer), and installed after one question. Then each optional part is asked on its own, with what it is
-for and what it downloads; a part already there is skipped, and a part that needs uv brings uv along:
+**What install.sh installs.** What omacode cannot run without: Node 22.12 or newer, OpenCode, git and (on Linux)
+bubblewrap. A missing one is named with the command that installs it (pacman, apt, dnf or brew; OpenCode with its own
+installer) and installed after one question. Then it asks about the optional system packages, which need sudo and so a
+terminal: Chromium (the deck and site checks open a real browser) and ffmpeg (videos).
+
+**Everything else is installed from inside OpenCode**, none of it needs sudo:
+
+- On the first start the TUI asks what you want to make (decks, videos, images, code) and offers the parts that goal
+  needs, each with what it is for, its size and its licence; decks then lead to a first deck.
+- `/setup` lists every part, whether it is there, and installs one when you pick it.
+- An agent that needs a missing part asks you and installs it with the `install_feature` tool, after a permission
+  question (`make_artifact` names what a deck or a video lacks; `image_models` names ComfyUI). A system package is
+  named with the command for your terminal instead.
 
 | Part | For | Downloads |
 |---|---|---|
 | Local services | the decider answers the guards' questions; memory searches by meaning | about 2 GB, models on first use |
-| Chromium | the deck and site checks open the result in a real browser | about 300 MB |
-| ffmpeg | encoding videos | about 100 MB |
-| HyperFrames, ComfyUI, comfy-mcp, Manim | decks and videos, images, agents running ComfyUI, math animations | see below |
+| HyperFrames | decks and videos | about 300 MB |
+| ComfyUI, comfy-mcp | images from local models; agents running ComfyUI | 4–8 GB |
+| Manim | math animations | about 200 MB |
 
-`--yes` installs what is needed and nothing optional; `--with <parts>` and `--profile coding|creator|full` give the
-answers up front (coding: the services; creator: + Chromium, ffmpeg, HyperFrames, ComfyUI, comfy-mcp; full: + Manim).
+`./install.sh --tools` asks about all of them in the terminal instead; `--with <parts>` and
+`--profile coding|creator|full` give the answers up front (coding: the services; creator: + Chromium, ffmpeg,
+HyperFrames, ComfyUI, comfy-mcp; full: + Manim); `--yes` installs what is needed and nothing optional.
 `./install.sh --remove` removes the plugin link, the TUI package and omacode-services and lists what it keeps: your
 journal, memory, model registry and settings always; the tools and the services' models unless `--purge`.
 

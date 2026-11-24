@@ -44,7 +44,8 @@
   "dependencies": {
     "@omacode/context": "0.1.1",
     "@omacode/core": "0.1.1",
-    "@omacode/state": "0.1.1"
+    "@omacode/state": "0.1.1",
+    "@omacode/micromanager": "0.1.1"
   },
   "peerDependencies": {
     "@opencode/plugin": "*",

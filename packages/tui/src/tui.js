@@ -21,8 +21,9 @@ import { createComponent as _$createComponent } from "@opentui/solid";
 //   /model (src/pools.ts). The picks go to a file the server reads at each delegation (src/config.ts loadPicks).
 // - In the sidebar, SERVICES (folded, below MODELS), and /services: the decider and the embedding service of omacode-services, each on, auto or off, the device it runs on
 //   (the embedding service: CPU or a GPU llama.cpp lists), and the idle time after which a service in auto stops (@omacode/core/service-control; the supervisor polls the file it writes).
-// - /first-deck, and once on the first start: pick a sample brief and the build agent writes, checks and presents a first
-//   deck, then explains what happened (src/firstrun.ts, C2-T7).
+// - Once on the first start: "what do you want to make?"; the answer decides which parts are offered and installed
+//   (@omacode/micromanager/features), decks then lead to the first deck. /setup lists every part and installs one;
+//   /first-deck: pick a sample brief and the build agent writes, checks and presents a deck, then explains it (C2-T7).
 // - In the sidebar, CONTEXT: the session's context against its ceiling, its workers' contexts, the memory and the notes
 //   the last request got from it, from the status files the server writes (src/context/status.ts).
 //
@@ -40,7 +41,12 @@ import { BOX, foldedLine, jobsFor, modeOfSession, projectOf, resolver, sessionJo
 import { listJobs } from "@omacode/state/store";
 import { agentRows, agentSummary, taskSessions } from "./switcher.ts";
 import { seedFromJournal } from "./usage.ts";
-import { BRIEFS, firstDeckDir, firstDeckPrompt, hyperframesInstalled, markOffered, MISSING_ENGINE, prepareFirstDeckDir, wasOffered } from "./firstrun.ts";
+import { BRIEFS, firstDeckDir, firstDeckPrompt, GOALS, hyperframesInstalled, markOffered, prepareFirstDeckDir, wasOffered } from "./firstrun.ts";
+import { exec as featuresExec, gpus, installParts, outcomeText, presentState } from "@omacode/micromanager/features";
+import { isPresent, OFFER_IDS, OFFERS } from "@omacode/micromanager/setup";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { userStateDir } from "@omacode/core/paths";
 import { deviceName, IDLE_CHOICES, MODE_HELP, MODES, serviceLine, servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "@omacode/core/service-control";
 import { bar, foldedContext, kTokens, readMemoryStats, readStatus } from "@omacode/context/status";
 const POLL_MS = 2_000;
@@ -1527,24 +1533,113 @@ async function openTask(context) {
   });
 }
 
-// /first-deck (C2-T7): pick a sample brief, and a new session with the build agent writes, checks and presents a deck,
-// then explains what happened. `offer` is the one-time question on the first start; it is asked once, whatever the
-// answer.
-async function firstDeck(context, offer = false) {
-  if (offer) {
-    if (wasOffered()) return;
-    markOffered();
+// Installing an optional part from the TUI (features.ts): asked with its purpose, size and licence; ComfyUI also asks
+// for its device. A part that needs sudo is named with the command for a terminal instead. The output goes to
+// install.log in the state directory, the result to a toast. True when every part asked for is there afterwards.
+async function installFlow(context, parts, why = "") {
+  const there = await presentState(featuresExec);
+  const missing = parts.filter(id => !isPresent(id, there) && !(OFFERS[id].after && !parts.includes(OFFERS[id].after) && !isPresent(OFFERS[id].after, there)));
+  if (!missing.length) return true;
+  const sudo = missing.filter(id => OFFERS[id].system);
+  const user = missing.filter(id => !OFFERS[id].system);
+  if (user.length) {
     const yes = await context.ui.dialog.confirm({
-      title: "Welcome to omacode",
-      message: "Make a first slide deck now? You pick a topic, an agent writes the slides, checks them and opens them in your browser. Takes a few minutes. You can do this later with /first-deck.",
-      label: "Make a deck"
+      title: `${why}Install ${user.map(id => OFFERS[id].title).join(" and ")}?`,
+      message: user.map(id => `${OFFERS[id].title}: ${OFFERS[id].what}. ${OFFERS[id].size}. Licence: ${OFFERS[id].licence}.`).join("\n")
     });
-    if (!yes) return;
+    if (!yes) return false;
+    let gpu;
+    if (user.includes("comfyui")) {
+      const devices = await gpus(featuresExec);
+      gpu = devices.length > 1 ? await context.ui.dialog.select({
+        title: "Run ComfyUI on",
+        options: devices.map(g => ({
+          title: g.name,
+          value: g.id,
+          ...(g.note ? {
+            description: g.note
+          } : {})
+        }))
+      }) : devices[0]?.id;
+      if (!gpu) return false;
+    }
+    const logFile = join(userStateDir(), "install.log");
+    mkdirSync(userStateDir(), {
+      recursive: true
+    });
+    appendFileSync(logFile, `\n== ${new Date().toISOString()} ${user.join(", ")}\n`);
+    context.ui.toast.show({
+      message: `Installing ${user.map(id => OFFERS[id].title).join(", ")}; this can take minutes (${logFile})`
+    });
+    const outcome = await installParts(user, {
+      run: featuresExec,
+      log: line => appendFileSync(logFile, `${line}\n`),
+      ...(gpu ? {
+        gpu
+      } : {})
+    });
+    context.ui.toast.show({
+      message: `${outcomeText(outcome)}${outcome.ok ? "" : ` See ${logFile}.`}`,
+      variant: outcome.ok ? "success" : "error"
+    });
+    if (!outcome.ok) return false;
   }
-  if (!hyperframesInstalled()) return context.ui.toast.show({
-    message: MISSING_ENGINE,
-    variant: "warning"
+  if (sudo.length) {
+    context.ui.toast.show({
+      message: `${sudo.map(id => OFFERS[id].title).join(" and ")} ${sudo.length === 1 ? "needs" : "need"} sudo: run ./install.sh --with ${sudo.join(",")} in a terminal`,
+      variant: "warning"
+    });
+  }
+  return sudo.length === 0;
+}
+
+// /setup: every optional part, whether it is there, and installing one by picking it.
+async function setupDialog(context) {
+  const there = await presentState(featuresExec);
+  const chosen = await context.ui.dialog.select({
+    title: "Omacode parts · ↵ install",
+    placeholder: "part",
+    options: OFFER_IDS.map(id => {
+      const o = OFFERS[id];
+      const here = isPresent(id, there);
+      return {
+        title: `${here ? "✓" : "○"} ${o.title}`,
+        value: id,
+        description: here ? "installed" : `${o.what} · ${o.size}${o.system ? " · needs sudo" : ""}`
+      };
+    })
   });
+  const id = OFFER_IDS.find(x => x === chosen);
+  if (!id) return;
+  if (isPresent(id, there)) return context.ui.toast.show({
+    message: `${OFFERS[id].title} is installed`
+  });
+  await installFlow(context, [id]);
+}
+
+// The first start: what do you want to make? The answer decides which parts are offered; decks then lead to the first
+// deck. Asked once, whatever the answer; /setup and /first-deck stay.
+async function welcome(context) {
+  if (wasOffered()) return;
+  markOffered();
+  const chosen = await context.ui.dialog.select({
+    title: "Welcome to omacode: what do you want to make?",
+    placeholder: "goal",
+    options: GOALS.map(g => ({
+      title: g.title,
+      value: g.id
+    }))
+  });
+  const goal = GOALS.find(g => g.id === chosen);
+  if (!goal || !goal.parts.length) return;
+  const ready = await installFlow(context, goal.parts, `${goal.title}: `);
+  if (goal.firstDeck && (ready || (await presentState(featuresExec)).tools.some(t => t.name === "hyperframes" && t.found))) await firstDeck(context);
+}
+
+// /first-deck (C2-T7): pick a sample brief, and a new session with the build agent writes, checks and presents a deck,
+// then explains what happened. HyperFrames missing, it is offered first.
+async function firstDeck(context) {
+  if (!hyperframesInstalled() && !(await installFlow(context, ["hyperframes"], "The first deck needs HyperFrames. ")) && !hyperframesInstalled()) return;
   const chosen = await context.ui.dialog.select({
     title: "Your first deck: pick a topic",
     placeholder: "topic",
@@ -1680,6 +1775,15 @@ export default Plugin.define({
             },
             run: () => firstDeck(context)
           }, {
+            id: "omacode.setup",
+            title: "Omacode: install parts (services, HyperFrames, ComfyUI, …)",
+            group: "Omacode",
+            palette: true,
+            slash: {
+              name: "setup"
+            },
+            run: () => setupDialog(context)
+          }, {
             id: "micromanager.auto",
             title: "Micromanager: auto-continue on/off",
             group: "Micromanager",
@@ -1728,7 +1832,7 @@ export default Plugin.define({
           }]
         }));
         // The first start after install offers the first deck once (a dialog needs the rendered app, hence here).
-        setTimeout(() => void firstDeck(context, true), 1500);
+        setTimeout(() => void welcome(context), 1500);
         return null;
       }
     });

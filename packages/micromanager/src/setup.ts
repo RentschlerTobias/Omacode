@@ -198,6 +198,8 @@ export interface Offer {
   readonly title: string
   readonly what: string
   readonly size: string
+  // SPDX, as in licenses/components.json (a test keeps the two the same)
+  readonly licence: string
   // a system package this is, a creative tool this is, or the services
   readonly system?: SystemNeed
   readonly tool?: ToolName
@@ -207,13 +209,13 @@ export interface Offer {
 }
 
 export const OFFERS: Readonly<Record<OfferId, Offer>> = {
-  services: { title: "Local services", what: "a decider on this machine answers the guards' questions, and memory searches by meaning (omacode-services)", size: "about 2 GB now, the models on first use", needsUv: true },
-  chromium: { title: "Chromium", what: "the deck and site checks open the result in a real browser", size: "about 300 MB", system: "chromium" },
-  ffmpeg: { title: "ffmpeg", what: "videos are encoded with it", size: "about 100 MB", system: "ffmpeg" },
-  hyperframes: { title: TOOL_INFO.hyperframes.title, what: TOOL_INFO.hyperframes.what, size: TOOL_INFO.hyperframes.size, tool: "hyperframes" },
-  comfyui: { title: TOOL_INFO.comfyui.title, what: TOOL_INFO.comfyui.what, size: TOOL_INFO.comfyui.size, tool: "comfyui", needsUv: true },
-  "comfy-mcp": { title: TOOL_INFO["comfy-mcp"].title, what: TOOL_INFO["comfy-mcp"].what, size: TOOL_INFO["comfy-mcp"].size, tool: "comfy-mcp", needsUv: true, after: "comfyui" },
-  manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, tool: "manim", needsUv: true },
+  services: { title: "Local services", what: "a decider on this machine answers the guards' questions, and memory searches by meaning (omacode-services)", size: "about 2 GB now, the models on first use", licence: "Apache-2.0 (decider and models)", needsUv: true },
+  chromium: { title: "Chromium", what: "the deck and site checks open the result in a real browser", size: "about 300 MB", licence: "BSD-3-Clause and others", system: "chromium" },
+  ffmpeg: { title: "ffmpeg", what: "videos are encoded with it", size: "about 100 MB", licence: "LGPL-2.1-or-later or GPL, by build", system: "ffmpeg" },
+  hyperframes: { title: TOOL_INFO.hyperframes.title, what: TOOL_INFO.hyperframes.what, size: TOOL_INFO.hyperframes.size, licence: "Apache-2.0", tool: "hyperframes" },
+  comfyui: { title: TOOL_INFO.comfyui.title, what: TOOL_INFO.comfyui.what, size: TOOL_INFO.comfyui.size, licence: "GPL-3.0-only", tool: "comfyui", needsUv: true },
+  "comfy-mcp": { title: TOOL_INFO["comfy-mcp"].title, what: TOOL_INFO["comfy-mcp"].what, size: TOOL_INFO["comfy-mcp"].size, licence: "AGPL-3.0-or-later OR LicenseRef-Comfy-Commercial", tool: "comfy-mcp", needsUv: true, after: "comfyui" },
+  manim: { title: TOOL_INFO.manim.title, what: TOOL_INFO.manim.what, size: TOOL_INFO.manim.size, licence: "MIT", tool: "manim", needsUv: true },
 }
 
 // What is already on the machine, so it is not offered again.
@@ -253,6 +255,27 @@ export function planFor(chosen: readonly OfferId[], there: Present): Plan {
     services: kept.includes("services"),
     tools: kept.map((id) => OFFERS[id].tool).filter((x): x is ToolName => Boolean(x)),
   }
+}
+
+// What an artifact kind cannot be made without, found on PATH only (fast, before a build). A deck and a video are made by
+// HyperFrames; a video is also encoded with ffmpeg. Sites and images have fallbacks (a skipped browser check, the cloud
+// image tool), so they are not blocked here.
+export const NEEDS_BY_KIND: Readonly<Record<string, readonly OfferId[]>> = { deck: ["hyperframes"], video: ["hyperframes", "ffmpeg"] }
+
+export function missingForKind(kind: string, which: (name: string) => string | undefined): OfferId[] {
+  return (NEEDS_BY_KIND[kind] ?? []).filter((id) => !which(OFFERS[id].system ?? OFFERS[id].tool ?? id))
+}
+
+// What the agent is told when a part is missing: ask the user, then install_feature for a part in user space; the
+// terminal command for a system package, which needs sudo.
+export function missingNote(what: string, missing: readonly OfferId[]): string {
+  const lines = missing.map((id) => {
+    const o = OFFERS[id]
+    return o.system
+      ? `- ${o.title} (${o.what}) is a system package: ask the user to run ./install.sh --with ${id} in a terminal (it needs sudo), then build again.`
+      : `- ${o.title} (${o.what}; ${o.size}): ask the user whether to install it; if yes, call install_feature with part "${id}", then build again.`
+  })
+  return [`${what} cannot be made yet; missing:`, ...lines].join("\n")
 }
 
 // Profiles: the same answers given up front (install.sh --profile).

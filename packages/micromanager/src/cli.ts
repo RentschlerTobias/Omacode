@@ -48,6 +48,7 @@ import { servicesView, setIdleMinutes, setServiceDevice, setServiceMode } from "
 import { SERVICE_MODES, type Mode } from "@omacode/core/supervisor"
 import { EMBEDDING_SIZES, install as installServices, remove as removeServices, status as servicesStatus, type EmbeddingSize } from "./services.ts"
 import { exec } from "./worktree/git.ts"
+import { installParts, installTool, outcomeText, registerComfyTool } from "./features.ts"
 import { failed as anyFailed, formatChecks, isPresent, machineChecks, OFFER_IDS, OFFERS, OPENCODE_INSTALL, packageManager, paths as setupPaths, planFor, pluginChecks, preflight, PROFILE_IDS, PROFILES, realProbe, requiredNeeds, systemInstall, toolChecks, uninstallPlan, type Command, type OfferId, type Present, type ProfileId } from "./setup.ts"
 import { findChromium } from "@omacode/artifact/chromium"
 import { userConfigPath } from "@omacode/core/paths"
@@ -441,7 +442,7 @@ async function tools(args: string[]): Promise<number> {
       return 1
     }
     let failed = 0
-    for (const name of names as ToolName[]) failed += (await installTool(name, gpu)) ? 0 : 1
+    for (const name of names as ToolName[]) failed += (await installTool(name, console.log, gpu)) ? 0 : 1
     return failed ? 1 : 0
   }
   if (verb === "register") {
@@ -461,7 +462,7 @@ async function tools(args: string[]): Promise<number> {
       console.error(`no ${wanted} here; found: ${found.map((g) => g.id).join(", ")}`)
       return 1
     }
-    return registerComfyTool(gpu, where) ? 0 : 1
+    return (await registerComfyTool(console.log, gpu, where)) ? 0 : 1
   }
   if (verb === "ask") {
     if (!process.stdin.isTTY) {
@@ -484,7 +485,7 @@ async function tools(args: string[]): Promise<number> {
             const devices = await toolGpus(exec)
             devices.forEach((g, i) => console.log(`  ${i + 1}) ${g.name}${g.note ? ` — ${g.note}` : ""}`))
             const answer = (await rl.question(`  run it on [1-${devices.length}, default 1]: `)).trim()
-            registerComfyTool(devices[Math.max(0, Math.min(devices.length - 1, (Number(answer) || 1) - 1))]!, t.where)
+            await registerComfyTool(console.log, devices[Math.max(0, Math.min(devices.length - 1, (Number(answer) || 1) - 1))]!, t.where)
           }
           continue
         }
@@ -505,7 +506,7 @@ async function tools(args: string[]): Promise<number> {
       }
       rl.close()
       let failed = 0
-      for (const p of picked) failed += (await installTool(p.name, p.gpu)) ? 0 : 1
+      for (const p of picked) failed += (await installTool(p.name, console.log, p.gpu)) ? 0 : 1
       return failed ? 1 : 0
     } finally {
       rl.close()
@@ -516,57 +517,6 @@ async function tools(args: string[]): Promise<number> {
 }
 
 // Runs a tool's steps with their output on the terminal; false at the first one that fails.
-async function installTool(name: ToolName, gpu?: Gpu): Promise<boolean> {
-  const step = (s: Step, quiet = false) => {
-    if (!quiet) console.log(`→ ${s.say}`)
-    return spawnSync(s.cmd, [...s.args], { cwd: s.cwd, env: { ...process.env, ...s.env }, stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit", encoding: "utf8" })
-  }
-  for (const s of installSteps(name, undefined, name === "comfyui" ? gpu : undefined)) {
-    const r = step(s)
-    if (r.status !== 0) {
-      console.error(`${TOOL_INFO[name].title}: "${s.say}" failed${r.error ? ` (${r.error.message})` : ""}`)
-      return false
-    }
-  }
-  if (name === "comfy-mcp") {
-    console.log(`comfy-mcp installed. ${addComfyMcp(userConfigPath("opencode.json")).say}`)
-    return true
-  }
-  if (name !== "comfyui") {
-    console.log(`${TOOL_INFO[name].title} installed`)
-    return true
-  }
-  return registerComfyTool(gpu)
-}
-
-// After a ComfyUI install, or for one already there: check that its PyTorch sees the GPU, and add it to
-// omacode-services on that GPU (or the CPU, when it does not).
-function registerComfyTool(gpu?: Gpu, workspace = comfyWorkspace(home())): boolean {
-  const step = (s: Step) => spawnSync(s.cmd, [...s.args], { cwd: s.cwd, env: { ...process.env, ...s.env }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" })
-  let env: Readonly<Record<string, string>> = {}
-  let seenGpu = false
-  const checks = gpu ? torchChecks(gpu, home(), workspace) : []
-  for (const [i, c] of checks.entries()) {
-    console.log(`→ ${c.say}`)
-    const r = step(c)
-    const seen = r.status === 0 && r.stdout.startsWith("gpu")
-    console.log(`  ${seen ? `yes: ${r.stdout.slice(4).trim()}` : "no"}`)
-    if (seen) {
-      env = c.env ?? {}
-      seenGpu = true
-      break
-    }
-    if (i === checks.length - 1) console.log(`  ComfyUI is installed but will run on the CPU: its PyTorch does not see ${gpu!.name}`)
-  }
-  const comfy = { python: comfyPython(home(), workspace), workspace, ...(gpu && gpu.id !== "cpu" && seenGpu ? { gpu: { id: gpu.id, name: gpu.name, ...(Object.keys(env).length ? { env } : {}) } } : {}) }
-  if (registerComfy(comfy)) {
-    const restarted = spawnSync("systemctl", ["--user", "try-restart", "omacode-services.service"], { stdio: "ignore" })
-    console.log(`ComfyUI installed and added to omacode-services on :8188, started by its first request${restarted.status === 0 ? "" : " (restart omacode-services to load it)"}; /services switches it`)
-  } else {
-    console.log(`ComfyUI installed; start it with:\n  ${comfyLaunch(env)}\n(or install omacode-services, npm run services -- install, and run this again to have it started on demand)`)
-  }
-  return true
-}
 
 // `models status | register`: the model files ComfyUI can load (its model folders and extra_model_paths.yaml), each
 // hashed (cached, as the ComfyUI gate does) and checked against the registry; `register` records one with the licence
@@ -685,9 +635,14 @@ async function setupCommand(args: string[]): Promise<number> {
       console.log("no terminal: no optional part asked about (./install.sh --profile coding|creator|full, or --with <tools>)")
       return 0
     }
-    console.log("\nOptional parts. Each is installed only if you say yes; all can be added later with ./install.sh --tools.")
+    // --system: only what needs sudo, which only a terminal can give; the rest is offered inside OpenCode.
+    const systemOnly = args.includes("--system")
+    console.log(systemOnly
+      ? "\nOptional system packages (they need sudo, so they are asked here; each only if you say yes):"
+      : "\nOptional parts. Each is installed only if you say yes; all can be added later with ./install.sh --tools.")
     for (const id of OFFER_IDS) {
       const o = OFFERS[id]
+      if (systemOnly && !o.system) continue
       if (isPresent(id, there)) {
         console.log(`\n${o.title}: already there.`)
         continue
@@ -696,6 +651,7 @@ async function setupCommand(args: string[]): Promise<number> {
       console.log(`\n${o.title}: ${o.what}. ${o.size.charAt(0).toUpperCase()}${o.size.slice(1)}.`)
       if (await ask(`  Install ${o.title}?`, false)) chosen.push(id)
     }
+    if (systemOnly) console.log("\nThe other parts (local services, HyperFrames, ComfyUI, comfy-mcp, Manim) need no sudo: OpenCode offers them on its first start, in /setup, and when an agent needs one. ./install.sh --tools asks about them here instead.")
   } else if (args[0] === "with") {
     const names = (args[1] ?? "").split(",").map((x) => x.trim()).filter(Boolean)
     const bad = names.filter((n) => !(OFFER_IDS as readonly string[]).includes(n))
@@ -734,23 +690,9 @@ async function setupCommand(args: string[]): Promise<number> {
     }
   }
 
-  let failedSteps = 0
-  const sys = systemInstall(packageManager(probe), plan.system)
-  for (const m of sys.manual) {
-    console.log(`install by hand: ${m}`)
-    failedSteps++
-  }
-  for (const c of sys.commands) failedSteps += run(c) ? 0 : 1
-  if (plan.services) {
-    console.log("→ omacode-services (the decider and the embedding service)")
-    const r = await installServices(exec, { log: (line) => console.log(`  ${line}`) })
-    if (!r.ok) {
-      console.error(`  omacode-services: ${r.text}`)
-      failedSteps++
-    }
-  }
-  for (const name of plan.tools) failedSteps += (await installTool(name, name === "comfyui" ? gpu : undefined)) ? 0 : 1
-  return failedSteps ? 1 : 0
+  const outcome = await installParts(chosen, { run: exec, log: console.log, allowSudo: true, there, ...(gpu ? { gpu } : {}) })
+  console.log(outcomeText(outcome))
+  return outcome.ok ? 0 : 1
 }
 
 // `uninstall [--purge] [--dry-run]`: the plan first, then the removal. Never the user's data: state, memory, settings.
