@@ -101,18 +101,21 @@ test("the package manager is found, and each need becomes one install command or
   assert.equal(packageManager(has()), undefined)
   assert.equal(packageManager({ platform: "darwin", which: (n) => (n === "brew" ? "/opt/homebrew/bin/brew" : undefined) }), "brew")
 
-  const arch = systemInstall("pacman", ["git", "bubblewrap", "uv"])
+  const arch = systemInstall("pacman", ["git", "bubblewrap", "uv"], false, false)
   assert.deepEqual(arch.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["sudo pacman -S --needed --noconfirm git bubblewrap uv"])
+  // root in a fresh container: no sudo (there is none), and -Syu because the package database was never synced
+  const container = systemInstall("pacman", ["git"], true, true)
+  assert.deepEqual(container.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["pacman -Syu --needed --noconfirm git"])
   assert.deepEqual(arch.manual, [])
 
   // apt has no uv and an old Node: uv comes from its own pinned installer, Node is the user's to install.
-  const debian = systemInstall("apt", ["chromium", "uv", "node"])
+  const debian = systemInstall("apt", ["chromium", "uv", "node"], false)
   assert.deepEqual(debian.commands.map((c) => c.cmd), ["sudo", "sh"])
   assert.deepEqual(debian.commands[0]!.args, ["apt-get", "install", "-y", "chromium"])
   assert.match(debian.commands[1]!.args.join(" "), new RegExp(`astral\\.sh/uv/${UV_PIN.replace(/\./g, "\\.")}/install\\.sh`))
   assert.match(debian.manual.join(), /Node 22\.18/)
 
-  const mac = systemInstall("brew", ["git", "ffmpeg"])
+  const mac = systemInstall("brew", ["git", "ffmpeg"], false)
   assert.deepEqual(mac.commands.map((c) => [c.cmd, ...c.args].join(" ")), ["brew install git ffmpeg"], "brew needs no sudo")
   assert.match(systemInstall(undefined, ["git"]).manual.join(), /git: install it/)
 })

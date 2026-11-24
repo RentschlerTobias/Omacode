@@ -162,7 +162,13 @@ export interface Command {
 }
 
 // The commands that install system needs, and what is left for the user to install by hand.
-export function systemInstall(manager: Manager | undefined, needs: readonly SystemNeed[]): { commands: Command[]; manual: string[] } {
+export function systemInstall(
+  manager: Manager | undefined,
+  needs: readonly SystemNeed[],
+  root = process.getuid?.() === 0,
+  // pacman's database never synced (a fresh container): -Syu, since a bare -Sy would be a partial upgrade
+  unsynced = !existsSync("/var/lib/pacman/sync/core.db"),
+): { commands: Command[]; manual: string[] } {
   const commands: Command[] = []
   const manual: string[] = []
   const packages: string[] = []
@@ -174,8 +180,9 @@ export function systemInstall(manager: Manager | undefined, needs: readonly Syst
     else manual.push(`${need}: install it with your package manager`)
   }
   if (packages.length) {
-    const sudo = (cmd: string, args: string[]): Command => ({ say: `${manager}: ${packages.join(" ")}`, cmd: "sudo", args: [cmd, ...args] })
-    if (manager === "pacman") commands.unshift(sudo("pacman", ["-S", "--needed", "--noconfirm", ...packages]))
+    // root (a bare container) has no sudo and needs none
+    const sudo = (cmd: string, args: string[]): Command => ({ say: `${manager}: ${packages.join(" ")}`, ...(root ? { cmd, args } : { cmd: "sudo", args: [cmd, ...args] }) })
+    if (manager === "pacman") commands.unshift(sudo("pacman", [unsynced ? "-Syu" : "-S", "--needed", "--noconfirm", ...packages]))
     else if (manager === "apt") commands.unshift(sudo("apt-get", ["install", "-y", ...packages]))
     else if (manager === "dnf") commands.unshift(sudo("dnf", ["install", "-y", ...packages]))
     else if (manager === "brew") commands.unshift({ say: `brew: ${packages.join(" ")}`, cmd: "brew", args: ["install", ...packages] })

@@ -115,9 +115,15 @@ node_ok() {
 ensure_node() {
   node_ok && return 0
   echo "omacode needs Node 22.18 or newer$(command -v node >/dev/null && echo ", found $(node --version)")."
-  local cmd=()
-  if command -v pacman >/dev/null; then cmd=(sudo pacman -S --needed --noconfirm nodejs npm)
-  elif command -v dnf >/dev/null; then cmd=(sudo dnf install -y nodejs)
+  local cmd=() sudo=()
+  # root (a bare container) has no sudo and needs none
+  [[ "$(id -u)" != 0 ]] && sudo=(sudo)
+  # pacman: -S on a machine that has synced before; -Syu where the package database was never synced (a fresh
+  # container), because a bare -Sy would be a partial upgrade
+  local sync=-S
+  [[ -e /var/lib/pacman/sync/core.db ]] || sync=-Syu
+  if command -v pacman >/dev/null; then cmd=("${sudo[@]}" pacman "$sync" --needed --noconfirm nodejs npm)
+  elif command -v dnf >/dev/null; then cmd=("${sudo[@]}" dnf install -y nodejs)
   elif command -v brew >/dev/null; then cmd=(brew install node)
   fi
   if [[ ${#cmd[@]} -gt 0 ]] && ask_yes "Install it with: ${cmd[*]}?"; then "${cmd[@]}" || true; fi
