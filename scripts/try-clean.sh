@@ -73,9 +73,18 @@ npm)
   ;;
 services)
   git -C "$REPO" archive --format=tar --prefix=omacode/ HEAD >"$WORK/omacode.tar"
+  chmod 755 "$WORK" && chmod 644 "$WORK/omacode.tar" # the container's user reads it without --userns=keep-id
   name="omacode-clean-services-$$"
-  podman run -d --rm --name "$name" --systemd=always -v "$WORK:/in:ro,Z" --user root "$IMAGE" /usr/lib/systemd/systemd >/dev/null
+  # --privileged: dbus-broker fails in a plain rootless container (fatal error -107), and without a bus there is no user
+  # session for systemctl --user. Rootless podman keeps the container in the user's own namespace all the same.
+  podman run -d --rm --name "$name" --privileged --systemd=always -v "$WORK:/in:ro,Z" --user root "$IMAGE" /usr/lib/systemd/systemd >/dev/null
   trap 'podman stop -t 3 "$name" >/dev/null 2>&1 || true; rm -rf "$WORK"' EXIT
+  # systemd needs a few seconds to boot inside the container ("degraded" is normal there: some units cannot run).
+  for _ in $(seq 1 60); do
+    state="$(podman exec "$name" systemctl is-system-running 2>/dev/null || true)"
+    [[ "$state" == "running" || "$state" == "degraded" ]] && break
+    sleep 1
+  done
   # A user session for systemctl --user, as a login would start it.
   podman exec "$name" loginctl enable-linger tester
   for _ in $(seq 1 30); do podman exec "$name" test -S /run/user/1000/bus && break; sleep 1; done
