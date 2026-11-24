@@ -606,7 +606,8 @@ async function setupCommand(args: string[]): Promise<number> {
     return spawnSync(c.cmd, [...c.args], { stdio: "inherit" }).status === 0
   }
   // uv's own installer puts it in ~/.local/bin, which this process may not have on its PATH yet.
-  process.env.PATH = `${join(process.env.HOME ?? "", ".local", "bin")}:${process.env.PATH ?? ""}`
+  // and OpenCode's into ~/.opencode/bin
+  process.env.PATH = `${join(process.env.HOME ?? "", ".opencode", "bin")}:${join(process.env.HOME ?? "", ".local", "bin")}:${process.env.PATH ?? ""}`
 
   if (args[0] === "required") {
     const checks = await preflight(probe)

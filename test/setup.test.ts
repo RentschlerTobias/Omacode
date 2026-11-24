@@ -71,6 +71,10 @@ test("preflight: an old Node or no OpenCode blocks the install; missing tools an
   assert.equal(levelOf(none, "opencode"), "fail")
   const older = await preflight(probe({ run: fakeRun({ "opencode --version": { stdout: "2.1.0" } }) }))
   assert.equal(levelOf(older, "opencode"), "warn")
+  // OpenCode 1 (what opencode.ai/install gives) cannot load a v2 plugin: that blocks, with the v2 installer as the fix.
+  const v1 = await preflight(probe({ run: fakeRun({ "opencode --version": { stdout: "1.19.6" } }) }))
+  assert.equal(levelOf(v1, "opencode"), "fail")
+  assert.match(v1.find((c) => c.area === "opencode")?.fix ?? "", /opencode\.ai\/v2\/install/)
 
   const bare = await preflight(probe({}, []))
   assert.equal(levelOf(bare, "uv"), "warn")

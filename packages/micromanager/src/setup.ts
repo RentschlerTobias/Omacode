@@ -103,6 +103,7 @@ export async function preflight(p: Probe): Promise<Check[]> {
 
   const oc = await versionOf(p, "opencode", ["--version"])
   if (!oc) out.push({ area: "opencode", level: "fail", text: "OpenCode is not installed", fix: "install it: https://opencode.ai" })
+  else if (Number(oc.split(".")[0]) < 2) out.push({ area: "opencode", level: "fail", text: `OpenCode ${oc} is OpenCode 1, which cannot load omacode (a plugin for OpenCode 2)`, fix: `install OpenCode 2: curl -fsSL https://opencode.ai/v2/install | bash -s -- --version ${TESTED_OPENCODE}` })
   else if (newer(oc, TESTED_OPENCODE) < 0) out.push({ area: "opencode", level: "warn", text: `OpenCode ${oc} is older than ${TESTED_OPENCODE}, the version omacode is tested with`, fix: "opencode upgrade" })
   else out.push({ area: "opencode", level: "ok", text: `OpenCode ${oc}` })
 
@@ -182,7 +183,9 @@ export function systemInstall(manager: Manager | undefined, needs: readonly Syst
   return { commands, manual }
 }
 
-export const OPENCODE_INSTALL: Command = { say: "OpenCode with its own installer (opencode.ai)", cmd: "sh", args: ["-c", "curl -fsSL https://opencode.ai/install | bash"] }
+// OpenCode 2 has its own installer: opencode.ai/install installs OpenCode 1 only, which cannot load omacode (it is a v2
+// plugin). Pinned to the version omacode is tested with; it replaces an OpenCode 1 in ~/.opencode/bin.
+export const OPENCODE_INSTALL: Command = { say: `OpenCode ${TESTED_OPENCODE} with its own installer (opencode.ai/v2)`, cmd: "sh", args: ["-c", `curl -fsSL https://opencode.ai/v2/install | bash -s -- --version ${TESTED_OPENCODE}`] }
 
 // What the plugin cannot run without (Node is checked by install.sh itself, before any of this runs).
 export function requiredNeeds(p: Pick<Probe, "which" | "platform">): SystemNeed[] {
