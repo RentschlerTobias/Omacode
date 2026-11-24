@@ -72,6 +72,16 @@ the user: keep the changes (leave the deck, or carry text, order and notes into 
 
 Share and Publish in the Studio upload the deck to HeyGen's servers; say so when you open the Studio.
 
+## History: undo and go back
+
+Every build is one entry in the deck's HyperFrames history, beside the user's Studio edits and the changes made outside
+the app (your edits to `deck.json`). It lives in the deck's folder; read it there with
+`HYPERFRAMES_CACHE_DIR=.home/.cache/hyperframes hyperframes history` (`show <id>`, `peek <id>`, `undo`, `restore <id>`).
+
+`restore <id>` makes the files what they were right after that entry. To go back to an older deck, restore the entry
+from before the `deck.json` change that came after it; otherwise the next build makes the newer deck again from
+`deck.json`. Restoring an earlier build is not a hand edit, so building afterwards works. Ask the user before restoring.
+
 A missing picture is not a failure: it becomes a labelled placeholder (`missing asset: <path>`), and the check names it.
 Write the path you meant anyway — the placeholder is how the deck stays presentable while the image is still missing.
 

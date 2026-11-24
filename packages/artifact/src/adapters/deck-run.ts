@@ -11,8 +11,9 @@
 
 import { resolve } from "node:path"
 
-import type { HostRunInput, HostRunner } from "../adapter.ts"
+import type { HostRunInput, HostRunner, HostRunResult } from "../adapter.ts"
 import {
+  HYPERFRAMES_ENV,
   HYPERFRAMES_ENV_NAMES,
   hyperframesCheck,
   hyperframesServe,
@@ -52,6 +53,14 @@ export function deckPresent(run: HostRunner, jobDir: string, port: number): Prom
     network: true,
   }
   return hyperframesServe(run, () => run.run(input), port, "hyperframes present")
+}
+
+// One build as one entry in the deck's HyperFrames history, so a build can be undone or restored like a Studio edit
+// (`hyperframes history`). Under the runner HOME is `<job>/.home`, so the history lives in the deck's own folder
+// (`.home/.cache/hyperframes/history`), and the Studio, which also runs under the runner, reads the same one. `begin`
+// needs a page to exist, so the first build records its starting point after it wrote, with an empty turn.
+export async function deckHistory(run: HostRunner, jobDir: string, args: readonly string[]): Promise<HostRunResult> {
+  return run.run({ exe: "hyperframes", args: ["history", ...args, "--dir", resolve(jobDir)], env: { ...HYPERFRAMES_ENV } })
 }
 
 // `hyperframes preview <job> --no-open --port <port> --foreground`: HyperFrames Studio on the deck, where the user can

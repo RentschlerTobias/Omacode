@@ -215,3 +215,16 @@ test("the Studio is hyperframes preview on the job, in the foreground, with the 
   assert.deepEqual(calls[0]?.args, ["preview", job, "--no-open", "--port", String(port), "--foreground"])
   assert.equal(calls[0]?.network, true)
 })
+
+test("restoring an earlier build is not a hand edit: every page the writer made stays its own", (t) => {
+  const job = jobFor(t)
+  const page = join(job, "index.html")
+  writeDeckProject(deckOf([{ id: "s1", title: "First", body: "a", notes: "n" }]), job)
+  const first = readFileSync(page, "utf8")
+  writeDeckProject(deckOf([{ id: "s1", title: "Second", body: "a", notes: "n" }]), job)
+  // `hyperframes history restore` brings the first page back; the next build may replace it.
+  writeFileSync(page, first)
+  writeDeckProject(deckOf([{ id: "s1", title: "Third", body: "a", notes: "n" }]), job)
+  const stamp = JSON.parse(readFileSync(join(job, DECK_STAMP), "utf8")) as { written: string[] }
+  assert.equal(stamp.written.length, 3)
+})

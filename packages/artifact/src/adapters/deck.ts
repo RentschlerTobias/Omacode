@@ -14,7 +14,7 @@
 // and the sentence a user reads is built from that answer. There is no `child_process` import and no shell, because a
 // check that could start a program on its own would be a second door past the allowlist the runner exists to keep.
 
-import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs"
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { createRequire } from "node:module"
 import { dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -25,7 +25,7 @@ import { insidePath } from "../paths.ts"
 import type { DeckSpec } from "../spec.ts"
 import { deckResults, type DeckPresentReport } from "./deck-checks.ts"
 import { placeholderNote, writeDeckProject, type DeckProject } from "./deck-project.ts"
-import { DECK_ENV_NAMES, deckCheck, deckPresent, deckSnapshot, deckStudio } from "./deck-run.ts"
+import { DECK_ENV_NAMES, deckCheck, deckHistory, deckPresent, deckSnapshot, deckStudio } from "./deck-run.ts"
 import { checkHyperframes, freePort, HYPERFRAMES_ENV, HYPERFRAMES_INSTALL, hyperframesBin, hyperframesRuntime, outputOf, RUNTIME_FILE, tailOf } from "./hyperframes.ts"
 
 // The three layers, re-exported so the package's one deck entry keeps every name it published before the split. A caller
@@ -161,7 +161,24 @@ export function deckAdapter(options: DeckAdapterOptions = {}): Adapter<DeckSpec>
       if (runtime.version !== undefined && engine.version !== undefined && runtime.version !== engine.version) {
         throw new Error(`the HyperFrames runtime found (${runtime.version}, ${runtime.file}) is not the engine that runs (${engine.version}); a deck needs both from one release`)
       }
-      project = writeDeckProject(input, ctx.jobDir, { runtime: runtime.file })
+      // The build is one entry in the deck's history (deckHistory): opened before the write when a page is there,
+      // closed after it, also when the write refused. The history is a convenience: a failing call is logged, never fatal.
+      const history = async (...args: string[]): Promise<boolean> => {
+        const result = await deckHistory(ctx.run, ctx.jobDir, args)
+        if (!result.passed) ctx.log(`hyperframes history ${args[0]}: ${result.refused ?? (tailOf(outputOf(result)) || `exited with ${result.code}`)}`)
+        return result.passed
+      }
+      const label = `build ${input.job}`
+      const opened = existsSync(join(resolve(ctx.jobDir), "index.html")) && (await history("begin", "--who", "omacode", "--label", label))
+      try {
+        project = writeDeckProject(input, ctx.jobDir, { runtime: runtime.file })
+      } finally {
+        if (opened) await history("end", "--who", "omacode", "--if-open")
+      }
+      if (!opened) {
+        // The first build: the page exists only now, so the history starts here with an empty turn.
+        if (await history("begin", "--who", "omacode", "--label", label)) await history("end", "--who", "omacode", "--if-open")
+      }
       // The presenter probe, laid down fresh on every prepare (the runner refuses a path outside the job).
       const probeDir = join(resolve(ctx.jobDir), PROBE_DIR)
       mkdirSync(probeDir, { recursive: true, mode: 0o700 })

@@ -220,19 +220,28 @@ const ROOT_MARK = `data-composition-id="${MAIN_COMPOSITION}" data-root="true"`
 export const HAND_EDITED =
   "index.html was changed by hand since the last build (for example in HyperFrames Studio), so building again would throw those changes away. Ask the user what they want: to keep the changes, leave the deck as it is or carry them into the spec (text, order, notes) yourself; to drop them, delete index.html and build again."
 
+// Every page this writer wrote in this job, newest last. Any of them is ours: restoring an earlier build from the
+// HyperFrames history (`hyperframes history restore`) brings back a page this writer made, not a hand edit.
+const WRITTEN_CAP = 100
+function writtenHashes(dir: string): string[] {
+  try {
+    const stamp = JSON.parse(readFileSync(join(dir, DECK_STAMP), "utf8")) as Record<string, unknown>
+    const list = Array.isArray(stamp["written"]) ? stamp["written"].filter((x): x is string => typeof x === "string") : []
+    const last = typeof stamp["index.html"] === "string" ? [stamp["index.html"]] : []
+    return [...new Set([...list, ...last])]
+  } catch {
+    return []
+  }
+}
+
 // Why the page on disk may not be replaced, or undefined when it may: there is none, it is what this writer last wrote,
 // or it predates stamps and carries this writer's root.
 export function handEditProblem(dir: string): string | undefined {
   const page = join(dir, "index.html")
   if (!existsSync(page)) return undefined
   const text = readFileSync(page, "utf8")
-  let recorded: unknown
-  try {
-    recorded = (JSON.parse(readFileSync(join(dir, DECK_STAMP), "utf8")) as Record<string, unknown>)["index.html"]
-  } catch {
-    recorded = undefined
-  }
-  if (typeof recorded === "string") return recorded === sha256(text) ? undefined : HAND_EDITED
+  const written = writtenHashes(dir)
+  if (written.length > 0) return written.includes(sha256(text)) ? undefined : HAND_EDITED
   return text.includes(ROOT_MARK) ? undefined : "index.html is there but was not written by the deck adapter; move it away or delete it, then build again."
 }
 
@@ -658,7 +667,9 @@ export function writeDeckProject(spec: DeckSpec, jobDir: string, opts: DeckWrite
     chmodSync(path, 0o600)
   }
   const stamp = join(dir, DECK_STAMP)
-  writeFileSync(stamp, `${JSON.stringify({ "index.html": sha256(files[0]![1]) })}\n`, { mode: 0o600 })
+  const hash = sha256(files[0]![1])
+  const written = [...writtenHashes(dir).filter((h) => h !== hash), hash].slice(-WRITTEN_CAP)
+  writeFileSync(stamp, `${JSON.stringify({ "index.html": hash, written })}\n`, { mode: 0o600 })
   chmodSync(stamp, 0o600)
   if (opts.runtime !== undefined) {
     const path = join(dir, DECK_RUNTIME)
