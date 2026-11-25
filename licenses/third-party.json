@@ -78,8 +78,8 @@
       "source": "decider/models/ (trained locally on synthetic and public data, no journal content)",
       "territory": "global",
       "commercialOutput": "n/a",
-      "attribution": "derivative of GLiNER2.5-multi-Decide (Apache-2.0)",
-      "notes": "not published; whether to publish the weights is the maintainer's open decision",
+      "attribution": "fine-tune of hivetrace/gliner-guard-uniencoder (Apache-2.0), which is built on jhu-clsp/mmBERT-small (MIT); keep both notices",
+      "notes": "to be published on Hugging Face as T1ddaeus/omacode-guard; until then local only",
       "telemetry": "none (model weights)"
     },
     {
@@ -90,8 +90,8 @@
       "source": "https://huggingface.co/hivetrace/gliner-guard-uniencoder",
       "territory": "global",
       "commercialOutput": "n/a",
-      "attribution": "keep the licence notice",
-      "notes": "the planned successor base (P6); not installed by 1.0 yet",
+      "attribution": "keep the licence notice; built on jhu-clsp/mmBERT-small (MIT)",
+      "notes": "the base of the tuned guard model; not installed on its own",
       "telemetry": "none (model weights)"
     },
     {
