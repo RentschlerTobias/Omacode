@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
+import { realpathSync } from "node:fs"
 import { beforeEach, test } from "node:test"
 
 import { tempDir } from "./harness.ts"
@@ -11,7 +13,14 @@ import { resetClaims } from "@omacode/core/registry"
 
 beforeEach(() => resetClaims())
 
-const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
+// The user's own checkout: a throwaway git repository. It used to be this repository's real path, and the plugin
+// writes its project file (stateDir) into the project it is given, so after the folder was renamed every run made
+// the old folder again (2026-11-25).
+const PROJECT = (() => {
+  const dir = realpathSync(tempDir("mm-checkout-"))
+  execFileSync("git", ["init", "-q", dir])
+  return dir
+})()
 
 function makeMockCtx() {
   const hooks: Record<string, ((arg: any) => Promise<void>)[]> = {}

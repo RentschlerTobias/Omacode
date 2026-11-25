@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
 import { tempDir } from "./harness.ts"
@@ -21,8 +21,15 @@ function fakeDraft() {
 }
 
 const ok = async () => "ok"
-// The user's own checkout, the directory the stand-in host below reports: what a worker must never be able to write.
-const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
+// The directory the stand-in host below reports: what a worker must never be able to write.
+// The user's own checkout: a throwaway git repository. It used to be this repository's real path, and the plugin
+// writes its project file (stateDir) into the project it is given, so after the folder was renamed every run made
+// the old folder again (2026-11-25).
+const PROJECT = (() => {
+  const dir = realpathSync(tempDir("mm-checkout-"))
+  execFileSync("git", ["init", "-q", dir])
+  return dir
+})()
 const noop = { tasks: ok, plan: ok, questions: ok, run: ok, status: ok, stop: ok, steer: ok, stopTask: ok, merge: ok, discard: ok, access: ok, permission: ok, rewind: ok, undoMerge: ok, takeOver: ok, todo: ok, contract: ok, backlog: ok, decideChange: ok, contractRound: ok, evolve: ok, mode: ok }
 const byId = (added: Record<string, unknown>[], id: string) => {
   const tool = added.find((t) => t.id === id)!
@@ -356,7 +363,6 @@ test("a job load sweeps a stale task to a terminal state and reports the leftove
 test("request_access asks the user about a refused path rather than answering for them, and vouches for an ordinary one", async () => {
   const { vouchAccess, vouchText } = await import("../packages/micromanager/src/plugin.ts")
   const j = job()
-  const PROJECT = "/home/t1dde/Fun/Projects/Repos/micromanager"
   // ~/.ssh is layer 1 of decide.ts: no layer may pass it, and a vouch from the orchestrator is not a layer above that.
   // What changed is not the rule but who answers it: the tool used to refuse, which meant the one place built to ask
   // the user was the one place that never did. It now puts the question to them, with the path and the reason.
