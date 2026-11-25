@@ -1165,6 +1165,57 @@ test("cloud mode: non-guard nodes ask the cloud, the guards stay local, and a lo
   assert.match(summary(done), /must stay on this machine, but local models are switched off/)
 })
 
+// 2026-11-25: a local-only job with no local model running used to fall back to the role's cloud model without a word.
+const NO_LOCAL = async () => new Map(DEFAULT_REGISTRY.filter((m) => m.location === "local").map((m) => [m.id, { reachable: false }]))
+
+test("a sensitive job with no local model running asks once; no stops it before any worker", async () => {
+  const project = repo()
+  const fake = fakeSession({ worker: writeFiles })
+  const asked: string[] = []
+  const r = runner(project, fake.api, { availability: NO_LOCAL, consent: async (_job: unknown, text: string) => (asked.push(text), false) })
+  const { job } = await r.plan("goal")
+  job.flags = { localOnly: true, gate: { flagged: ["sensitive"], scores: { sensitive: 0.87 }, checked: true } }
+  saveJob(project, job)
+  const done = await r.run(job.id)
+  assert.equal(done.phase, "ask_user")
+  assert.equal(fake.created.filter((c) => c.agent !== "planner").length, 0, "no worker started")
+  assert.equal(asked.length, 1)
+  assert.match(asked[0]!, /marked as sensitive \(0\.87\), but no local model is running/)
+  assert.match(asked[0]!, /Job: "goal"/)
+  assert.match(summary(done), /must stay on this machine, but no local model is running .* and the cloud was not allowed/)
+})
+
+test("allowed once, the sensitive job uses the cloud for the rest of its tasks without asking again", async () => {
+  const project = repo()
+  const fake = fakeSession({ worker: writeFiles })
+  let asked = 0
+  const r = runner(project, fake.api, { availability: NO_LOCAL, consent: async () => (asked++, true) })
+  const { job } = await r.plan("goal")
+  job.flags = { localOnly: true, gate: { flagged: ["sensitive"], scores: { sensitive: 0.87 }, checked: true } }
+  saveJob(project, job)
+  const done = await r.run(job.id)
+  assert.equal(asked, 1, "two tasks, one question")
+  assert.deepEqual(done.tasks.map((t) => t.status), ["merged", "merged"], summary(done))
+  const workers = fake.created.filter((c) => c.agent === "coder")
+  assert.ok(workers.length > 0)
+  for (const w of workers) assert.equal(DEFAULT_REGISTRY.find((m) => m.id === `${(w.model as { providerID: string }).providerID}/${(w.model as { id: string }).id}`)?.location, "cloud")
+  assert.ok(done.lessons.some((l) => /let this sensitive job use cloud models/.test(l)))
+})
+
+test("a job on local uncensored models only is never offered the cloud: it stops", async () => {
+  const project = repo()
+  const fake = fakeSession({ worker: writeFiles })
+  let asked = 0
+  const r = runner(project, fake.api, { availability: NO_LOCAL, consent: async () => (asked++, true) })
+  const { job } = await r.plan("goal")
+  job.flags = { localOnly: true, uncensored: true }
+  saveJob(project, job)
+  const done = await r.run(job.id)
+  assert.equal(asked, 0)
+  assert.equal(done.phase, "ask_user")
+  assert.match(summary(done), /local uncensored models only, but no local model is running/)
+})
+
 test("cloud mode: a sensitive flag alone does not stop a job; injection still asks the user", async () => {
   const { flagsWithoutUser } = await import("../packages/micromanager/src/gate.ts")
   const sensitive = { flagged: ["sensitive" as const], scores: { sensitive: 0.69 }, checked: true }

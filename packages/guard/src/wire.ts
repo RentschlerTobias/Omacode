@@ -1,3 +1,4 @@
+import { askConsent, CONSENT_ACTION, isLoopback, rootSession } from "@omacode/core/consent"
 import { record } from "@omacode/core/journal"
 import { mapStrings, PLACEHOLDER_NOTE, requestTexts, restoreResponse, scanNames, useVault, Vault, type NameSettings } from "./redact.ts"
 
@@ -113,12 +114,21 @@ function addPlaceholderNote(body: Record<string, any>): void {
 
 // The last line before the wire: redact the serialized request body. Provider formats differ, so the body is only
 // touched when it looks like a model request; arbitrary tool traffic (form posts, uploads, auth) is left alone.
+// What a request is refused with when it would have gone to the cloud with names unchecked and the user said no.
+export class NotSent extends Error {}
+
+export const NOT_SENT_UNCHECKED =
+  "omacode did not send this request: the decider is not running, so names and addresses in it could not be found and replaced, and you did not allow sending it without that check. Start the decider (`omacode services status`, or /services in the TUI) and try again."
+
 export async function redactHttpRequest(
   request: Request,
   vault: Vault,
   names?: NameSettings,
   log?: (level: "info" | "warn" | "error", message: string) => void,
   warned: Set<string> = new Set(),
+  // Asked when names could not be checked and the request leaves this machine: true sends it as it is (keys, e-mail,
+  // phone and card numbers still replaced), false refuses it with NotSent.
+  unchecked?: () => Promise<boolean>,
 ): Promise<Request> {
   try {
     const type = request.headers.get("content-type") ?? ""
@@ -148,6 +158,8 @@ export async function redactHttpRequest(
           warned.add("names")
           log?.("warn", `names and addresses were not checked: ${String(err)}`)
         }
+        // A local model may see the names; a cloud model only with the user's word (src/core consent.ts).
+        if (unchecked && !isLoopback(request.url) && !(await unchecked())) throw new NotSent(NOT_SENT_UNCHECKED)
       }
     }
     let changed = false
@@ -168,6 +180,7 @@ export async function redactHttpRequest(
       signal: request.signal,
     })
   } catch (err) {
+    if (err instanceof NotSent) throw err
     if (!warned.has("request")) {
       warned.add("request")
       log?.("warn", `an outgoing request could not be checked: ${String(err)}`)
@@ -176,8 +189,40 @@ export async function redactHttpRequest(
   }
 }
 
+// The question for a request that would leave with names unchecked: once per root session (a job's workers share their
+// micromanager's answer), put to that session, with the details in the conversation above OpenCode's dialog.
+export function uncheckedConsent(ctx: any, sessionID: string | undefined): (() => Promise<boolean>) | undefined {
+  if (!sessionID || typeof ctx?.permission?.assert !== "function") return undefined
+  return async () => {
+    const root = await rootSession(async (id) => (await ctx.session?.get?.({ sessionID: id })) as { parentID?: string } | undefined, sessionID)
+    return askConsent(ctx, {
+      kind: "unchecked",
+      scope: root,
+      sessionID: root,
+      title: "Send to the cloud without checking names and addresses?",
+      text: [
+        "[omacode] The decider is not running, so names and street addresses in what the agents send to the cloud model cannot be found and replaced.",
+        "Keys, tokens, e-mail addresses, phone, IBAN and card numbers are still replaced; local models are not affected.",
+        "Allowing the next permission sends this session's requests without the name check until the decider is back (it is used again as soon as it answers); rejecting stops them.",
+      ].join("\n"),
+      note: typeof ctx.session?.synthetic === "function" ? (id, text) => ctx.session.synthetic({ sessionID: id, text, resume: false }) : undefined,
+      journal: record,
+    })
+  }
+}
+
 export function installGuard(ctx: any, deps: GuardDeps): void {
   const warned = new Set<string>()
+  // The consent question is the user's: whatever OpenCode's rules say for an unknown action, it asks.
+  try {
+    ctx.permission?.hook?.("evaluate", (evaluation: { action: string; effect: string; message?: string; metadata?: Record<string, unknown> }) => {
+      if (evaluation.action !== CONSENT_ACTION || evaluation.effect === "deny") return
+      evaluation.effect = "ask"
+      evaluation.message = String(evaluation.metadata?.title ?? "Send to the cloud?")
+    })
+  } catch (err) {
+    deps.log?.("warn", `consent hook unavailable: ${String(err)}`)
+  }
   ctx.session.hook("context", async (input: GuardContextHookInput) => {
     const vault = deps.getVault()
     if (vault) await redactRequest(input, vault, deps.getNames(), deps.log)
@@ -197,7 +242,7 @@ export function installGuard(ctx: any, deps: GuardDeps): void {
   try {
     ctx.session.hook("http.request", async (event: HttpRequestEvent) => {
       const vault = deps.getVault()
-      if (vault && event?.request) event.request = await redactHttpRequest(event.request, vault, deps.getNames(), deps.log, warned)
+      if (vault && event?.request) event.request = await redactHttpRequest(event.request, vault, deps.getNames(), deps.log, warned, uncheckedConsent(ctx, event.sessionID))
     })
   } catch (err) {
     deps.log?.("warn", `request redaction hook unavailable: ${String(err)}`)

@@ -22,7 +22,7 @@ import { runBrowser } from "./browser.ts"
 import { readPick } from "./pick.ts"
 import { DEFAULT_LABELS, gitAuthor, knownSecrets, mapStrings, PLACEHOLDER_NOTE, requestTexts, restoreResponse, restoreScope, scanNames, useVault, Vault, type NameSettings } from "./redact.ts"
 import { matchShortcut, resolvePolicy } from "./policy.ts"
-import { probe, type Availability } from "./registry.ts"
+import { probe, route as routeModel, type Availability } from "./registry.ts"
 import { chooseModel, unknown as allAvailable, withPicks, type Available } from "./routing.ts"
 import { family, MICROMANAGER, ROLES, roleByAgent, roleById, type RoleId, type Rule } from "./roles.ts"
 import { askToLeave, canLeave, clearAsk, forgetModes, loadModes, modeOf, noteUserSpoke, setMode } from "./mode.ts"
@@ -97,6 +97,7 @@ import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { installParts, outcomeText } from "./features.ts"
 import { TELEMETRY_OFF } from "@omacode/core/telemetry"
+import { askConsent, CONSENT_ACTION, rootSession } from "@omacode/core/consent"
 import { missingForKind, missingNote, OFFER_IDS, OFFERS, realProbe, type OfferId } from "./setup.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
@@ -1038,6 +1039,17 @@ const plugin = {
     }
     // Which models the host can run, read from ctx.model and kept for a minute (see modelAvailability).
     const hostModels = modelAvailability(ctx.model)
+    // A model the registry places on this machine; one it does not know is not trusted to stay local.
+    const isLocalModel = (id: string): boolean => registry.find((m) => m.id === id)?.location === "local"
+    // A local model that can do a role's work right now, for a task that must stay on this machine: the registry's
+    // router over what the local servers say they run and what the host still has. None in cloud mode, which switches
+    // the local models off.
+    const localModelFor = async (role: string, difficulty: number): Promise<string | undefined> => {
+      if (mode === "cloud") return undefined
+      const map = await probe(registry).catch(() => new Map<string, Availability>())
+      for (const m of registry) if (m.location === "local" && !(await hostModels(m.id))) map.set(m.id, { ...map.get(m.id), reachable: false })
+      return routeModel(registry, { role, difficulty, sensitive: true }, map).model
+    }
     // A role's pool goes to its least-used model, by tasks per $ of its monthly budget (src/routing.ts). One count for
     // every instance of the server, seeded from the journal's routing records of the week.
     const usage = (SHARED.usage ??= new Usage(seedFromJournal()))
@@ -1541,7 +1553,7 @@ const plugin = {
       // A hard task goes to the pool's deep-tier models when it has some (src/registry.ts tiers).
       const deep = assess?.difficulty !== undefined && assess.difficulty >= DEEP ? (m: string) => registry.find((r) => r.id === m)?.tier === "deep" : undefined
       const picks = loadPicks()
-      const routed = await routeDelegation(call, withPicks(routing, picks), undefined, hostModels, { usage, budget: goBudget, avoidFamilies, ...(deep ? { prefer: deep } : {}) })
+      let routed = await routeDelegation(call, withPicks(routing, picks), undefined, hostModels, { usage, budget: goBudget, avoidFamilies, ...(deep ? { prefer: deep } : {}) })
       // Whether the pool was the user's own pick in the TUI, so the journal tells a pick from the default.
       const picked = routed && (picks.models[routed.role] || (picks.vision && routed.model === picks.vision)) ? { picked: true } : {}
       if (routed?.skipped?.length) {
@@ -1599,6 +1611,53 @@ const plugin = {
       const guard = await checkGuards(decider, `${String(call.input.description ?? "")}. ${asked}`, undefined, undefined, 2, call.sessionID)
       if (guard.flagged.includes("injection")) {
         throw new DelegationError(`The local check flagged this task (${guard.flagged.join(", ")}). Ask the user whether it should run before you start it again.`)
+      }
+      // Sensitive: the task runs on a local model, and with none running only with the user's word (once per job,
+      // @omacode/core/consent). Not checked because the decider is down: the user's word too, the same answer the
+      // guard's name check asks for. Before 2026-11-25 neither case was looked at here.
+      const delegatedTask = `${String(call.input.description ?? "")}`.trim() || asked.split("\n").find((l) => l.trim())?.slice(0, 200) || "a task"
+      if (guard.flagged.includes("sensitive") && routed) {
+        const local = await localModelFor(routed.role, assess?.difficulty ?? 0.5)
+        if (local) {
+          call.input.prompt = String(call.input.prompt ?? "").replace(`· model: ${routed.model}`, `· model: ${local}`)
+          call.input.model = local
+          routed = { ...routed, model: local, reason: `sensitive: a local model (${(guard.scores.sensitive ?? 0).toFixed(2)})` }
+        } else {
+          const job = native.job(project, call.sessionID)
+          const allowed = await askConsent(ctx, {
+            kind: "sensitive",
+            scope: job.id,
+            sessionID: call.sessionID,
+            agent: MICROMANAGER.agent,
+            title: "Send a sensitive task to the cloud?",
+            text: [
+              `[omacode] This task was marked as sensitive (${(guard.scores.sensitive ?? 0).toFixed(2)}), and no local model is running${mode === "cloud" ? " (local models are switched off: decider mode cloud)" : ""}.`,
+              `Task: "${delegatedTask.slice(0, 300)}"`,
+              `It would go to ${routed.model} (cloud). Keys, e-mail, phone, IBAN and card numbers, names and addresses are replaced before anything leaves; the rest of the content goes as it is.`,
+              `Allowing the next permission lets job ${job.id} use cloud models for its sensitive tasks from now on; rejecting does not start this task.`,
+            ].join("\n"),
+            note: (sessionID, text) => say({ sessionID, text, resume: false }),
+            journal: record,
+          })
+          if (!allowed) throw new DelegationError(`Not started: the task was marked as sensitive, no local model is running, and the user did not allow the cloud. Tell the user in one sentence: start a local model (or ask them to allow the cloud) and delegate again; then end your turn.`)
+        }
+      } else if (!guard.checked && routed && !isLocalModel(routed.model)) {
+        const root = await rootSession(async (id) => (await ctx.session.get({ sessionID: id }).catch(() => undefined)) as { parentID?: string } | undefined, call.sessionID)
+        const allowed = await askConsent(ctx, {
+          kind: "unchecked",
+          scope: root,
+          sessionID: root,
+          agent: MICROMANAGER.agent,
+          title: "Send to the cloud without checking names and addresses?",
+          text: [
+            "[omacode] The decider is not running, so this task could not be checked for sensitive data, and names and street addresses in what the agents send to the cloud cannot be found and replaced.",
+            `Task: "${delegatedTask.slice(0, 300)}" would go to ${routed.model} (cloud). Keys, tokens, e-mail addresses, phone, IBAN and card numbers are still replaced.`,
+            "Allowing the next permission lets this session send without those checks until the decider is back; rejecting does not start the task.",
+          ].join("\n"),
+          note: (sessionID, text) => say({ sessionID, text, resume: false }),
+          journal: record,
+        })
+        if (!allowed) throw new DelegationError(`Not started: the decider is not running, so the task could not be checked, and the user did not allow the cloud without that check. Tell the user in one sentence to start the decider (/services) and end your turn.`)
       }
       // D23: a rolling job's first delegation starts only once the user said how it may run without a sandbox. A planned
       // task is gated at run_job, and a job with an answer already is not asked again. The score reads the delegation's
@@ -1897,6 +1956,15 @@ const plugin = {
       input.env = { ...(input.env ?? process.env), ...TELEMETRY_OFF }
     })
     await ctx.permission.hook("evaluate", async (evaluation) => {
+      // The user's consent to a cloud send (@omacode/core/consent): always the user's question, never one a rule, the
+      // decider or the micromanager answers, so nothing below may touch it.
+      if (evaluation.action === CONSENT_ACTION) {
+        if (evaluation.effect !== "deny") {
+          evaluation.effect = "ask"
+          evaluation.message = String((evaluation.metadata as { title?: unknown } | undefined)?.title ?? "Send to the cloud?")
+        }
+        return
+      }
       // OpenCode's cloud image tool: ComfyUI first; the cloud only where ComfyUI cannot run or failed in this session.
       if (evaluation.action === CLOUD_IMAGE_TOOL) {
         if (evaluation.effect === "deny") return
@@ -2393,6 +2461,12 @@ const plugin = {
         perModel,
         checkTimeoutMs: settings.checkTimeoutMs,
         gate,
+        // A job that must stay local with no local model: the user's word, in the micromanager session, once per job.
+        consent: async (j, text) => {
+          const sessionID = parentID ?? j.facilitator
+          if (!sessionID) return false
+          return askConsent(ctx, { kind: "sensitive", scope: j.id, sessionID, agent: MICROMANAGER.agent, title: "Send a sensitive job to the cloud?", text, note: (id, t) => say({ sessionID: id, text: t, resume: false }), journal: record })
+        },
         onWorker: (sessionID, task, rules) => {
           workerTasks.set(sessionID, task)
           if (rules.length) workerRules.set(sessionID, rules)

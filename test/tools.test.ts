@@ -502,6 +502,15 @@ test("a delegation the hook cannot route is written down, and one that merely sa
   assert.equal(journal().filter((e) => e.kind === "delegation-unrecognised").length, 1)
 })
 
+test("the consent to a cloud send is always the user's question: no rule, decider or micromanager answers it", async (t) => {
+  const { CONSENT_ACTION } = await import("@omacode/core/consent")
+  const { run } = await loadedPlugin(t, { ses_micro: { agent: "micromanager", location: { directory: PROJECT } } })
+  // Even for the micromanager's own session, whose asks the plugin would otherwise decide or route to an agent.
+  const asked = await run("ses_micro", "micromanager", CONSENT_ACTION)
+  assert.equal(asked.effect, "ask")
+  assert.equal(asked.message, "Send to the cloud?")
+})
+
 // A job with three merged tasks on its branch, and a fourth still unfinished in a worktree cut from the tip.
 function rewindRepo() {
   const { project, branch } = repo()

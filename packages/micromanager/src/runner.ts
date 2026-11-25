@@ -89,6 +89,9 @@ export interface RunnerDeps {
   readonly checkTimeoutMs?: number // how long one check may run (default 300 s); the job may override it
   // The sandbox a check runs in (src/gatebox.ts, A1-T12). Without it the checks run unwrapped, as they did before.
   readonly gate?: GateDeps
+  // The user's word that a job which must stay on this machine may go to the cloud after all, because no local model
+  // can do its work (@omacode/core/consent): asked once per job; without it such a job stops.
+  readonly consent?: (job: Job, text: string) => Promise<boolean>
 }
 
 // Thrown out of a session turn when the user stopped the job; run() pauses the job, and the next run resumes it.
@@ -304,6 +307,10 @@ export class Runner {
     this.#cloudFlags(job)
     if (job.phase !== "plan") moveJob(job, "plan")
     saveJob(this.#d.project, job)
+    if (!(await this.#localOrAllowed(job, "plan", 0.7))) {
+      saveJob(this.#d.project, job)
+      return { job }
+    }
     const model = await this.#model(job, "plan", 0.7)
     this.#say(`planning with ${model.id} (${model.reason})`)
     let s = await this.#plannerSession(job, model.id)
@@ -573,9 +580,8 @@ export class Runner {
     if (job.phase !== "execute") throw new Error(`job ${id} is in phase ${job.phase}, not ready to run`)
     this.#job = job
     this.#cloudFlags(job)
-    // Never quietly to the cloud: a job that must stay on this machine waits while local models are switched off.
-    if (this.#d.mode === "cloud" && job.flags?.localOnly) {
-      this.#stop(job, "this job must stay on this machine, but local models are switched off (decider mode cloud); the user can let it go to the cloud, or switch the decider to local mode")
+    // Never quietly to the cloud: a job that must stay on this machine asks while local models are switched off.
+    if (this.#d.mode === "cloud" && job.flags?.localOnly && !(await this.#localOrAllowed(job, "code", 0.5))) {
       saveJob(this.#d.project, job)
       return job
     }
@@ -818,6 +824,42 @@ export class Runner {
 
   // task: the stop concerns one task. In a rolling job that never stops the job: the task waits, and the orchestrator
   // hears of it and asks the user.
+  // A job that must stay on this machine (the sensitive guard, or the user's "always local") whose work no local model
+  // can do. Before 2026-11-25 the router fell back to the role's cloud model here without a word. Now the user says
+  // whether it may go to the cloud after all, once for the job; without their word the job stops. A job that needs an
+  // uncensored model stops either way: no cloud model is one.
+  async #localOrAllowed(job: Job, role: string, difficulty: number, vision = false, task?: Task): Promise<boolean> {
+    if (!job.flags?.localOnly) return true
+    let why = "local models are switched off (decider mode cloud)"
+    if (this.#d.mode !== "cloud") {
+      const availability = await this.#d.availability?.().catch(() => undefined)
+      const r = route(this.#d.registry, { role, difficulty, vision, sensitive: true, uncensored: job.flags.uncensored }, availability)
+      if (r.model) return true
+      why = `no local model is running for the ${role} work (${r.reason})`
+    }
+    if (job.flags.uncensored) {
+      this.#stop(job, `this job runs on local uncensored models only, but ${why}. Start one, then run the job again.`, task)
+      return false
+    }
+    const score = job.flags.gate?.scores.sensitive
+    const text = [
+      `[omacode] Job ${job.id} was marked as sensitive${score !== undefined ? ` (${score.toFixed(2)})` : ""}${job.flags.gate ? "" : " (you chose to keep it on this machine)"}, but ${why}.`,
+      `Job: "${job.goal.slice(0, 300)}${job.goal.length > 300 ? "…" : ""}"`,
+      ...(task ? [`Task ${task.id}: "${task.title}"`] : []),
+      "Allowing the next permission lets this job use cloud models from now on: keys, e-mail, phone, IBAN and card numbers, names and addresses are replaced before anything leaves; the rest of the content goes as it is. Rejecting stops the job.",
+    ].join("\n")
+    const allowed = this.#d.consent ? await this.#d.consent(job, text).catch(() => false) : false
+    this.#journal({ kind: "consent", consent: "sensitive", job: job.id, task: task?.id, allowed, why })
+    if (allowed) {
+      job.flags = { ...job.flags, localOnly: false }
+      job.lessons.push(`the user let this sensitive job use cloud models: ${why}`)
+      this.#say(`${job.id}: the user allowed cloud models for this sensitive job (${why})`)
+      return true
+    }
+    this.#stop(job, `this job must stay on this machine, but ${why}, and the cloud was not allowed. Start a local model, then run the job again.`, task)
+    return false
+  }
+
   #stop(job: Job, reason: string, task?: Task): void {
     job.lessons.push(reason)
     if (job.rolling && task) {
@@ -852,6 +894,7 @@ export class Runner {
       return this.#stop(job, `confirm ${task.id} before it runs: ${profileText(profile)} · pipeline ${pipeline.id} (${pipeline.reason}). Run the job again to go on, or pin a change first ("${task.id} use <model>", "pipeline P2").`, task)
     }
     moveTask(task, "planned")
+    if (!(await this.#localOrAllowed(job, task.role, profile.difficulty, profile.vision, task))) return
     let model = await this.#model(job, task.role, profile.difficulty, task.id, undefined, profile.vision)
     task.model = model.id
     moveTask(task, "running")

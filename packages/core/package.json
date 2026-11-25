@@ -43,6 +43,7 @@
     "./supervisor": "./src/supervisor.ts",
     "./service-control": "./src/service-control.ts",
     "./telemetry": "./src/telemetry.ts",
+    "./consent": "./src/consent.ts",
     "./main": "./src/main.ts"
   },
   "files": [
