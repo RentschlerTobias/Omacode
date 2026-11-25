@@ -30,8 +30,10 @@ check "dvisvgm" dvisvgm --version
 check "decider" /opt/omacode/decider/.venv/bin/python -c "import decider.server, gliner2; print('decider imports')"
 check "evolver" uv run --quiet --no-sync --project /opt/omacode/packages/micromanager/evolver python -c "import mm_evolve; print('evolver imports')"
 
-# The plugin was linked into the container home by the entrypoint.
-if [[ -L "$XDG_CONFIG_HOME/opencode/plugins/micromanager.ts" ]]; then ok "plugin linked"; else bad "plugin not linked into $XDG_CONFIG_HOME/opencode/plugins"; fi
+# The plugin and its TUI were linked into the container home by the entrypoint (install.sh; the link is omacode.ts
+# since 2026-11-23, micromanager.ts before).
+if [[ -L "$XDG_CONFIG_HOME/opencode/plugins/omacode.ts" ]]; then ok "plugin linked"; else bad "plugin not linked into $XDG_CONFIG_HOME/opencode/plugins"; fi
+if [[ -s "$XDG_CONFIG_HOME/opencode/omacode-tui/tui.tsx" ]]; then ok "TUI linked"; else bad "TUI not written to $XDG_CONFIG_HOME/opencode/omacode-tui"; fi
 
 # The supervisor's fronts answer, and refuse a request without the token.
 if [[ -s "${OMACODE_RUN_DIR:-}/services.json" ]]; then
