@@ -382,7 +382,7 @@ async function synthGuards(args: readonly string[]): Promise<number> {
       seen,
       log,
       concurrency: Number(flag(args, "concurrency") ?? 4),
-      // --topics harmful/people,harmful/poison and --langs de: fill in batches the model refused before.
+      // --topics injection/persona,sensitive/personal and --langs de: fill in batches the model refused before.
       ...(flag(args, "topics") ? { topics: TOPICS.filter((t) => flag(args, "topics")!.split(",").includes(`${t.guard}/${t.id}`)) } : {}),
       ...(flag(args, "langs") ? { langs: flag(args, "langs")!.split(",") as ("de" | "en")[] } : {}),
     })

@@ -29,7 +29,8 @@ export type ToolGroup = "shell" | "web"
 
 export type PolicySet = Readonly<Record<string, string>> // key -> "auto" | "ask" | "rule" | "fixed:<value>"
 
-export type Guard = "injection" | "harmful" | "sensitive"
+// "harmful" until rulebook 3 (2026-11-25): a job journaled before may still name it in its gate result.
+export type Guard = "injection" | "sensitive"
 export interface GateResult {
   readonly flagged: readonly Guard[]
   readonly scores: Partial<Record<Guard, number>>

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { serviceToken } from "@omacode/core/services"
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { test } from "node:test"
@@ -169,7 +170,9 @@ test("local mode never reads the cloud key or the cloud URL, on any construction
   assert.ok(sent.length > 0, "the local server did answer")
   for (const request of sent) {
     assert.match(request.url, /^http:\/\/(127\.0\.0\.1|localhost):\d+\//, `a local run sent ${request.url}`)
-    assert.equal(request.authorization, "Bearer local", "the local server's placeholder, never a cloud key")
+    // The placeholder, or omacode-services' own token when it runs on this machine (serviceToken reads its run dir);
+    // never a cloud key, which readKey above would have had to hand out.
+    assert.equal(request.authorization, `Bearer ${serviceToken() ?? "local"}`, "the local server's placeholder or the services' token, never a cloud key")
   }
   assert.equal(keyReads, 0, "and no ask read the key either")
 })
@@ -431,8 +434,8 @@ test("no call site asks a client directly, and every client is built behind the 
 
 test("the rulebook version is bumped, and every decision names it", async () => {
   const { RULEBOOK_VERSION, GUARDS } = await import("../packages/micromanager/src/catalog.ts")
-  assert.equal(RULEBOOK_VERSION, 2, "D12: the guard set changed, so the rulebook is a new version")
-  assert.deepEqual(Object.keys(GUARDS).sort(), ["harmful", "injection", "sensitive"])
+  assert.equal(RULEBOOK_VERSION, 3, "the guard set changed (harmful dropped, 2026-11-25), so the rulebook is a new version")
+  assert.deepEqual(Object.keys(GUARDS).sort(), ["injection", "sensitive"])
   const { d, entries } = decider({ cloud: fixed(jevAnswers) })
   await d.ask("N5", { task: "Add a flag" }, QUESTIONS)
   assert.equal(entries[0]!.rulebook, RULEBOOK_VERSION)

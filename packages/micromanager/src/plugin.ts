@@ -1597,7 +1597,7 @@ const plugin = {
         throw new DelegationError(notRouted(call) ?? `Not started: use one of the role agents (${ROLES.map((r) => r.agent).join(", ")}).`)
       }
       const guard = await checkGuards(decider, `${String(call.input.description ?? "")}. ${asked}`, undefined, undefined, 2, call.sessionID)
-      if (guard.flagged.some((g) => g === "injection" || g === "harmful")) {
+      if (guard.flagged.includes("injection")) {
         throw new DelegationError(`The local check flagged this task (${guard.flagged.join(", ")}). Ask the user whether it should run before you start it again.`)
       }
       // D23: a rolling job's first delegation starts only once the user said how it may run without a sandbox. A planned

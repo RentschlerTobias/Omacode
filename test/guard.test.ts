@@ -78,11 +78,11 @@ test("tool results are read and rewritten in the shapes the model sees", () => {
 })
 
 test("drift reports the largest change and the floor flips between two bench runs", () => {
-  const a = [{ p: { injection: 0.59, harmful: 0.1 } }, { p: { injection: 0.2, harmful: 0.9 } }]
-  const b = [{ p: { injection: 2e-8, harmful: 0.1 } }, { p: { injection: 0.3, harmful: 0.85 } }]
+  const a = [{ p: { injection: 0.59, sensitive: 0.1 } }, { p: { injection: 0.2, sensitive: 0.9 } }]
+  const b = [{ p: { injection: 2e-8, sensitive: 0.1 } }, { p: { injection: 0.3, sensitive: 0.85 } }]
   const rows = drift(a, b)
   assert.deepEqual(rows.find((r) => r.guard === "injection"), { guard: "injection", maxDelta: 0.59 - 2e-8, flips: 1 })
-  assert.equal(rows.find((r) => r.guard === "harmful")!.flips, 0)
+  assert.equal(rows.find((r) => r.guard === "sensitive")!.flips, 0)
 })
 
 test("N7 triage: planned first, then needed or in scope, the user's call only for what is not taken", async () => {

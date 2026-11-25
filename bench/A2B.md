@@ -1,5 +1,8 @@
 # A2b — Bench, numeric gate, per-node floors: the numbers
 
+> Since rulebook 3 (2026-11-25, D25) there is no `harmful` guard: the guard clause gates on `injection`, and the corpus
+> lost its three harmful cases (16 → 13). The numbers below are the run of 2026-11-16, under rulebook 2.
+
 Run: 2026-11-16, `npm run bench` on this machine.
 Model: the local GLiNER2 decision server (`http://127.0.0.1:8781/v1/systemone`, CPU), the same server the plugin's
 `local` mode uses. No key, no cloud call: the bench builds the local decider only.

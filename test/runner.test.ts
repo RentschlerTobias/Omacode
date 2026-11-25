@@ -812,6 +812,7 @@ test("P2 with two axes: a confident standards finding goes back to the worker; t
 // --- Phase E: worker_refused ---------------------------------------------------------------------------------
 
 import { refused } from "../packages/micromanager/src/brief.ts"
+import type { GateResult } from "@omacode/state/schema"
 
 test("a refusal without a report is recognised; a report that mentions refusing is not", () => {
   assert.equal(refused("I'm sorry, but I can't help with writing that scanner."), true)
@@ -835,15 +836,16 @@ test("a refusing worker gets one fresh session on a local uncensored model; a se
   assert.match(summary(done), /why: T1 \(refused\): even a local uncensored model refused/)
 })
 
-test("a refusal in a job the gate flagged as possibly harmful goes straight to the user", async () => {
+test("a refusal in a job journaled with the old harmful flag is rerouted like any other (rulebook 3)", async () => {
   const project = repo()
   const fake = fakeSession({ worker: () => "I cannot assist with this." })
-  const r = runner(project, fake.api)
+  const r = runner(project, fake.api, { onWorker: () => {} })
   const { job } = await r.plan("goal")
-  job.flags = { gate: { flagged: ["harmful"], scores: { harmful: 0.9 }, checked: true } }
+  // A gate result from before rulebook 3; the type no longer knows the guard.
+  job.flags = { gate: { flagged: ["harmful"], scores: { harmful: 0.9 }, checked: true } as unknown as GateResult }
   saveJob(project, job)
   const done = await r.run(job.id)
-  assert.equal(fake.created.filter((c) => c.agent === "coder").length, 1, "no reroute")
+  assert.equal(fake.created.filter((c) => c.agent === "coder").length, 2, "one fresh session on a local uncensored model")
   assert.equal(done.tasks[0]!.escalation?.kind, "refused")
 })
 

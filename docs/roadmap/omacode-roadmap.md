@@ -44,6 +44,7 @@ These decisions are binding for this plan. D1–D18 come from the working sessio
 | D22 | **Two tracks.** Safety (A) and artifacts (B) do not wait for each other, except where a schema is genuinely shared. The first artifact job starts after A1, not after A6. |
 | D23 | **Unsandboxed is a user decision, never a default.** When no sandbox can run, a job's commands and checks run unwrapped **only after the user confirmed it for that job** in a form, with a deterministic risk score shown first. The grant is journaled with the score; `never` keeps the fail-closed path, `allow` stores the grant without asking (also journaled). Without an answer nothing runs. |
 | D24 | **B3 ships the HTML deck only; PPTX is deferred.** On the user's direction (2026-11-15) B3-T3 and B3-T5 leave B3 and move to a later job: no `pptxgenjs`, no PPTX checks, no LibreOffice path in B3. The deck is presented and checked as HTML; a PPTX handoff is not part of the first vertical slice. |
+| D25 | **`harmful` is dropped** (user, 2026-11-25; rulebook 3). It judged whether a job helps to hurt other people: a guard against the user on the user's own machine, which someone with that aim avoids by not installing the plugin. Harm *to* the user comes from an agent's action, so it is judged on the command: the `destructive` guard (1.1). The guard bench gates on `injection` now. |
 
 ### Assumptions
 
@@ -330,6 +331,13 @@ would open a desktop window (container plan P3-T3).
 **After 1.0:** A3, C1, the rest of C2, B2b, B2c, B6, D1–D5, and the container plan's P2 (launcher) and P3-T3a..T15
 (gateway, trust tiers, shared services), which move to the sandbox project or are dropped there.
 
+**1.1, the `destructive` guard (D25).** A guard on an agent's command or tool call, with its task beside it: does
+this action damage the user's code, data, machine or accounts beyond what the task asks, or in a way that is hard to
+undo (deleting or overwriting outside the work, force-pushing or rewriting history, piping a download into a shell,
+switching off a safety setting, sending keys out, changing system configuration)? Most valuable where the sandbox is
+not: the main session and calls the user let run unsandboxed. Synthetic command/task cases, trained with P6; the
+tuned weights are published on Hugging Face once the model has it.
+
 ---
 
 ## 5. Jobs in detail
@@ -588,7 +596,8 @@ measured in A2b before anything flips.
   `bench-guards`, `bench-n7`. Wrap them into one command that runs guards **and** permissions and prints a table.
   - *Reality:* `npm run bench` runs guards, permissions and N7 in one process with one table instead of shelling out to the old commands — same effects, no duplicated setup.
 - [x] **A2b-T4 — Numeric thresholds, per node.** State them in the plan, not later:
-  - guard questions: precision ≥ 0.95 on `harmful`, recall ≥ 0.90, on a corpus of ≥ 300 labelled cases;
+  - guard questions: precision ≥ 0.95 on `harmful`, recall ≥ 0.90, on a corpus of ≥ 300 labelled cases (on
+    `injection` since rulebook 3, D25);
   - permission cases: false-allow rate ≤ 0.01 (a wrong allow is the expensive error), ask-rate ≤ 30 % of shell
     decisions in a normal build job;
   - corpus version pinned in the bench output; a change of question wording bumps the version and the corpus;

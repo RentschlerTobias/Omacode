@@ -969,7 +969,7 @@ export class Runner {
           job.flags = { ...job.flags, localOnly: true }
           this.#say(`a follow-up of ${task.id} looks sensitive: the rest of the job stays on this machine`)
         }
-        if (guard.flagged.some((g) => g === "injection" || g === "harmful")) reason = "flagged"
+        if (guard.flagged.includes("injection")) reason = "flagged"
         else if (job.tasks.filter((t) => t.origin === "discovered").length >= discoveredCap(job)) reason = "cap"
       }
       if (v.kind === "task" && !reason) {
@@ -1063,13 +1063,13 @@ export class Runner {
         continue
       }
       if (!answer.timedOut && refused(answer.text)) {
-        // worker_refused: a safety-tuned model said no. Never for a job the gate flagged as possibly harmful; else one
-        // fresh session on a local uncensored model (design.md §10.2, §21).
+        // worker_refused: a safety-tuned model said no. One fresh session on a local uncensored model (design.md §10.2,
+        // §21); until rulebook 3 not for a job the gate had flagged as possibly harmful, a guard the user dropped
+        // because it judged the user's own work (2026-11-25).
         stage(task, "implement", "fail", `worker_refused: ${answer.text.slice(0, 200)}`)
         this.#journal({ kind: "watchdog", job: job.id, task: task.id, signal: "worker_refused", model: work.model.id })
-        const harmful = job.flags?.gate?.flagged.includes("harmful")
-        if (harmful || work.uncensored) {
-          await this.#escalate(job, task, harmful ? "the model refused, and the gate flagged the job as possibly harmful" : "even a local uncensored model refused", answer.text.slice(-1500), "refused")
+        if (work.uncensored) {
+          await this.#escalate(job, task, "even a local uncensored model refused", answer.text.slice(-1500), "refused")
           return undefined
         }
         const next = await this.#nextRung(job, task, { ...work, fresh: false }, frozen, "the model refused the task", "", "too_hard", true)

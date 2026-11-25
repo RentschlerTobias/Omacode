@@ -152,8 +152,8 @@ export function previewAnswer(labels: readonly string[]): EgressAnswer | undefin
 // the job it was given for changes; then the session's first cloud ask asks again. A "keep it local" answer is
 // remembered just the same, so the user is not asked before every decision.
 //
-// The guards are a second answer: a session may let ordinary decisions go to the cloud and still keep injection,
-// harmful and sensitive on this machine, which is the default and the only thing a plain opt-in allows.
+// The guards are a second answer: a session may let ordinary decisions go to the cloud and still keep injection
+// and sensitive on this machine, which is the default and the only thing a plain opt-in allows.
 
 // A working day. Long enough not to nag within one, short enough that yesterday's yes is asked again.
 export const OPT_IN_TTL_MS = 12 * 60 * 60_000
@@ -304,7 +304,7 @@ export function optInForm(p: PendingOptIn): Question[] {
       "Each send is still redacted and shown to you before it leaves. The answer holds for this session only.",
     options: [
       { label: CLOUD, description: "Ordinary decisions may reach the cloud, after a redacted preview you confirm; the guards stay on this machine" },
-      { label: GUARDS, description: "The same, and the guard questions (injection, harmful, sensitive) may go too — for this session only; a payload carrying the sensitive flag is never sent by this" },
+      { label: GUARDS, description: "The same, and the guard questions (injection, sensitive) may go too — for this session only; a payload carrying the sensitive flag is never sent by this" },
       { label: KEEP, description: "Nothing leaves this machine in this session; every decision is answered locally or by you" },
     ],
   }]

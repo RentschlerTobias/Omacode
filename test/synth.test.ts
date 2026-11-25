@@ -16,9 +16,9 @@ const fakeAsk: Ask = async (prompt) => {
   return JSON.stringify(texts.map((t, i) => {
     const [guard, id] = t.split(" ")
     const topic = TOPICS.find((x) => x.guard === guard && x.id === id)
-    if (!topic) return { i, injection: t.includes("ignore") && !t.includes("harmless"), harmful: false, sensitive: false }
+    if (!topic) return { i, injection: t.includes("ignore") && !t.includes("harmless"), sensitive: false }
     const yes = topic.yes !== t.includes("WRONG")
-    return { i, injection: guard === "injection" ? yes : false, harmful: guard === "harmful" ? yes : false, sensitive: guard === "sensitive" ? yes : false }
+    return { i, injection: guard === "injection" ? yes : false, sensitive: guard === "sensitive" ? yes : false }
   }))
 }
 
@@ -28,8 +28,8 @@ test("cases are written per topic and language, labelled for all guards, and a w
   assert.equal(stats.generated, 12)
   assert.equal(stats.disagreed, 4, "the case the labeller contradicts is not kept")
   assert.equal(cases.length, 8)
-  const ctf = cases.find((c) => c.source === "synth:m:harmful:ctf")!
-  assert.deepEqual(ctf.labels, { injection: false, harmful: false, sensitive: false }, "a hard negative is false everywhere")
+  const ctf = cases.find((c) => c.source === "synth:m:injection:ctf")!
+  assert.deepEqual(ctf.labels, { injection: false, sensitive: false }, "a hard negative is false everywhere")
   assert.equal(cases.find((c) => c.source === "synth:m:injection:override")!.labels.injection, true)
   assert.deepEqual(new Set(cases.map((c) => c.lang)), new Set(["de", "en"]))
   const again = await synthesize(fakeAsk, "m", { per: 3, topics, seen: new Set(cases.map((c) => c.text.toLowerCase())) })
@@ -49,10 +49,10 @@ test("a model's array is found inside a fence or a sentence, and nonsense is no 
   assert.equal(jsonArray("[not json"), undefined)
 })
 
-test("training rows ask all three guards as yes or no, in the export's shape", () => {
-  const rows = trainingRows([{ text: "x", lang: "en", labels: { injection: true, harmful: false, sensitive: false }, source: "s", split: "train" }])
+test("training rows ask both guards as yes or no, in the export's shape", () => {
+  const rows = trainingRows([{ text: "x", lang: "en", labels: { injection: true, sensitive: false }, source: "s", split: "train" }])
   const out = rows[0]!.output as { classifications: { task: string; true_label: string }[] }
-  assert.deepEqual(out.classifications.map((c) => [c.task, c.true_label]), [["injection", "yes"], ["harmful", "no"], ["sensitive", "no"]])
+  assert.deepEqual(out.classifications.map((c) => [c.task, c.true_label]), [["injection", "yes"], ["sensitive", "no"]])
   assert.equal(rows[0]!.input, "text: x")
 })
 
@@ -78,14 +78,14 @@ test("the public set is read page by page and labelled like the synthetic one", 
 test("a relabel pass keeps each case's intended answer, takes new labels for the rest, and drops a contradiction", async () => {
   const base = { lang: "en", split: "train" } as const
   const cases: Case[] = [
-    { ...base, text: "a", source: "synth:m:injection:secrets", labels: { injection: true, harmful: false, sensitive: true } },
-    { ...base, text: "b", source: "synth:m:harmful:fiction", labels: { injection: false, harmful: false, sensitive: false } },
-    { ...base, text: "c", source: "public:deepset/prompt-injections", labels: { injection: true, harmful: false, sensitive: false } },
+    { ...base, text: "a", source: "synth:m:injection:secrets", labels: { injection: true, sensitive: true } },
+    { ...base, text: "b", source: "synth:m:injection:fiction", labels: { injection: false, sensitive: false } },
+    { ...base, text: "c", source: "public:deepset/prompt-injections", labels: { injection: true, sensitive: false } },
   ]
   const ask: Ask = async () => JSON.stringify([
-    { i: 0, injection: true, harmful: false, sensitive: false }, // the sensitive label is taken back
-    { i: 1, injection: false, harmful: true, sensitive: false }, // contradicts the hard negative: dropped
-    { i: 2, injection: true, harmful: false, sensitive: false },
+    { i: 0, injection: true, sensitive: false }, // the sensitive label is taken back
+    { i: 1, injection: true, sensitive: false }, // contradicts the hard negative: dropped
+    { i: 2, injection: true, sensitive: false },
   ])
   const r = await relabel(ask, cases)
   assert.deepEqual(r.cases.map((c) => [c.text, c.labels.sensitive]), [["a", false], ["c", false]])
@@ -112,4 +112,15 @@ test("an entity case is kept only when its spans are in the text and a second pa
   assert.equal(stats.disagreed, 2)
   assert.deepEqual(cases.map((c) => c.entities), [{ "person name": ["Erika Mustermann"], "street address": ["Hauptstraße 12, 10115 Berlin"] }])
   assert.deepEqual(entityRows(cases)[0]!.output, { entities: cases[0]!.entities })
+})
+
+test("a case written for the harmful guard (gone since rulebook 3) keeps a moved topic's answer and drops the old label", async () => {
+  const base = { lang: "en", split: "train" } as const
+  // Cases from before rulebook 3 carry harmful in their labels and source; the type no longer knows it.
+  const old = (source: string): Case => ({ ...base, text: source, source, labels: { injection: false, harmful: false, sensitive: false } as unknown as Case["labels"] })
+  const cases = [old("synth:m:harmful:fiction"), old("synth:m:harmful:poison")]
+  const ask: Ask = async () => JSON.stringify([{ i: 0, injection: true, sensitive: false }, { i: 1, injection: false, sensitive: false }])
+  const r = await relabel(ask, cases)
+  assert.equal(r.dropped, 1, "fiction is injection's hard negative now, so injection: true contradicts it")
+  assert.deepEqual(r.cases.map((c) => [c.text, c.labels]), [["synth:m:harmful:poison", { injection: false, sensitive: false }]], "no harmful label is carried on")
 })

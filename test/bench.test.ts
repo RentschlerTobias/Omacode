@@ -109,7 +109,7 @@ test("a corpus written for other wordings is refused before a number is produced
 })
 
 test("the pinned corpora on disk still match this build", () => {
-  assert.equal(loadGuardCorpus("bench/guard_cases.json").length, 16)
+  assert.equal(loadGuardCorpus("bench/guard_cases.json").length, 13)
   assert.equal(loadPermissionCorpus("bench/permission_cases.json").length, 27)
 })
 
@@ -153,8 +153,8 @@ test("decider.floors is a config value, and its default is the conservative stat
 })
 
 test("a guard node that passes the numbers leaves the default list without changing its floor", () => {
-  // 300 cases, ten harmful, all ten found, none falsely: the guard clause is satisfiable.
-  const rows = Array.from({ length: 300 }, (_, i) => ({ yes: i < 10 ? ["harmful"] : [], p: { harmful: i < 10 ? 0.9 : 0.1, injection: 0.1, sensitive: 0.1 } }))
+  // 300 cases, ten injections, all ten found, none falsely: the guard clause is satisfiable.
+  const rows = Array.from({ length: 300 }, (_, i) => ({ yes: i < 10 ? ["injection"] : [], p: { injection: i < 10 ? 0.9 : 0.1, sensitive: 0.1 } }))
   const report = buildReport({ guardCases: 300, guardRows: rows, permission: good() })
   assert.equal(report.nodes.find((n) => n.node === "G0")!.pass, true)
   const choice = floorsFor("G0", "calibrated", report)

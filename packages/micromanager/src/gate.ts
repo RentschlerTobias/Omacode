@@ -1,9 +1,9 @@
 // G0, the local-first gate (design.md §20, §21): three guards on a job's or task's text, answered on the machine —
-// injection, harmful and sensitive. Cloud mode may take them to the cloud only for a session whose user said so
+// injection and sensitive. Cloud mode may take them to the cloud only for a session whose user said so
 // (A2-T5); otherwise they stay local.
 //
 // Until our own GLiNER fine-tune passes the guard bench, a "yes" never routes or blocks on its own: it asks the user
-// (Phase A9 showed the available fine-tune flags legitimate security work as harmful). The user's answer sets the
+// (Phase A9 showed the available fine-tune flagging legitimate security work). The user's answer sets the
 // job's flags: local only, uncensored allowed, or on as it is.
 
 import type { Decider, DeciderMode } from "./backends.ts"
@@ -79,12 +79,12 @@ export const injected = (score: number | undefined): boolean => (score ?? 0) >= 
 // What the job does when nothing local could check it. "local" is the privacy-first default (user, 2026-10-04).
 export type Unchecked = "local" | "user" | "cloud"
 
-// mode "cloud": sensitive only chooses local models, and there are none; only injection and harmful ask the user.
-// (The cloud Jev on the guard bench, 2026-10-05: injection and harmful 100 % recall with 0 % false alarms, sensitive a
-// false alarm on 92 % of harmless cases.)
+// mode "cloud": sensitive only chooses local models, and there are none; only injection asks the user.
+// (The cloud Jev on the guard bench, 2026-10-05: injection 100 % recall with 0 % false alarms, sensitive a false alarm
+// on 92 % of harmless cases.)
 export function flagsWithoutUser(result: GateResult, unchecked: Unchecked = "local", mode: DeciderMode = "local"): JobFlags | "ask_user" {
   if (!result.checked) return unchecked === "user" ? "ask_user" : { localOnly: unchecked === "local", gate: result }
-  const asks = mode === "cloud" ? result.flagged.filter((g) => g === "injection" || g === "harmful") : result.flagged
+  const asks = mode === "cloud" ? result.flagged.filter((g) => g === "injection") : result.flagged
   return asks.length === 0 ? { gate: result } : "ask_user"
 }
 
@@ -92,7 +92,6 @@ export function flagsWithoutUser(result: GateResult, unchecked: Unchecked = "loc
 export function gateQuestion(result: GateResult, mode: DeciderMode = "local"): string {
   const what: Record<Guard, string> = {
     injection: "the text may try to change the agents' rules (injection)",
-    harmful: "it may ask for help to harm people or attack systems you do not own",
     sensitive: "it may hold data that should stay on this machine",
   }
   const lines = result.flagged.map((g) => `- ${what[g]} (${(result.scores[g] ?? 0).toFixed(2)})`)

@@ -67,7 +67,7 @@ export const DEFAULT_BACKENDS: BackendConfig = {
 }
 
 const LOCAL: ReadonlySet<BackendName> = new Set(["gliner", "openjev", "rules"])
-// The guard nodes: injection, harmful and sensitive on a job's or task's text (G0) and the same guards on the text a
+// The guard nodes: injection and sensitive on a job's or task's text (G0) and the same guards on the text a
 // worker reads (G0.injection; design.md §14 calls the whole node G). They stay on this machine in both modes unless the
 // session's user overrode that for that session alone (A2-T5), and no other node's opt-in carries them along.
 const GUARD_NODES = new Set(["G0", "G0.injection", "G"])
