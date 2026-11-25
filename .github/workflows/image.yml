@@ -23,6 +23,7 @@ permissions:
   packages: write
 
 env:
+  # Registry names are lowercase, the owner's name is not (RentschlerTobias): each step lowercases it with ${IMAGE,,}.
   IMAGE: ghcr.io/${{ github.repository_owner }}/omacode
   SIZE_BUDGET_BYTES: "4294967296"
 
@@ -56,12 +57,14 @@ jobs:
       - name: Push this architecture
         if: github.event_name != 'pull_request'
         run: |
+          IMAGE="${IMAGE,,}"
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           podman push "omacode:${{ matrix.arch }}" "${IMAGE}:sha-${GITHUB_SHA::12}-${{ matrix.arch }}"
 
       - name: Compressed size within budget
         if: github.event_name != 'pull_request'
         run: |
+          IMAGE="${IMAGE,,}"
           size="$(skopeo inspect --raw "docker://${IMAGE}:sha-${GITHUB_SHA::12}-${{ matrix.arch }}" | jq '[.layers[].size] | add')"
           echo "compressed: $((size / 1048576)) MB (budget $((SIZE_BUDGET_BYTES / 1048576)) MB)"
           test "$size" -le "$SIZE_BUDGET_BYTES"
@@ -73,6 +76,7 @@ jobs:
     steps:
       - name: Join both architectures under one tag
         run: |
+          IMAGE="${IMAGE,,}"
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
           sha="sha-${GITHUB_SHA::12}"
           tags="$sha"
@@ -90,6 +94,7 @@ jobs:
     steps:
       - name: Licence lists from the image
         run: |
+          IMAGE="${IMAGE,,}"
           image="${IMAGE}:${GITHUB_REF_NAME#v}"
           mkdir -p out
           for f in third-party.json debian-packages.tsv gpl-sources.txt; do
