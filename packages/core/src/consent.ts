@@ -10,12 +10,19 @@
 // refused scope is not asked again either. Requests that arrive while the question is open wait for the same answer.
 //
 // The question is OpenCode's own permission dialog (permission.assert), put in the session the user is looking at,
-// never answered by an agent: the micromanager is an LLM a worker's output can steer. OpenCode's dialog shows only
-// the action's name, so the details go into the conversation just above it (`note`). Whether the user picks "once"
-// or "always" there, it is consent for the scope: the plugin cannot tell the two apart, and asking again on the next
-// request is what this exists to avoid.
+// never answered by an agent: the micromanager is an LLM a worker's output can steer. For an action it does not know,
+// OpenCode 2.2.5's dialog shows nothing but the action's name ("Call tool <action>"; neither the message nor the
+// metadata, live check 2026-11-25), so the name is the question, one per kind. The details go to the journal only:
+// a note posted into the conversation while the turn ran arrived after it as input for the model, which then answered
+// the note instead of the user (same check). Whether the user picks "once" or "always", it is consent for the scope:
+// the plugin cannot tell the two apart, and asking again on the next request is what this exists to avoid.
 
-export const CONSENT_ACTION = "omacode_cloud_send"
+export const CONSENT_ACTIONS: Readonly<Record<ConsentKind, string>> = {
+  sensitive: "send_sensitive_work_to_a_cloud_model",
+  unchecked: "send_to_a_cloud_model_without_the_name_check",
+}
+
+export const isConsentAction = (action: string): boolean => Object.values(CONSENT_ACTIONS).includes(action)
 
 export type ConsentKind = "sensitive" | "unchecked"
 
@@ -30,9 +37,8 @@ export interface ConsentRequest {
   readonly scope: string // a job id, or a root session id
   readonly sessionID: string // where the question is put: the session the user is looking at
   readonly agent?: string
-  readonly title: string // the dialog's line ("Send a sensitive job to the cloud?")
-  readonly text: string // the details, posted into the conversation above the dialog
-  readonly note?: (sessionID: string, text: string) => Promise<unknown>
+  readonly title: string // a one-line summary, for the journal
+  readonly text: string // the details, for the journal (OpenCode's dialog shows only the action's name)
   readonly journal?: (entry: Record<string, unknown>) => void
 }
 
@@ -59,11 +65,10 @@ export async function askConsent(host: ConsentHost, request: ConsentRequest): Pr
   const open = STATE.pending.get(key)
   if (open) return open
   const asking = (async () => {
-    await request.note?.(request.sessionID, request.text).catch(() => undefined)
     let allowed: boolean
     try {
       await host.permission.assert({
-        action: CONSENT_ACTION,
+        action: CONSENT_ACTIONS[request.kind],
         resources: [request.scope],
         sessionID: request.sessionID,
         ...(request.agent ? { agent: request.agent } : {}),
@@ -75,7 +80,7 @@ export async function askConsent(host: ConsentHost, request: ConsentRequest): Pr
     }
     STATE.answers.set(key, allowed)
     STATE.pending.delete(key)
-    request.journal?.({ kind: "consent", consent: request.kind, scope: request.scope, sessionID: request.sessionID, allowed })
+    request.journal?.({ kind: "consent", consent: request.kind, scope: request.scope, sessionID: request.sessionID, allowed, title: request.title, text: request.text })
     return allowed
   })()
   STATE.pending.set(key, asking)

@@ -1,4 +1,4 @@
-import { askConsent, CONSENT_ACTION, isLoopback, rootSession } from "@omacode/core/consent"
+import { askConsent, isConsentAction, isLoopback, rootSession } from "@omacode/core/consent"
 import { record } from "@omacode/core/journal"
 import { mapStrings, PLACEHOLDER_NOTE, requestTexts, restoreResponse, scanNames, useVault, Vault, type NameSettings } from "./redact.ts"
 
@@ -190,7 +190,7 @@ export async function redactHttpRequest(
 }
 
 // The question for a request that would leave with names unchecked: once per root session (a job's workers share their
-// micromanager's answer), put to that session, with the details in the conversation above OpenCode's dialog.
+// micromanager's answer), put to that session.
 export function uncheckedConsent(ctx: any, sessionID: string | undefined): (() => Promise<boolean>) | undefined {
   if (!sessionID || typeof ctx?.permission?.assert !== "function") return undefined
   return async () => {
@@ -205,7 +205,6 @@ export function uncheckedConsent(ctx: any, sessionID: string | undefined): (() =
         "Keys, tokens, e-mail addresses, phone, IBAN and card numbers are still replaced; local models are not affected.",
         "Allowing the next permission sends this session's requests without the name check until the decider is back (it is used again as soon as it answers); rejecting stops them.",
       ].join("\n"),
-      note: typeof ctx.session?.synthetic === "function" ? (id, text) => ctx.session.synthetic({ sessionID: id, text, resume: false }) : undefined,
       journal: record,
     })
   }
@@ -216,7 +215,7 @@ export function installGuard(ctx: any, deps: GuardDeps): void {
   // The consent question is the user's: whatever OpenCode's rules say for an unknown action, it asks.
   try {
     ctx.permission?.hook?.("evaluate", (evaluation: { action: string; effect: string; message?: string; metadata?: Record<string, unknown> }) => {
-      if (evaluation.action !== CONSENT_ACTION || evaluation.effect === "deny") return
+      if (!isConsentAction(evaluation.action) || evaluation.effect === "deny") return
       evaluation.effect = "ask"
       evaluation.message = String(evaluation.metadata?.title ?? "Send to the cloud?")
     })

@@ -97,7 +97,7 @@ import { userConfigDir } from "@omacode/core/paths"
 import { comfyWorkspace, home as toolsHome } from "./creative-tools.ts"
 import { installParts, outcomeText } from "./features.ts"
 import { TELEMETRY_OFF } from "@omacode/core/telemetry"
-import { askConsent, CONSENT_ACTION, rootSession } from "@omacode/core/consent"
+import { askConsent, isConsentAction, rootSession } from "@omacode/core/consent"
 import { missingForKind, missingNote, OFFER_IDS, OFFERS, realProbe, type OfferId } from "./setup.ts"
 import { readConfig as readServicesConfig } from "./services.ts"
 import { IMAGE_MODELS_ID, imageModels } from "./image-models.ts"
@@ -1636,7 +1636,6 @@ const plugin = {
               `It would go to ${routed.model} (cloud). Keys, e-mail, phone, IBAN and card numbers, names and addresses are replaced before anything leaves; the rest of the content goes as it is.`,
               `Allowing the next permission lets job ${job.id} use cloud models for its sensitive tasks from now on; rejecting does not start this task.`,
             ].join("\n"),
-            note: (sessionID, text) => say({ sessionID, text, resume: false }),
             journal: record,
           })
           if (!allowed) throw new DelegationError(`Not started: the task was marked as sensitive, no local model is running, and the user did not allow the cloud. Tell the user in one sentence: start a local model (or ask them to allow the cloud) and delegate again; then end your turn.`)
@@ -1654,7 +1653,6 @@ const plugin = {
             `Task: "${delegatedTask.slice(0, 300)}" would go to ${routed.model} (cloud). Keys, tokens, e-mail addresses, phone, IBAN and card numbers are still replaced.`,
             "Allowing the next permission lets this session send without those checks until the decider is back; rejecting does not start the task.",
           ].join("\n"),
-          note: (sessionID, text) => say({ sessionID, text, resume: false }),
           journal: record,
         })
         if (!allowed) throw new DelegationError(`Not started: the decider is not running, so the task could not be checked, and the user did not allow the cloud without that check. Tell the user in one sentence to start the decider (/services) and end your turn.`)
@@ -1958,7 +1956,7 @@ const plugin = {
     await ctx.permission.hook("evaluate", async (evaluation) => {
       // The user's consent to a cloud send (@omacode/core/consent): always the user's question, never one a rule, the
       // decider or the micromanager answers, so nothing below may touch it.
-      if (evaluation.action === CONSENT_ACTION) {
+      if (isConsentAction(evaluation.action)) {
         if (evaluation.effect !== "deny") {
           evaluation.effect = "ask"
           evaluation.message = String((evaluation.metadata as { title?: unknown } | undefined)?.title ?? "Send to the cloud?")
@@ -2465,7 +2463,7 @@ const plugin = {
         consent: async (j, text) => {
           const sessionID = parentID ?? j.facilitator
           if (!sessionID) return false
-          return askConsent(ctx, { kind: "sensitive", scope: j.id, sessionID, agent: MICROMANAGER.agent, title: "Send a sensitive job to the cloud?", text, note: (id, t) => say({ sessionID: id, text: t, resume: false }), journal: record })
+          return askConsent(ctx, { kind: "sensitive", scope: j.id, sessionID, agent: MICROMANAGER.agent, title: "Send a sensitive job to the cloud?", text, journal: record })
         },
         onWorker: (sessionID, task, rules) => {
           workerTasks.set(sessionID, task)

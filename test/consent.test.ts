@@ -15,7 +15,7 @@ after(() => {
   else process.env.XDG_STATE_HOME = stateBefore
 })
 
-import { askConsent, CONSENT_ACTION, consentGiven, isLoopback, resetConsent, rootSession, type ConsentHost } from "../packages/core/src/consent.ts"
+import { askConsent, CONSENT_ACTIONS, consentGiven, isLoopback, resetConsent, rootSession, type ConsentHost } from "../packages/core/src/consent.ts"
 import { installGuard, NotSent, redactHttpRequest } from "../packages/micromanager/src/guard/wire.ts"
 import { Vault } from "../packages/micromanager/src/redact.ts"
 
@@ -35,23 +35,27 @@ function host(answer: boolean | (() => Promise<void>)) {
   return { h, asked }
 }
 
-const request = (scope: string, notes?: string[]) => ({
+const request = (scope: string, journal?: Record<string, unknown>[]) => ({
   kind: "unchecked" as const,
   scope,
   sessionID: scope,
   title: "Send?",
   text: `details for ${scope}`,
-  note: async (_id: string, text: string) => notes?.push(text),
+  journal: (e: Record<string, unknown>) => journal?.push(e),
 })
 
 test("one question per scope: the answer holds for every later request, a refusal too", async () => {
   const yes = host(true)
-  const notes: string[] = []
-  assert.equal(await askConsent(yes.h, request("ses_a", notes)), true)
-  assert.equal(await askConsent(yes.h, request("ses_a", notes)), true)
+  const journal: Record<string, unknown>[] = []
+  assert.equal(await askConsent(yes.h, request("ses_a", journal)), true)
+  assert.equal(await askConsent(yes.h, request("ses_a", journal)), true)
   assert.equal(yes.asked.length, 1, "asked once")
-  assert.deepEqual(notes, ["details for ses_a"], "the details went into the conversation once")
-  assert.equal(yes.asked[0]!.action, CONSENT_ACTION)
+  assert.equal(journal.length, 1, "one answer, journalled once")
+  assert.equal(journal[0]!.allowed, true)
+  assert.equal(journal[0]!.text, "details for ses_a", "the details are kept in the journal: OpenCode's dialog shows only the action")
+  // The action is the question: the only thing OpenCode 2.2.5's dialog shows for it.
+  assert.equal(yes.asked[0]!.action, CONSENT_ACTIONS.unchecked)
+  assert.match(CONSENT_ACTIONS.unchecked, /cloud.*name_check/)
   assert.deepEqual(yes.asked[0]!.resources, ["ses_a"])
   assert.equal(consentGiven("unchecked", "ses_a"), true)
   assert.equal(consentGiven("sensitive", "ses_a"), undefined, "a kind of its own")
@@ -111,12 +115,10 @@ test("the guard puts the question to the root session once, and OpenCode is told
   const hooks = new Map<string, (event: any) => unknown>()
   const evaluate: ((e: any) => void)[] = []
   const asserted: { sessionID?: string; resources: readonly string[] }[] = []
-  const notes: string[] = []
   const ctx = {
     session: {
       hook: (name: string, fn: (event: any) => unknown) => void hooks.set(name, fn),
       get: async ({ sessionID }: { sessionID: string }) => (sessionID === "ses_worker" ? { parentID: "ses_micro" } : {}),
-      synthetic: async ({ sessionID, text }: { sessionID: string; text: string }) => void notes.push(`${sessionID}: ${text.slice(0, 30)}`),
     },
     permission: {
       hook: (_name: string, fn: (e: any) => void) => void evaluate.push(fn),
@@ -128,14 +130,12 @@ test("the guard puts the question to the root session once, and OpenCode is told
   assert.equal(asserted.length, 1, "three requests, one question")
   assert.equal(asserted[0]!.sessionID, "ses_micro")
   assert.deepEqual(asserted[0]!.resources, ["ses_micro"])
-  assert.equal(notes.length, 1)
-  assert.match(notes[0]!, /^ses_micro: \[omacode\] The decider is not/)
   // Whatever OpenCode's rules say for an unknown action, the consent is asked, never allowed by default; a deny stays.
-  const evaluation = { action: CONSENT_ACTION, effect: "allow", metadata: { title: "Send?" } } as { action: string; effect: string; message?: string; metadata: Record<string, unknown> }
+  const evaluation = { action: CONSENT_ACTIONS.unchecked, effect: "allow", metadata: { title: "Send?" } } as { action: string; effect: string; message?: string; metadata: Record<string, unknown> }
   evaluate[0]!(evaluation)
   assert.equal(evaluation.effect, "ask")
   assert.equal(evaluation.message, "Send?")
-  const denied = { action: CONSENT_ACTION, effect: "deny", metadata: {} }
+  const denied = { action: CONSENT_ACTIONS.unchecked, effect: "deny", metadata: {} }
   evaluate[0]!(denied)
   assert.equal(denied.effect, "deny")
 })
