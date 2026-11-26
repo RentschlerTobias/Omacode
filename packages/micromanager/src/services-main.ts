@@ -7,6 +7,7 @@ import { execFile } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
+import { availableParallelism } from "node:os"
 
 import { runDir } from "@omacode/core/services"
 import { fetchOnce, Supervisor, type Device, type ServiceSpec } from "@omacode/core/supervisor"
@@ -36,6 +37,15 @@ export function deviceArgs(device: string | undefined): string[] {
   return !device || device === CPU.id ? ["-dev", "none", "-ngl", "0"] : ["-dev", device, "-ngl", "999"]
 }
 
+// Torch threads for the decider. Every guard question and every name check of every session waits behind one lock, and
+// the name check reads whole conversations: at the server's default of 2 threads 46 000 characters took 21 s, at 8 it
+// took 6.7 s, with the same memory (about 1 GB; measured 2026-11-26 on 24 cores beside a busy ComfyUI). The plugin
+// gives a name check 30 s, so under load 2 threads meant timeouts, and every cloud request asked the user. A third of
+// the cores, from 2 up to 8: past that the CPU is the other services' too.
+export function deciderThreads(cores: number = availableParallelism()): number {
+  return Math.max(2, Math.min(8, Math.floor(cores / 3)))
+}
+
 export function hostServices(config: ServicesConfig, token: string): ServiceSpec[] {
   const specs: ServiceSpec[] = [
     {
@@ -46,7 +56,7 @@ export function hostServices(config: ServicesConfig, token: string): ServiceSpec
       defaultDevice: CPU.id,
       command: (port) => ({
         cmd: config.decider.bin,
-        args: ["--host", "127.0.0.1", "--port", String(port), "--model", config.decider.model],
+        args: ["--host", "127.0.0.1", "--port", String(port), "--model", config.decider.model, "--threads", String(deciderThreads())],
         env: { CUDA_VISIBLE_DEVICES: "", DECIDER_TOKEN: token },
       }),
     },

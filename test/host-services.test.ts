@@ -10,7 +10,7 @@ import { tempDir } from "./harness.ts"
 
 import { embeddingModel, serviceHeaders, serviceToken, serviceUrl, startingWaitMs } from "../packages/core/src/services.ts"
 import { findLlamaServer, ggufFor, install, launchdPlist, remove, status, systemdUnit, unitPath, type ServicesConfig } from "../packages/micromanager/src/services.ts"
-import { hostServices } from "../packages/micromanager/src/services-main.ts"
+import { deciderThreads, hostServices } from "../packages/micromanager/src/services-main.ts"
 import type { Exec } from "../packages/micromanager/src/worktree/git.ts"
 
 const ROOT = tempDir("mm-services-")
@@ -109,7 +109,7 @@ test("the supervisor's services: the decider with its token, the embedding fetch
   }
   const [decider, embedding] = hostServices(config, "tok")
   const d = decider!.command(9001)
-  assert.deepEqual([d.cmd, d.args], ["/d/.venv/bin/decider", ["--host", "127.0.0.1", "--port", "9001", "--model", "/d/models/m"]])
+  assert.deepEqual([d.cmd, d.args], ["/d/.venv/bin/decider", ["--host", "127.0.0.1", "--port", "9001", "--model", "/d/models/m", "--threads", String(deciderThreads())]])
   assert.equal(d.env?.DECIDER_TOKEN, "tok")
   const e = embedding!.command(9002)
   assert.equal(e.cmd, "/bin/llama-vulkan")
@@ -150,4 +150,11 @@ test("the unit files run the supervisor with the given node, and remove takes th
   await remove(fakeRun().run, { env: m.env, home: m.services, platform: "linux", purge: true })
   assert.equal(existsSync(m.services), false)
   assert.match(status({ OMACODE_RUN_DIR: join(ROOT, "nothing") }), /not running/)
+})
+
+test("the decider gets a third of the cores, from 2 up to 8 threads: at 2 a long name check outran its 30 s", () => {
+  assert.deepEqual([1, 4, 6, 12, 24, 64].map((n) => deciderThreads(n)), [2, 2, 2, 4, 8, 8])
+  const config = { decider: { bin: "/x/decider", model: "/x/model" }, embedding: { server: [] } } as unknown as ServicesConfig
+  const args = hostServices(config, "t").find((s) => s.name === "decider")!.command(1234).args
+  assert.equal(args[args.indexOf("--threads") + 1], String(deciderThreads()))
 })

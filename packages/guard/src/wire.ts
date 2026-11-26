@@ -118,7 +118,7 @@ function addPlaceholderNote(body: Record<string, any>): void {
 export class NotSent extends Error {}
 
 export const NOT_SENT_UNCHECKED =
-  "omacode did not send this request: the decider is not running, so names and addresses in it could not be found and replaced, and you did not allow sending it without that check. Start the decider (`omacode services status`, or /services in the TUI) and try again."
+  "omacode did not send this request: the decider is not running or did not answer in time, so names and addresses in it could not be found and replaced, and you did not allow sending it without that check. Start the decider (`omacode services status`, or /services in the TUI) and try again."
 
 export async function redactHttpRequest(
   request: Request,
@@ -201,7 +201,7 @@ export function uncheckedConsent(ctx: any, sessionID: string | undefined): (() =
       sessionID: root,
       title: "Send to the cloud without checking names and addresses?",
       text: [
-        "[omacode] The decider is not running, so names and street addresses in what the agents send to the cloud model cannot be found and replaced.",
+        "[omacode] The decider is not running or did not answer in time, so names and street addresses in what the agents send to the cloud model cannot be found and replaced.",
         "Keys, tokens, e-mail addresses, phone, IBAN and card numbers are still replaced; local models are not affected.",
         "Allowing the next permission sends this session's requests without the name check until the decider is back (it is used again as soon as it answers); rejecting stops them.",
       ].join("\n"),
