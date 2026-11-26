@@ -45,6 +45,7 @@ These decisions are binding for this plan. D1–D18 come from the working sessio
 | D23 | **Unsandboxed is a user decision, never a default.** When no sandbox can run, a job's commands and checks run unwrapped **only after the user confirmed it for that job** in a form, with a deterministic risk score shown first. The grant is journaled with the score; `never` keeps the fail-closed path, `allow` stores the grant without asking (also journaled). Without an answer nothing runs. |
 | D24 | **B3 ships the HTML deck only; PPTX is deferred.** On the user's direction (2026-11-15) B3-T3 and B3-T5 leave B3 and move to a later job: no `pptxgenjs`, no PPTX checks, no LibreOffice path in B3. The deck is presented and checked as HTML; a PPTX handoff is not part of the first vertical slice. |
 | D25 | **`harmful` is dropped** (user, 2026-11-25; rulebook 3). It judged whether a job helps to hurt other people: a guard against the user on the user's own machine, which someone with that aim avoids by not installing the plugin. Harm *to* the user comes from an agent's action, so it is judged on the command: the `destructive` guard (1.1). The guard bench gates on `injection` now. |
+| D26 | **The guards and the name/address labels go into one decider pass only when that pass is trained and chosen for it** (user, 2026-11-25). One pass saves 20-30 % of the decider's time, but the questions share the input and change each other's answers: on today's checkpoint the joint pass loses injection recall (0.895 → 0.868) or doubles sensitive false alarms (1.9 → 4.3 %). Until a retrained checkpoint passes `decider/train/joint_eval.py`, every guard keeps its own pass. |
 
 ### Assumptions
 
@@ -337,6 +338,16 @@ undo (deleting or overwriting outside the work, force-pushing or rewriting histo
 switching off a safety setting, sending keys out, changing system configuration)? Most valuable where the sandbox is
 not: the main session and calls the user let run unsandboxed. Synthetic command/task cases, trained with P6; the
 tuned weights are published on Hugging Face once the model has it.
+
+**1.1, one decider pass for the guards and the names (D26),** with the P6 retraining:
+1. Training rows ask exactly what the decider will ask in one pass: injection, sensitive, destructive and the
+   "person name"/"street address" spans together (today classifications and entities are separate rows).
+2. The checkpoint is evaluated and chosen in the joint pass (`decider/train/joint_eval.py`), not one question at a
+   time as `train.py --eval-only` does now.
+3. The decider switches to the joint pass only when, guard by guard, its recall is at least and its false alarms at
+   most those of separate passes; else it keeps separate passes and the speed-up waits.
+Baseline (2026-11-25, guard-2026-11-21, 352 held-out cases, CPU): separate injection 0.895 / 0.7 %, sensitive
+0.867 / 1.9 %, ~185 ms per case; joint guards + entities injection 0.895 / 0.4 %, sensitive 0.867 / 4.3 %, ~159 ms.
 
 ---
 
