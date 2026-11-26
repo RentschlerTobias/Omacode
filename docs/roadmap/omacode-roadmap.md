@@ -349,6 +349,25 @@ tuned weights are published on Hugging Face once the model has it.
 Baseline (2026-11-25, guard-2026-11-21, 352 held-out cases, CPU): separate injection 0.895 / 0.7 %, sensitive
 0.867 / 1.9 %, ~185 ms per case; joint guards + entities injection 0.895 / 0.4 %, sensitive 0.867 / 4.3 %, ~159 ms.
 
+**The 1.1 list** (agreed with the user, 2026-11-26), beside the two entries above:
+- **P6, the decider on ONNX.** The retraining above, exported to ONNX so the decider runs on ONNX Runtime without
+  PyTorch (about 1 GB less); the tuned weights then go to Hugging Face (T1ddaeus/omacode-guard, model card drafted).
+- **The embedding server as a part.** llama.cpp's `llama-server`, pinned and hash-checked, offered like the other
+  parts, so memory search by meaning works on a fresh machine (today it falls back to keywords there).
+- **Difficulty from the planner.** Every task in the plan carries `difficulty: easy | medium | hard`, written by the
+  planner (or the micromanager for a delegation), which knows the task; missing means medium. The decider's N5
+  estimate goes.
+- **Pools by tier.** Each role's pool gets an ordered model list per tier (easy, medium, hard); the first one that is
+  reachable and not busy is taken, never a random one (runs stay comparable, and the outcome log can reorder the lists
+  later). `/pools` shows the three tiers per role, a pick overrides one (✎), and "back to default" undoes it.
+- **Follow-ups by the micromanager.** A worker reports a follow-up with its reason; rules settle "already planned" (same
+  files or text) and "in scope" (the job's files); the micromanager decides the rest. The decider's N7 triage goes;
+  the injection guard on the follow-up's text stays, since a model wrote it.
+- **The licence block** in the agents' context and the `license_info` tool (A6-T9).
+- **Steering a worker without git words, and the ask rate in the TUI** (C2-T7).
+The decider is then left with what only it does: injection, sensitive, destructive, and the names and addresses the
+redaction replaces.
+
 ---
 
 ## 5. Jobs in detail
@@ -1319,6 +1338,8 @@ Any place where the harness runs text a worker wrote is a boundary:
 - Publishing/deploy (later).
 - Fine-tuning UI (later; A2b provides the dataset, D1 the training).
 - Render caching before B6.
+- Later than 1.1 (user, 2026-11-26): deck designs beyond text on a plain slide, local-LLM detection (A6-T4), the N5/N13
+  bench, macOS, Blender.
 
 ---
 
